@@ -16,16 +16,41 @@
 
 #include "rs_common.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <set>
 #include <string>
+#include <thread>
 
 using namespace doubleeye;
 
 namespace {
+
+// librealsense 2.22 on this box usually fails the hwmon command that reads the
+// calibration table on the FIRST call after the pipeline starts, and succeeds
+// on the second. Observed repeatedly, always returning identical values when it
+// does succeed -- so it is a firmware warm-up quirk, not a calibration problem.
+// Retry rather than abort, and if it never succeeds keep going anyway: the
+// metadata, sync and timestamp checks do not need intrinsics, and those are the
+// more important output of this tool.
+template <typename F>
+bool with_retry(const char* what, int attempts, F fn) {
+  for (int i = 1; i <= attempts; ++i) {
+    try {
+      fn();
+      if (i > 1) std::printf("  (%s succeeded on attempt %d)\n", what, i);
+      return true;
+    } catch (const rs2::error& e) {
+      std::printf("  %s failed, attempt %d/%d: %s\n", what, i, attempts,
+                  e.what());
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+  }
+  return false;
+}
 
 void section(const char* title) {
   std::printf("\n== %s ", title);
@@ -141,14 +166,24 @@ void probe_stream(const rs2::device& dev, const char* save_prefix) {
     auto ir2 = profile.get_stream(RS2_STREAM_INFRARED, 2)
                    .as<rs2::video_stream_profile>();
 
-    rs2_intrinsics intr = ir1.get_intrinsics();
+    rs2_intrinsics intr;
+    rs2_extrinsics extr;
+    const bool calib_ok = with_retry("calibration read", 4, [&]() {
+      intr = ir1.get_intrinsics();
+      extr = ir1.get_extrinsics_to(ir2);
+    });
+    if (!calib_ok) {
+      std::printf(
+          "  !! could not read calibration after retries. This is the known\n"
+          "     transient hwmon failure, not a calibration problem -- rerun.\n"
+          "     Continuing with the timestamp and metadata checks.\n");
+    } else {
     std::printf("  ir1 intrinsics  fx=%.3f fy=%.3f cx=%.3f cy=%.3f\n", intr.fx,
                 intr.fy, intr.ppx, intr.ppy);
     std::printf("  ir1 distortion  [");
     for (int i = 0; i < 5; ++i) std::printf("%s%.5f", i ? ", " : "", intr.coeffs[i]);
     std::printf("]\n");
 
-    rs2_extrinsics extr = ir1.get_extrinsics_to(ir2);
     const double tx = extr.translation[0];
     const double ty = extr.translation[1];
     const double tz = extr.translation[2];
@@ -167,6 +202,7 @@ void probe_stream(const rs2::device& dev, const char* save_prefix) {
       rot_dev = std::max(rot_dev, std::fabs(extr.rotation[i] - expect));
     }
     std::printf("  rotation dev    %.2e from identity\n", rot_dev);
+    }  // calib_ok
 
     rs2::frameset fs;
     for (int i = 0; i < kFps; ++i) fs = pipe.wait_for_frames(5000);

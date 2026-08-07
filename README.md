@@ -174,6 +174,17 @@ Workaround already in use for the emitter A/B: run the projector **on** and
 static scene that is equally valid and needs no per-frame label. It does not
 help for a moving scene, where alternation would be the only option.
 
+### Known flakiness: hwmon calibration read
+
+`rs_probe` normally fails its **first** calibration read after the pipeline
+starts (`hwmon command 0x15 failed`) and succeeds on the second. Observed
+repeatedly, always returning identical values when it succeeds, so it is a
+firmware warm-up quirk rather than a calibration fault. The probe now retries up
+to four times and, if that fails too, continues without intrinsics rather than
+aborting — the timestamp and metadata checks are the more important output.
+
+Do not read this as a calibration problem. Rerun it.
+
 ### Verdict on the patch: not worth it for timing
 
 Measured on a 120 s, 3600-frame recording at 848×480@30 with clocks locked:
