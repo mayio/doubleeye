@@ -121,6 +121,41 @@ def stretch(img: np.ndarray, sub: int = 4) -> np.ndarray:
     return lut[img]
 
 
+def densify(H, W, ui, vi, z, stride=8):
+    """Triangulate the matched points and interpolate depth between them.
+
+    A sparse depth image is ~1% of pixels and unreadable: rviz has nothing to
+    render and NaN dominates. Linear interpolation over a Delaunay triangulation
+    of the matches turns it into a surface you can actually see, which is the same
+    support-point idea ELAS uses as a prior for dense estimation.
+
+    This INVENTS values between measurements. It is a visualisation, not data, and
+    it is published on its own topic for that reason -- /doubleeye/depth stays
+    sparse and true. Interpolation is done at `stride` and upsampled, because
+    querying 407k points against the triangulation costs far more than it is worth
+    for something being looked at rather than measured. Stride 8 is 12.6 ms against
+    457 ms at stride 4, for identical coverage -- the convex hull does not change,
+    only how finely it is sampled.
+    """
+    out = np.full((H, W), np.nan, np.float32)
+    if len(z) < 4:
+        return out
+    try:
+        from scipy.interpolate import LinearNDInterpolator
+    except ImportError:
+        return out
+    f = LinearNDInterpolator(np.stack([ui, vi], 1).astype(np.float64),
+                             z.astype(np.float64))
+    ys = np.arange(0, H, stride)
+    xs = np.arange(0, W, stride)
+    gx, gy = np.meshgrid(xs, ys)
+    small = f(gx, gy)
+    # Nearest-neighbour upsample back to full resolution.
+    yi = np.minimum((np.arange(H) // stride), small.shape[0] - 1)
+    xi = np.minimum((np.arange(W) // stride), small.shape[1] - 1)
+    return small[np.ix_(yi, xi)].astype(np.float32)
+
+
 def colours_for(m: np.ndarray) -> np.ndarray:
     """Per-point RGB by margin, vectorised. (N, 3) uint8."""
     c = np.empty((len(m), 3), np.uint8)
@@ -262,6 +297,10 @@ def main() -> int:
     # full of NaN is not.
     pub_ovl = node.create_publisher(Image, "/doubleeye/image_matches", qos)
     pub_dcol = node.create_publisher(Image, "/doubleeye/depth_color", qos)
+    # Interpolated between matches, so it shows surfaces rather than dots. Its own
+    # topic because it is a rendering, not a measurement: the values between
+    # support points were never observed.
+    pub_ddense = node.create_publisher(Image, "/doubleeye/depth_dense", qos)
 
     tf_bc = StaticTransformBroadcaster(node)
     now = node.get_clock().now().to_msg()
@@ -328,9 +367,10 @@ def main() -> int:
             want_ovl = pub_ovl.get_subscription_count() > 0
             want_dep = pub_dep.get_subscription_count() > 0
             want_dcol = pub_dcol.get_subscription_count() > 0
+            want_dense = pub_ddense.get_subscription_count() > 0
             want_pc = pub_pc.get_subscription_count() > 0
             need_gray = want_img or want_ovl
-            need_depth = want_dep or want_dcol
+            need_depth = want_dep or want_dcol or want_dense
 
             gray = np.frombuffer(img_bytes, dtype=np.uint8).reshape(H, W)
             shown = (gray if (a.no_stretch or not need_gray)
@@ -429,6 +469,17 @@ def main() -> int:
                 dm.step = 3 * W
                 dm.data = dc.tobytes()
                 pub_dcol.publish(dm)
+
+            if want_dense and len(z):
+                dense = densify(H, W, ui, vi, z)
+                nm_ = Image()
+                nm_.header.stamp = stamp
+                nm_.header.frame_id = FRAME
+                nm_.height, nm_.width = H, W
+                nm_.encoding = "rgb8"
+                nm_.step = 3 * W
+                nm_.data = colourise(dense, float(d_lo), float(d_hi)).tobytes()
+                pub_ddense.publish(nm_)
 
             ci = CameraInfo()
             ci.header.stamp = stamp

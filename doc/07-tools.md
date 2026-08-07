@@ -553,3 +553,26 @@ max absolute difference 0.
 
 The three per-point Python loops became fancy-indexed numpy writes over an
 (N, k, k) index grid.
+
+### `/doubleeye/depth` shows nothing, and cannot
+
+The raw depth topic is 32FC1 with a value at ~1% of pixels and NaN everywhere
+else. rviz normalises grayscale over the frame and has essentially nothing to
+render, so it looks empty. That topic is correct and is not the one to look at.
+
+`/doubleeye/depth_dense` is. It triangulates the matched points and interpolates
+between them, which turns scattered samples into a surface: coverage goes from 1.3%
+to 88%, and the floor gradient and back wall become visible. Same idea ELAS uses,
+where robustly matched support points seed a dense estimate.
+
+**It invents values between measurements**, which is why it is a separate topic
+rather than a replacement. Nothing between two support points was observed. Do not
+feed it to anything that consumes depth; it is for eyes.
+
+It also makes outliers obvious, which the sparse view hides: a single wrong match
+becomes a coloured crater in an otherwise smooth surface. That is diagnostically
+useful and it is the fastest way to see whether `--min-margin` is set high enough.
+
+Cost is 12.6 ms per frame, and it is only computed when something subscribes.
+Interpolation runs at stride 8 and upsamples: stride 4 costs 457 ms for *identical*
+coverage, since the convex hull does not change, only how finely it is sampled.
