@@ -23,6 +23,7 @@ duplicates it; this is the engineering record that sits underneath it.
 | [07-tools.md](07-tools.md) | **Every tool, what it answers, how to run it** — start here when returning to the project |
 | [08-imu.md](08-imu.md) | Pixhawk/ArduPilot: links, isolated venv, parameters applied, and what is still open |
 | [09-matching.md](09-matching.md) | **MASDA** — messages, validation against brute force, and the measured advantage over nearest-neighbour |
+- [10-architecture.md](10-architecture.md) — what runs on the GPU, what runs on the CPU, and why nothing is on the GPU yet.
 
 ## Status at time of writing
 
