@@ -1,0 +1,339 @@
+{
+ "rows": [
+  {
+   "scene": "teddy",
+   "H": 375,
+   "W": 450,
+   "m": 627,
+   "n": 637,
+   "E": 1683,
+   "dmax": 60.0,
+   "gt_max": 52.75,
+   "scale_check": null,
+   "off": {
+    "correct": 211,
+    "matches": 353,
+    "prec": 0.6151603498542274,
+    "crossings": 44,
+    "pairs": 961
+   },
+   "k0.1": {
+    "correct": 214,
+    "matches": 351,
+    "prec": 0.6275659824046921,
+    "crossings": 30
+   },
+   "k0.3": {
+    "correct": 213,
+    "matches": 350,
+    "prec": 0.6264705882352941,
+    "crossings": 29
+   },
+   "k0.8": {
+    "correct": 213,
+    "matches": 350,
+    "prec": 0.6264705882352941,
+    "crossings": 29
+   }
+  },
+  {
+   "scene": "cones",
+   "H": 375,
+   "W": 450,
+   "m": 845,
+   "n": 876,
+   "E": 1591,
+   "dmax": 60.0,
+   "gt_max": 55.0,
+   "scale_check": null,
+   "off": {
+    "correct": 336,
+    "matches": 441,
+    "prec": 0.7813953488372093,
+    "crossings": 11,
+    "pairs": 834
+   },
+   "k0.1": {
+    "correct": 336,
+    "matches": 441,
+    "prec": 0.7813953488372093,
+    "crossings": 8
+   },
+   "k0.3": {
+    "correct": 335,
+    "matches": 441,
+    "prec": 0.7790697674418605,
+    "crossings": 6
+   },
+   "k0.8": {
+    "correct": 335,
+    "matches": 441,
+    "prec": 0.7790697674418605,
+    "crossings": 6
+   }
+  },
+  {
+   "scene": "Art",
+   "H": 370,
+   "W": 463,
+   "m": 686,
+   "n": 731,
+   "E": 1278,
+   "dmax": 80.0,
+   "gt_max": 74.66666412353516,
+   "scale_check": [
+    0.0,
+    0.8466097568892207
+   ],
+   "off": {
+    "correct": 138,
+    "matches": 282,
+    "prec": 0.48936170212765956,
+    "crossings": 20,
+    "pairs": 390
+   },
+   "k0.1": {
+    "correct": 138,
+    "matches": 282,
+    "prec": 0.48936170212765956,
+    "crossings": 20
+   },
+   "k0.3": {
+    "correct": 138,
+    "matches": 282,
+    "prec": 0.48936170212765956,
+    "crossings": 17
+   },
+   "k0.8": {
+    "correct": 138,
+    "matches": 282,
+    "prec": 0.48936170212765956,
+    "crossings": 16
+   }
+  },
+  {
+   "scene": "Books",
+   "H": 370,
+   "W": 463,
+   "m": 707,
+   "n": 724,
+   "E": 2032,
+   "dmax": 80.0,
+   "gt_max": 73.66666412353516,
+   "scale_check": [
+    0.0,
+    0.972160377906414
+   ],
+   "off": {
+    "correct": 293,
+    "matches": 416,
+    "prec": 0.7043269230769231,
+    "crossings": 50,
+    "pairs": 1077
+   },
+   "k0.1": {
+    "correct": 300,
+    "matches": 414,
+    "prec": 0.7246376811594203,
+    "crossings": 30
+   },
+   "k0.3": {
+    "correct": 300,
+    "matches": 414,
+    "prec": 0.7246376811594203,
+    "crossings": 30
+   },
+   "k0.8": {
+    "correct": 300,
+    "matches": 414,
+    "prec": 0.7246376811594203,
+    "crossings": 30
+   }
+  },
+  {
+   "scene": "Dolls",
+   "H": 370,
+   "W": 463,
+   "m": 772,
+   "n": 783,
+   "E": 1665,
+   "dmax": 80.0,
+   "gt_max": 73.66666412353516,
+   "scale_check": [
+    0.0,
+    0.9443827551033583
+   ],
+   "off": {
+    "correct": 286,
+    "matches": 419,
+    "prec": 0.689156626506024,
+    "crossings": 21,
+    "pairs": 838
+   },
+   "k0.1": {
+    "correct": 287,
+    "matches": 419,
+    "prec": 0.691566265060241,
+    "crossings": 15
+   },
+   "k0.3": {
+    "correct": 289,
+    "matches": 418,
+    "prec": 0.6980676328502415,
+    "crossings": 10
+   },
+   "k0.8": {
+    "correct": 289,
+    "matches": 418,
+    "prec": 0.6980676328502415,
+    "crossings": 10
+   }
+  },
+  {
+   "scene": "Laundry",
+   "H": 370,
+   "W": 447,
+   "m": 628,
+   "n": 669,
+   "E": 2296,
+   "dmax": 80.0,
+   "gt_max": 77.33333587646484,
+   "scale_check": [
+    0.0,
+    0.9093281714114074
+   ],
+   "off": {
+    "correct": 114,
+    "matches": 380,
+    "prec": 0.3007915567282322,
+    "crossings": 132,
+    "pairs": 1421
+   },
+   "k0.1": {
+    "correct": 114,
+    "matches": 379,
+    "prec": 0.30158730158730157,
+    "crossings": 93
+   },
+   "k0.3": {
+    "correct": 115,
+    "matches": 378,
+    "prec": 0.3050397877984085,
+    "crossings": 74
+   },
+   "k0.8": {
+    "correct": 114,
+    "matches": 378,
+    "prec": 0.30238726790450926,
+    "crossings": 73
+   }
+  },
+  {
+   "scene": "Moebius",
+   "H": 370,
+   "W": 463,
+   "m": 730,
+   "n": 713,
+   "E": 1851,
+   "dmax": 80.0,
+   "gt_max": 72.66666412353516,
+   "scale_check": [
+    0.0,
+    0.9419933125763204
+   ],
+   "off": {
+    "correct": 251,
+    "matches": 373,
+    "prec": 0.6802168021680217,
+    "crossings": 42,
+    "pairs": 852
+   },
+   "k0.1": {
+    "correct": 254,
+    "matches": 373,
+    "prec": 0.6883468834688347,
+    "crossings": 35
+   },
+   "k0.3": {
+    "correct": 254,
+    "matches": 372,
+    "prec": 0.6902173913043478,
+    "crossings": 36
+   },
+   "k0.8": {
+    "correct": 256,
+    "matches": 372,
+    "prec": 0.6956521739130435,
+    "crossings": 33
+   }
+  },
+  {
+   "scene": "Reindeer",
+   "H": 370,
+   "W": 447,
+   "m": 586,
+   "n": 555,
+   "E": 1477,
+   "dmax": 80.0,
+   "gt_max": 67.0,
+   "scale_check": [
+    0.0,
+    0.8973139673696777
+   ],
+   "off": {
+    "correct": 167,
+    "matches": 283,
+    "prec": 0.5921985815602837,
+    "crossings": 38,
+    "pairs": 513
+   },
+   "k0.1": {
+    "correct": 168,
+    "matches": 284,
+    "prec": 0.5936395759717314,
+    "crossings": 28
+   },
+   "k0.3": {
+    "correct": 169,
+    "matches": 283,
+    "prec": 0.599290780141844,
+    "crossings": 22
+   },
+   "k0.8": {
+    "correct": 169,
+    "matches": 282,
+    "prec": 0.6014234875444839,
+    "crossings": 20
+   }
+  }
+ ],
+ "agg": {
+  "k0.1": {
+   "d_correct_mean": 1.875,
+   "d_correct_sd": 2.2603926650031405,
+   "d_cross_mean": -12.375,
+   "d_cross_sd": 11.650509645504783,
+   "rel_cross_mean": 0.7497621896009408,
+   "n_better": 5,
+   "n_worse": 0
+  },
+  "k0.3": {
+   "d_correct_mean": 2.125,
+   "d_correct_sd": 2.2603926650031405,
+   "d_cross_mean": -16.75,
+   "d_cross_sd": 16.551057368035433,
+   "rel_cross_mean": 0.6409290271493572,
+   "n_better": 6,
+   "n_worse": 1
+  },
+  "k0.8": {
+   "d_correct_mean": 2.25,
+   "d_correct_sd": 2.537222891273055,
+   "d_cross_mean": -17.625,
+   "d_cross_sd": 16.537363000188392,
+   "rel_cross_mean": 0.6182245386553951,
+   "n_better": 5,
+   "n_worse": 1
+  }
+ }
+}

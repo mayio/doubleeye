@@ -191,6 +191,20 @@ maps on this website", so the images and the derived figures are safe to publish
 cite Scharstein & Szeliski, CVPR 2003. Images download on first run into `data/`,
 which is gitignored rather than vendored.
 
+`ordering_real.py` runs the ordering factor over eight real scenes: the two 2003
+pairs plus the six Middlebury 2005 third-size scenes (Art, Books, Dolls, Laundry,
+Moebius, Reindeer). `regen_all.py` calls it, so one command still covers everything.
+
+The 2005 two-view archives ship no documented disparity scale. It is established, not
+assumed, by cross-view consistency: for a pixel at x in view1 with true disparity t,
+disp5 at (y, x - t) must also read t. That holds to a median of 0.000 px at scale 3
+and fails at 1, 2, 4 and 6. `verify_scale()` re-checks it per scene and the result is
+printed in the run log. The check involves no matcher, so it cannot flatter results.
+
+Search range for the 2005 set is a fixed 80 px, chosen to cover the whole set, rather
+than being derived per scene from the ground-truth maximum -- that would leak the
+answer into the search range.
+
 Two caveats recorded in the script:
 
 - `vision.middlebury.edu` serves an incomplete certificate chain (it omits its

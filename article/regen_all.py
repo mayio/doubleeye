@@ -20,6 +20,7 @@ import numpy as np
 
 import masda_stereo as ms
 import masda_middlebury as mb
+import ordering_real
 
 LAM = GAM = -0.1
 ORDER_SEEDS = [20251126, 1, 2, 3, 4]      # offsets applied to BASE_SEED
@@ -224,6 +225,10 @@ def main():
     if not quick:
         timing(regimes)
     ordering_sweep()
+    print("\n" + "=" * 78)
+    print("ORDERING ON REAL DATA: eight Middlebury scenes")
+    print("=" * 78)
+    ordering_real.main()          # writes ordering_real.json
     reals = real_results()
     figures(regimes, reals)
     OUT.pop("_regimes", None)
