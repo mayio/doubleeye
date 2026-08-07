@@ -94,8 +94,36 @@ p99 jitter of 0.04 px is over an order of magnitude inside budget. Only a single
 worst-case outlier approaches the budget. This is the measurement that decided
 against patching uvcvideo — see [03-obstacles.md](03-obstacles.md), obstacle 7.
 
-**These are idle-machine figures** and must be re-measured with the full
-pipeline running and the vehicle driving before being relied on.
+### Under full CPU load
+
+Re-measured with all 6 cores saturated by busy loops plus a `dd` memory-traffic
+generator, 90 s at 848×480@30, `--save-every 0`. Load average reached **5.69**.
+
+| | idle (120 s) | **full load (90 s)** |
+|---|---|---|
+| delivered rate | 29.95 fps | **29.90 fps** |
+| shortfall | 0.16% | 0.35% |
+| jitter std | 0.062 ms → 0.05 px | **0.018 ms → 0.01 px** |
+| jitter p99 | 0.050 ms → 0.04 px | **0.052 ms → 0.04 px** |
+| jitter max | 3.574 ms → 2.69 px | **0.542 ms → 0.41 px** |
+| fitted period | +568 ppm | +564 ppm |
+| interval p1 / p99 | 33.301 / 33.407 ms | 33.302 / 33.402 ms |
+
+**Jitter does not degrade under full CPU load.** p99 is identical at 0.04 px, and
+the delivered rate holds. This closes the load caveat: the timing budget that
+justified skipping the uvcvideo patch survives a saturated machine.
+
+Two honest qualifications:
+
+- The **3.574 ms maximum** in the idle run did not reproduce. Across roughly 9000
+  frames over three recordings it was seen once. It is not explained by disk
+  writes in the callback (the emitter-off run also wrote every 30th frame and
+  peaked at 0.111 ms) nor by load. Treat it as a rare one-off of unknown cause
+  rather than a characterised worst case — a single sample is not a bound.
+- This is **CPU and memory load, not the real workload.** It does not include
+  vibration, the emitter alternating, or a real matcher competing for memory
+  bandwidth, which the plan identifies as the actual bottleneck on this board.
+  Worth re-checking once the pipeline exists.
 
 ## Image statistics and the projector A/B
 

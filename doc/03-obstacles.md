@@ -235,8 +235,12 @@ does not decompose into camera crystal versus host clock without an external
 reference, but the combined figure is what is actually needed to predict when
 the next frame lands in host time.
 
-**Caveat.** Those are idle-machine figures. Arrival jitter is load-dependent and
-must be re-measured with the full pipeline running and the vehicle driving.
+**Load caveat now tested.** Re-measured with all 6 cores saturated and memory
+traffic running (load average 5.69): delivered rate held at 29.90 fps and p99
+jitter was **identical at 0.04 px**. Arrival jitter turns out not to be
+load-sensitive on this board, so the conclusion above survives a busy machine.
+Still untested against vibration and against a real matcher competing for memory
+bandwidth — see [04-baseline-measurements.md](04-baseline-measurements.md).
 
 **If the patch is ever wanted**, the prerequisites are half-present: kernel
 headers for 4.9.140-tegra are installed and `/lib/modules/4.9.140-tegra/build`
