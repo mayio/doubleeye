@@ -35,7 +35,7 @@ endif()
 
 find_package(Threads REQUIRED)
 
-foreach(tool rs_probe rs_ir_capture)
+foreach(tool rs_probe rs_ir_capture rs_ir_stream)
   add_executable(${tool} src/${tool}.cpp)
   target_include_directories(${tool} PRIVATE src)
   target_link_libraries(${tool} PRIVATE realsense2::realsense2 Threads::Threads)

@@ -202,7 +202,72 @@ accept fewer corners).
 The camera half of bring-up step 3 needs **no IMU**, so it is unblocked as soon
 as a board is printed.
 
-### First: verify the board is detectable at all
+### Use the live view — do not work blind
+
+You cannot aim a target at a camera you cannot see, and "were the poses varied
+enough?" is unanswerable while holding a board. So the whole session runs off a
+live view:
+
+```sh
+.venv/bin/python desktop/live_view.py --collect calib01
+```
+
+That pipes `rs_ir_stream` from the Jetson over ssh (measured ~22 MB/s, so full
+848×480 on both channels at 10 Hz is comfortable) and shows both channels with
+corner detection overlaid, plus:
+
+- a **big status line** — GOOD (both channels), ONE CHANNEL ONLY (board clipped in
+  the other), or NOT DETECTED
+- a **coverage grid** that fills in as you cover image regions
+- a **"still needed"** line naming what is missing: regions, distances, or tilted
+  views
+- **`--collect NAME`**, which auto-saves each genuinely *new* pose into
+  `bags/NAME`, rejecting near-duplicates. Fifty frames of the same pose constrain
+  calibration no better than one, and they make the set look adequate when it is
+  not.
+
+Because `--collect` writes a bag-shaped directory, the existing tools work on it
+directly and there is no separate blind recording step.
+
+Keys: `q` quit, `r` reset coverage, `s` save a pair as PNG, `space` pause.
+
+### How to hold and move the board
+
+**Mounting.** Glue the A4 to something rigid and flat — foam board, MDF, a
+clipboard, glass. **Never use bare paper.** A curl of a couple of millimetres is
+a large systematic error and is completely invisible in the result. Hold it by
+the edges or from behind so fingers do not cover squares.
+
+**Distance.** Fill as much of the frame as you can while keeping the *whole* board
+inside **both** views. The right camera sees a shifted view, so a board near the
+left edge of ir1 can be clipped in ir2 — the status line tells you when that
+happens. With A4 that means roughly 0.4–0.5 m for a good fill. Then deliberately
+vary it: the "poses per distance band" readout shows near/mid/far coverage.
+
+**Angle — this is the one people get wrong.** Do not hold it flat facing the
+camera. Fronto-parallel views leave focal length and distortion poorly
+constrained, because scale and distance trade off against each other almost
+exactly. Tilt it **20–40°**:
+
+- rotate about the vertical axis, like opening a door
+- tip the top toward and away from you
+- spin it in its own plane as well
+
+The "tilted views" counter only advances on genuinely tilted poses, so if it is
+stuck you are holding it too flat.
+
+**Position.** Work it into all regions of the image, corners included. Corners
+carry most of the distortion information and are the easiest to neglect.
+
+**Motion.** Move, then **stop and hold still for about a second** at each pose.
+Corner localisation degrades on a moving board even though 1500 µs is too short
+for visible blur. Watch for the status to settle before moving on.
+
+**How many.** 20–40 well-varied poses. Stop when "still needed" reads *nothing*.
+
+### Alternative: verify first without collecting
+
+If you only want to check the print is usable, ten seconds is enough.
 
 Do this before a full session. It costs ten seconds and catches the failure modes
 that would otherwise waste the whole sitting — above all IR-transparent ink.
@@ -223,31 +288,17 @@ pair where only one channel found the board contributes nothing to stereo
 extrinsics. It also reports image coverage and pose spread, and orders its failure
 hints by likelihood.
 
-### Then: the real session
+### Then check the collected set
 
 ```sh
-./tools/deploy.sh --capture calib01 --seconds 90 --save-every 3 --emitter off --gain 96
-```
-
-While it records, move the board through **varied poses**, not merely varied
-frames. Aim for 20–40 usable pairs covering:
-
-- a range of distances, from as close as focus allows out to roughly 1.5 m
-- tilts of roughly ±30° about both axes — purely fronto-parallel views leave focal
-  length and distortion poorly constrained
-- all parts of the image including the corners, not just the centre
-- the board fully inside **both** frames. The right camera sees a shifted view, so
-  a board near the left edge of ir1 can be clipped in ir2.
-
-Move slowly. At 1500 µs blur is not the issue, but a board moving during a frame
-still degrades corner localisation.
-
-Then check before calibrating:
-
-```sh
-./tools/deploy.sh --pull calib01
 .venv/bin/python desktop/check_checkerboard.py bags/calib01
 ```
+
+Confirms detection in both channels, coverage and pose spread over the whole set.
+
+A blind recording still works if you prefer it — `./tools/deploy.sh --capture
+calib01 --seconds 90 --save-every 3 --emitter off --gain 96` — but there is no
+reason to when the live view collects the same data with feedback.
 
 ### Then Kalibr
 
