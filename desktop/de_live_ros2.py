@@ -74,6 +74,39 @@ def colour_for(m: float) -> int:
     return (60 << 16) | (170 << 8) | 75
 
 
+# A short perceptually-increasing ramp. Not turbo, but monotone in lightness and
+# enough to read depth off, which grayscale with NaN holes is not.
+_RAMP = np.array([
+    (48, 18, 59), (70, 90, 200), (35, 170, 200), (60, 200, 120),
+    (180, 215, 60), (250, 190, 50), (240, 110, 40), (160, 25, 20),
+], dtype=np.float32)
+
+
+def colourise(v: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Map v in [lo, hi] to RGB. NaN and out-of-range become dark grey."""
+    bad = ~np.isfinite(v)
+    # Sanitise BEFORE indexing, not after. NaN survives np.clip, and
+    # np.floor(nan).astype(int) is INT_MIN, which indexes out of bounds -- the
+    # guard below cannot run because the lookup has already raised.
+    t = np.clip((np.where(bad, lo, v) - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+    idx = t * (len(_RAMP) - 1)
+    i0 = np.floor(idx).astype(int)
+    i1 = np.minimum(i0 + 1, len(_RAMP) - 1)
+    f = (idx - i0)[..., None]
+    out = _RAMP[i0] * (1 - f) + _RAMP[i1] * f
+    out[bad] = (40, 40, 40)
+    return out.astype(np.uint8)
+
+
+def stretch(img: np.ndarray) -> np.ndarray:
+    """Linear p1-p99 contrast stretch, for display only."""
+    lo, hi = np.percentile(img, (1.0, 99.0))
+    if hi - lo < 1e-6:
+        return img
+    return np.clip((img.astype(np.float32) - lo) * (255.0 / (hi - lo)),
+                   0, 255).astype(np.uint8)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="jetson")
@@ -94,6 +127,10 @@ def main() -> int:
                          "both limits: a quarter come out nearer than 0.19 m")
     ap.add_argument("--max-range", type=float, default=6.0,
                     help="farthest depth to search, metres (default 6.0)")
+    ap.add_argument("--no-stretch", action="store_true",
+                    help="publish the IR image raw. By default it is contrast "
+                         "stretched p1-p99 for display, because 1500 us of IR "
+                         "exposure is dark and rviz does not auto-scale mono8")
     ap.add_argument("--best-effort", action="store_true",
                     help="publish BEST_EFFORT instead of RELIABLE. Only for a "
                          "lossy link, and rviz displays then need their "
@@ -178,6 +215,12 @@ def main() -> int:
     pub_dep = node.create_publisher(Image, "/doubleeye/depth", qos)
     pub_pc = node.create_publisher(PointCloud2, "/doubleeye/points", qos)
     pub_ci = node.create_publisher(CameraInfo, "/doubleeye/camera_info", qos)
+    # Two derived views, because the raw ones are hard to read. /image_matches
+    # shows what the matcher actually did, which is the thing worth looking at;
+    # /depth_color makes a 1.3%-coverage depth map legible where a 32FC1 image
+    # full of NaN is not.
+    pub_ovl = node.create_publisher(Image, "/doubleeye/image_matches", qos)
+    pub_dcol = node.create_publisher(Image, "/doubleeye/depth_color", qos)
 
     tf_bc = StaticTransformBroadcaster(node)
     now = node.get_clock().now().to_msg()
@@ -234,13 +277,15 @@ def main() -> int:
             n_drop = int((~ok).sum())
             xl, yl, disp, margin = xl[ok], yl[ok], disp[ok], margin[ok]
 
+            gray = np.frombuffer(img_bytes, dtype=np.uint8).reshape(H, W)
+            shown = gray if a.no_stretch else stretch(gray)
             m = Image()
             m.header.stamp = stamp
             m.header.frame_id = FRAME
             m.height, m.width = H, W
             m.encoding = "mono8"
             m.step = W
-            m.data = img_bytes
+            m.data = shown.tobytes()
             pub_img.publish(m)
 
             z = FB / disp
@@ -278,6 +323,52 @@ def main() -> int:
             pc.data = arr.tobytes()
             pub_pc.publish(pc)
 
+            # Matches drawn on the image: a 3x3 dot per match, coloured the same
+            # way as the cloud. This is the view that makes the output legible --
+            # you can see at a glance whether the matcher is covering the scene or
+            # clustering on one texture, which neither the raw IR nor a sparse
+            # depth map shows.
+            ovl = np.repeat(shown[:, :, None], 3, axis=2)
+            if len(z):
+                cols = np.array([[(c >> 16) & 255, (c >> 8) & 255, c & 255]
+                                 for c in rgb], dtype=np.uint8)
+                for u, v, col in zip(ui, vi, cols):
+                    ovl[max(0, v - 1):v + 2, max(0, u - 1):u + 2] = col
+            om = Image()
+            om.header.stamp = stamp
+            om.header.frame_id = FRAME
+            om.height, om.width = H, W
+            om.encoding = "rgb8"
+            om.step = 3 * W
+            om.data = ovl.tobytes()
+            pub_ovl.publish(om)
+
+            # Colourised depth. rviz renders 32FC1 as grayscale normalised over
+            # the frame, which with ~1% coverage and NaN everywhere else is close
+            # to unreadable.
+            #
+            # Scaled to the data, not to the gate. Scaling to the gate put a room
+            # whose content sits in 0.4-2 m into the first quarter of the ramp, so
+            # everything came out the same colour -- technically correct and
+            # useless. p5-p95 of the points actually present, with a floor on the
+            # span so a flat wall does not get amplified into false structure.
+            if len(z):
+                d_lo, d_hi = np.percentile(z, (5.0, 95.0))
+                if d_hi - d_lo < 0.25:
+                    mid = 0.5 * (d_lo + d_hi)
+                    d_lo, d_hi = mid - 0.125, mid + 0.125
+            else:
+                d_lo, d_hi = a.min_range, a.max_range
+            dc = colourise(depth, float(d_lo), float(d_hi))
+            dm = Image()
+            dm.header.stamp = stamp
+            dm.header.frame_id = FRAME
+            dm.height, dm.width = H, W
+            dm.encoding = "rgb8"
+            dm.step = 3 * W
+            dm.data = dc.tobytes()
+            pub_dcol.publish(dm)
+
             ci = CameraInfo()
             ci.header.stamp = stamp
             ci.header.frame_id = FRAME
@@ -293,8 +384,9 @@ def main() -> int:
             if n_pub % 15 == 0:
                 weak = float((margin < 0.2).mean()) if len(margin) else 0.0
                 print(f"\rframe {num}  {len(z)} points  "
-                      f"margin<0.2 {100*weak:.0f}%  out-of-range dropped "
-                      f"{n_drop}  published {n_pub}/{n_seen}",
+                      f"margin<0.2 {100*weak:.0f}%  Z {d_lo:.2f}-{d_hi:.2f} m "
+                      f"(colour range)  dropped {n_drop}  "
+                      f"published {n_pub}/{n_seen}",
                       end="", flush=True)
             rclpy.spin_once(node, timeout_sec=0.0)
     except KeyboardInterrupt:

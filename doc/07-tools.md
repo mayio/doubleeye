@@ -487,3 +487,39 @@ Back-pressure is not a concern: a slow consumer slows the publish loop, which sl
 the ssh read, which drops frames at the camera. That is the intended behaviour
 rather than an unbounded queue. `--best-effort` exists for a genuinely lossy link,
 and then rviz's dropdowns have to be changed to match.
+
+### Making the rviz views readable
+
+The raw topics are faithful and hard to look at. Two derived topics exist because
+of that, and they are the ones to display:
+
+| topic | what it is |
+|---|---|
+| `/doubleeye/image_matches` | **the view to use.** IR image, contrast stretched, with a dot per match coloured by margin. Shows at a glance whether the matcher is covering the scene or clustering on one texture |
+| `/doubleeye/depth_color` | sparse depth, colourised, auto-scaled to the data |
+| `/doubleeye/image_raw` | contrast stretched IR (use `--no-stretch` for the true pixels) |
+| `/doubleeye/depth` | 32FC1 metres, NaN where absent. Correct, and nearly unreadable |
+| `/doubleeye/points` | the cloud. Set Color Transformer to `margin` |
+
+Three findings from actually looking at the output rather than assuming it was fine:
+
+**The IR image is very dark.** At the default 1500 us exposure, a dim room gives
+p1/p50/p99 of 16/21/79 out of 255 — the median pixel is at 8% brightness. rviz does
+not auto-scale mono8, so it renders almost black. Hence the p1-p99 contrast stretch
+by default, and `--exposure-us 8000` is worth trying: the stretch rescues legibility
+but cannot add photons, and more light means better Census descriptors too.
+
+**Colourise against the data, not the gate.** The first version scaled the depth
+colours over the whole 0.4-6.0 m search range, but the room's content sits in
+0.46-2.08 m, so everything landed in the first quarter of the ramp and came out one
+colour. Technically correct, useless. It now uses p5-p95 of the points actually
+present, with a floor on the span so a flat wall is not amplified into false
+structure, and prints the range it chose.
+
+**Sparse depth as isolated dots is inherently hard to read**, however it is
+coloured, because ~1% of pixels carry a value. `--dilate 5` helps. The match overlay
+is the better view, and the point cloud is the better view still: in 3D the sparse
+samples form surfaces that the same samples cannot suggest in 2D.
+
+For a cleaner cloud, raise `--min-margin` (0.10 default; 0.3 keeps far fewer and
+much better points) and set `--min-range`/`--max-range` to the room you are in.
