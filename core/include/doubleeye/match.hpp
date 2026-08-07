@@ -81,6 +81,41 @@ DisparityPrior build_disparity_prior(const std::vector<Match>& coarse,
                                      int cell = 64, int min_count = 3,
                                      float sigma_floor = 2.0f);
 
+// A per-keypoint disparity expectation fitted from the disparities of nearby
+// MATCHED keypoints. The plan's "cheap version" of the smoothness factor: match,
+// fit a robust disparity surface over a neighbourhood graph, re-score s(i,j)
+// against it, re-match. Two or three passes. It stays inside the existing
+// closed-form beta/rho updates, so no new messages need deriving, and it reveals
+// whether the full derivation is worth the effort.
+//
+// This differs from the coarse disparity prior in the one way that matters: the
+// prediction comes from full-resolution matches of neighbouring keypoints, not
+// from a downsampled image. Coarse-to-fine failed here because its prediction was
+// less accurate than the thing it was constraining (see doc/09-matching.md).
+//
+// It also adds information rather than just removing candidates. Neighbouring
+// keypoints having similar disparity is a fact nothing else in the pipeline uses,
+// and the plan calls it the largest piece of currently-ignored information.
+struct SmoothPrior {
+  std::vector<float> disparity;   // per LEFT keypoint index
+  std::vector<float> sigma;
+  std::vector<uint8_t> valid;
+};
+
+// Robust local plane fit d = a*x + b*y + c over each keypoint's nearest matched
+// neighbours, by iteratively reweighted least squares with Tukey weights so a
+// depth discontinuity in the neighbourhood does not drag the fit across it.
+//
+// Deliberately NOT using Eigen, though it is available on both machines: this is a
+// 3x3 symmetric system solved in closed form, and core/ staying dependency-free is
+// the plan's portability rule. Eigen is the right tool for the full smoothness
+// factor derivation, not for a 3x3 solve.
+SmoothPrior fit_smooth_prior(const std::vector<Match>& matches,
+                             const std::vector<Keypoint>& left,
+                             int k_neighbours = 10,
+                             float sigma_floor = 0.75f,
+                             int irls_iterations = 3);
+
 struct MatchConfig {
   // --- candidate generation ---
   // The pair is rectified (verified: zero distortion, identity rotation), so a
@@ -105,6 +140,10 @@ struct MatchConfig {
   const DisparityPrior* prior = nullptr;
   float w_prior = 1.0f;           // weight on the (d - d_pred)/sigma penalty
 
+  // Per-keypoint smoothness prior from a previous pass. Null on pass 1.
+  const SmoothPrior* smooth = nullptr;
+  float w_smooth = 1.0f;
+
   int iterations = 20;
   float damping = 0.4f;           // plan expects 0.3-0.5 for stereo
   float gamma = 0.0f;             // misdetection: score of leaving a left kp unmatched
@@ -124,8 +163,35 @@ struct MatchStats {
 
 // s(i,j) for one candidate pair. Exposed so tests and tools can reason about the
 // scale that gamma and lambda are compared against.
+// left_index is needed only for the per-keypoint smoothness prior; -1 disables it.
 float pair_score(const Keypoint& l, const Keypoint& r, uint64_t dl, uint64_t dr,
-                 int census_bits, const MatchConfig& cfg);
+                 int census_bits, const MatchConfig& cfg, int left_index = -1);
+
+// The plan's cheap two-pass experiment. Runs MASDA, fits a smoothness prior,
+// re-scores and re-matches, for `passes` total passes.
+//
+// base_objective is scored WITHOUT the smoothness term, which is the only honest
+// way to compare passes: adding a term to the objective and then reporting that
+// the objective rose measures nothing. Likewise a smoothness prior makes
+// disparities smoother by construction, so smoothness is not evidence of
+// correctness -- median |dy| is, being independent of disparity entirely.
+struct SmoothResult {
+  std::vector<Match> matches;              // after the final pass
+  std::vector<Match> first_pass;
+  std::vector<float> base_objective;       // per pass, descriptor + y only
+  std::vector<int> counts;                 // matches per pass
+  std::vector<float> median_abs_dy;        // per pass
+  std::vector<int> changed;                // matches differing from the pass before
+  std::vector<float> prior_coverage;       // fraction of left keypoints predicted
+};
+
+SmoothResult match_iterated_smoothness(const std::vector<Keypoint>& left,
+                                      const std::vector<uint64_t>& desc_left,
+                                      const std::vector<Keypoint>& right,
+                                      const std::vector<uint64_t>& desc_right,
+                                      const MatchConfig& cfg,
+                                      int passes = 3,
+                                      int k_neighbours = 10);
 
 // MASDA. Descriptors must be parallel to their keypoint vectors.
 std::vector<Match> match_masda(const std::vector<Keypoint>& left,

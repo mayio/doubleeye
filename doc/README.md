@@ -83,6 +83,8 @@ across them is the same: **on this platform the expensive failures are silent.**
 | The messages **never formally converge** yet the decision is stable from 20 iterations; oscillation is real but currently benign | [09](09-matching.md) |
 | Belief **sign is not a match/no-match decision** — gating on it returned zero matches on tied problems whose optimum matched everything | [09](09-matching.md) |
 | **Coarse-to-fine does not help here**: k is already 2.7 not 100–200, and inflating it 5× leaves the answer *identical*, so there are no false candidates to remove | [09](09-matching.md) |
+| **The cheap smoothness experiment also does not help** — monotonically worse at every weight, best `w_smooth` is 0. A prior fitted from the current matches is close to self-confirming | [09](09-matching.md) |
+| **Neither negative result is conclusive**, because match count and median \|dy\| cannot distinguish removing wrong matches from removing right ones. **Step 4's rangefinder gates matcher development**, not just driving | [09](09-matching.md) |
 | Preprocessing was **299% of the 30 Hz budget on the TX2**; FAST candidates plus concurrent L/R brought it to **78.8%**, keeping 96% of keypoints | [06](06-preprocessing.md) |
 | Below ~5 DN the FAST **sparse path becomes slower than the dense scan** it replaces — sparsification has a crossover | [06](06-preprocessing.md) |
 | Concurrency returned **1.54× not 2×** on a 6-core board, corroborating memory bandwidth as the real constraint | [06](06-preprocessing.md) |

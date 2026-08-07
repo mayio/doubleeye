@@ -116,6 +116,8 @@ int main(int argc, char** argv) {
   float nn_ratio = 0.85f;
   int scale = 0;          // 0 = single level; else coarse-to-fine factor
   int prior_cell = 64;
+  int smooth_passes = 0;  // 0/1 = off
+  int knn = 10;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has = i + 1 < argc;
@@ -132,6 +134,9 @@ int main(int argc, char** argv) {
     else if (a == "--coarse-to-fine" && has) scale = std::atoi(argv[++i]);
     else if (a == "--w-prior" && has) cfg.w_prior = float(std::atof(argv[++i]));
     else if (a == "--prior-cell" && has) prior_cell = std::atoi(argv[++i]);
+    else if (a == "--smooth-passes" && has) smooth_passes = std::atoi(argv[++i]);
+    else if (a == "--w-smooth" && has) cfg.w_smooth = float(std::atof(argv[++i]));
+    else if (a == "--knn" && has) knn = std::atoi(argv[++i]);
     else { std::fprintf(stderr, "unknown argument '%s'\n", a.c_str()); return 2; }
   }
 
@@ -165,6 +170,8 @@ int main(int argc, char** argv) {
   Agg masda, nn, c2f;
   std::vector<double> cand, iters, conv, osc, left_counts;
   std::vector<double> c2f_cand, c2f_cov, c2f_ms, c2f_iters, c2f_osc;
+  std::vector<std::vector<float>> sm_obj, sm_dy, sm_cov;
+  std::vector<std::vector<int>> sm_cnt, sm_chg;
   size_t done = 0;
   for (const std::string& num : nums) {
     if (limit && done >= size_t(limit)) break;
@@ -192,6 +199,18 @@ int main(int argc, char** argv) {
       c2f_ms.push_back(r.coarse_ms);
       c2f_iters.push_back(double(r.fine_stats.iterations_run));
       c2f_osc.push_back(double(r.fine_stats.oscillating));
+    }
+
+    if (smooth_passes > 1) {
+      const double ts = now_ms();
+      SmoothResult r = match_iterated_smoothness(kl, dl, kr, dr, cfg,
+                                                 smooth_passes, knn);
+      sm_obj.push_back(r.base_objective);
+      sm_dy.push_back(r.median_abs_dy);
+      sm_cov.push_back(r.prior_coverage);
+      sm_cnt.push_back(r.counts);
+      sm_chg.push_back(r.changed);
+      (void)ts;
     }
 
     MatchStats st;
@@ -243,6 +262,27 @@ int main(int argc, char** argv) {
   std::printf("results, averaged over %zu pairs\n", done);
   masda.report("MASDA");
   nn.report("mutual-NN");
+  if (!sm_obj.empty()) {
+    const size_t np = sm_obj[0].size();
+    std::printf("\n  iterated smoothness, %zu passes, k=%d neighbours\n",
+                np, knn);
+    std::printf("    %-6s %-9s %-16s %-11s %-9s %s\n", "pass", "matches",
+                "base objective", "median|dy|", "changed", "prior cov");
+    for (size_t q = 0; q < np; ++q) {
+      double o = 0, c = 0, d = 0, ch = 0, cv = 0;
+      for (size_t f = 0; f < sm_obj.size(); ++f) {
+        if (q >= sm_obj[f].size()) continue;
+        o += sm_obj[f][q]; c += sm_cnt[f][q]; d += sm_dy[f][q];
+        ch += sm_chg[f][q]; cv += sm_cov[f][q];
+      }
+      const double n = double(sm_obj.size());
+      std::printf("    %-6zu %-9.1f %-16.2f %-11.3f %-9.1f %.0f%%\n",
+                  q + 1, c / n, o / n, d / n, ch / n, 100.0 * cv / n);
+    }
+    std::printf("    (base objective excludes the smoothness term, so passes are\n"
+                "     comparable; median |dy| is the independent check, being\n"
+                "     independent of disparity entirely)\n");
+  }
   if (!c2f.count.empty()) {
     c2f.report("MASDA c2f");
     double cc = 0, cv = 0, cms = 0, ci = 0, co = 0;

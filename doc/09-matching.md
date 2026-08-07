@@ -180,6 +180,74 @@ Kept in the code, off by default, because the premise could return:
 This is the plan's own instruction followed: measure before deriving. The measurement
 says don't.
 
+## The cheap smoothness experiment: also does not help
+
+The plan's instruction was to run plain MASDA, fit a robust disparity surface over
+a neighbourhood graph, re-score `s(i,j)` against it, re-match, two or three passes
+— because that captures most of the smoothness benefit inside the existing
+closed-form updates and "reveals whether the full derivation is worth it".
+
+Implemented: a robust local plane fit `d = ax + by + c` per keypoint over its 10
+nearest matched neighbours, by IRLS with Tukey weights so a depth discontinuity in
+the neighbourhood drops out rather than dragging the plane between two surfaces.
+(A k-nearest-neighbour graph rather than the Delaunay triangulation the plan names
+— a proxy, and worth revisiting if this line is ever resumed.)
+
+**Iterating makes it monotonically worse.** With `w_smooth = 1`:
+
+| pass | matches | base objective | median \|dy\| | prior coverage |
+|---|---|---|---|---|
+| 1 | **615.2** | **410.85** | 0.364 | — |
+| 2 | 402.5 | 284.75 | 0.355 | 100% |
+| 3 | 297.0 | 210.72 | 0.363 | 100% |
+| 4 | 233.2 | 161.47 | 0.375 | 100% |
+
+And it is not a weight-tuning problem. Sweeping `w_smooth` down two decades, pass 3
+against the 615.2 / 410.85 / 0.364 baseline:
+
+| `w_smooth` | matches | base objective | median \|dy\| |
+|---|---|---|---|
+| 0.02 | 602.8 | 403.73 | 0.368 |
+| 0.05 | 594.5 | 398.58 | 0.373 |
+| 0.10 | 569.0 | 385.50 | 0.372 |
+| 0.25 | 506.5 | 344.55 | 0.382 |
+
+Monotonic in every column, with no optimum at any positive weight. **The best value
+of `w_smooth` is 0.**
+
+Note the objective is scored *without* the smoothness term, which is the only
+honest comparison — adding a term to an objective and then reporting the objective
+rose would measure nothing.
+
+### Why, probably
+
+The most likely reason is the same one that sank coarse-to-fine, and it is
+structural rather than a tuning failure: **the prior is fitted from the very
+matches it then judges.** Where the matches are already right it can only pull them
+off; where they are wrong the fit is wrong in the same way, so it reinforces the
+error instead of correcting it. A smoothness prior derived from the current
+solution is close to self-confirming.
+
+## The limitation both experiments expose
+
+**Neither result is conclusive in the way that matters, because there is no ground
+truth.** The available measures are match count, objective, and median |dy|, and
+none of them can distinguish "removed 100 wrong matches" from "removed 100 right
+ones". Median |dy| barely moved across every configuration tried, so it is not
+sensitive enough to arbitrate.
+
+So the honest reading is narrower than "smoothness does not help": *at this
+operating point, on this one static scene, with no way to check correctness, both
+priors reduce match count and neither improves the only independent quality metric
+available.* That is a reason to stop adding priors, not proof that the information
+they encode is worthless.
+
+**The blocker for further algorithmic work is bring-up step 4** — the laser
+rangefinder against walls at 1, 2 and 3 m. Until disparities can be checked against
+a known distance, additions to `s(i,j)` cannot be evaluated, only observed. The
+plan puts step 4 before driving for exactly this reason; it turns out to gate the
+matcher's development too.
+
 ## What is not done
 - **Fixing the timing comparison.** The coarse-to-fine path times detection plus
   matching, while the single-level MASDA figure times matching only. The two
@@ -188,11 +256,10 @@ says don't.
 - **Calibrating gamma and lambda.** Currently hand-set. The plan's candidate is a
   small MLP over descriptor distance, y-residual, coarse-disparity residual and
   response ratio.
-- **Disparity smoothness** over a Delaunay triangulation — the largest piece of
-  currently-ignored information, and the plan's suggestion to try the cheap
-  two-pass version first (match, fit a robust surface, re-score, re-match) before
-  deriving new messages. Eigen is available on the Jetson for that fitting; the
-  desktop needs `libeigen3-dev`.
+- **The full smoothness factor derivation.** The cheap version was the plan's test
+  of whether this is worth doing, and it came back negative — but see the ground
+  truth caveat above before treating that as settled. Eigen 3.4 is on the desktop
+  and 3.3.4 on the Jetson if it is resumed; the current 3x3 fit needs neither.
 - **Sub-pixel disparity refinement**, which the plan notes depth accuracy hinges on.
 - **Ground-truth validation** against a laser rangefinder — bring-up step 4. Until
   then, median |dy| and the objective are the only quality measures, and neither

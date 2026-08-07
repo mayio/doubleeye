@@ -74,8 +74,8 @@ std::vector<Edge> build_candidates(const std::vector<Keypoint>& left,
       const int j = *it;
       const float d = l.x - right[j].x;   // positive disparity: right sees it left
       if (d < cfg.min_disparity || d > cfg.max_disparity) continue;
-      scratch.emplace_back(pair_score(l, right[j], dl[i], dr[j], census_bits, cfg),
-                           j);
+      scratch.emplace_back(
+          pair_score(l, right[j], dl[i], dr[j], census_bits, cfg, int(i)), j);
     }
     if (scratch.empty()) continue;
 
@@ -264,7 +264,7 @@ DisparityPrior build_disparity_prior(const std::vector<Match>& coarse,
 }
 
 float pair_score(const Keypoint& l, const Keypoint& r, uint64_t dl, uint64_t dr,
-                 int census_bits, const MatchConfig& cfg) {
+                 int census_bits, const MatchConfig& cfg, int left_index) {
   // Descriptor term: bits agree by chance half the time, so hamming == bits/2
   // scores 0 and a perfect match scores +1. That puts gamma == 0 at the
   // interpretable place of "no better than chance".
@@ -283,6 +283,17 @@ float pair_score(const Keypoint& l, const Keypoint& r, uint64_t dl, uint64_t dr,
     if (cfg.prior->lookup(l.x, l.y, &d_pred, &sd) && sd > 0.f) {
       const float e = ((l.x - r.x) - d_pred) / sd;
       score -= cfg.w_prior * e * e;
+    }
+  }
+
+  // Smoothness prior from a previous pass, also a penalty and never a veto.
+  if (cfg.smooth && left_index >= 0 &&
+      size_t(left_index) < cfg.smooth->valid.size() &&
+      cfg.smooth->valid[left_index]) {
+    const float sd = cfg.smooth->sigma[left_index];
+    if (sd > 0.f) {
+      const float e = ((l.x - r.x) - cfg.smooth->disparity[left_index]) / sd;
+      score -= cfg.w_smooth * e * e;
     }
   }
   return score;
@@ -556,6 +567,162 @@ CoarseToFineResult match_coarse_to_fine(const Image8& left_img,
   fine.prior = out.prior.cols > 0 ? &out.prior : nullptr;
   out.matches = match_masda(kl, dl, kr, dr, fine, &out.fine_stats);
   out.fine_ms = clock_ms() - t1;
+  return out;
+}
+
+SmoothPrior fit_smooth_prior(const std::vector<Match>& matches,
+                             const std::vector<Keypoint>& left,
+                             int k_neighbours, float sigma_floor,
+                             int irls_iterations) {
+  SmoothPrior pr;
+  pr.disparity.assign(left.size(), 0.f);
+  pr.sigma.assign(left.size(), 0.f);
+  pr.valid.assign(left.size(), 0);
+  const int k = std::max(4, k_neighbours);
+  if (int(matches.size()) < k + 1) return pr;
+
+  // Matched keypoints only: they are the ones with a disparity to fit.
+  struct Pt { float x, y, d; };
+  std::vector<Pt> pts;
+  pts.reserve(matches.size());
+  for (const Match& m : matches) {
+    if (m.left < 0 || size_t(m.left) >= left.size()) continue;
+    pts.push_back({left[m.left].x, left[m.left].y, m.disparity});
+  }
+  if (int(pts.size()) < k + 1) return pr;
+
+  std::vector<std::pair<float, int>> near;
+  for (size_t i = 0; i < left.size(); ++i) {
+    const float px = left[i].x, py = left[i].y;
+    near.clear();
+    near.reserve(pts.size());
+    for (size_t q = 0; q < pts.size(); ++q) {
+      const float dx = pts[q].x - px, dy = pts[q].y - py;
+      near.emplace_back(dx * dx + dy * dy, int(q));
+    }
+    const size_t take = std::min(near.size(), size_t(k));
+    std::partial_sort(near.begin(), near.begin() + take, near.end());
+
+    // IRLS with Tukey weights. A neighbourhood spanning a depth discontinuity
+    // would otherwise pull the plane between the two surfaces; redescending
+    // weights let the far surface drop out instead.
+    std::vector<float> w(take, 1.f);
+    float a0 = 0.f, b0 = 0.f, c0 = 0.f, scale = 1.f;
+    bool ok = false;
+    for (int it = 0; it < std::max(1, irls_iterations); ++it) {
+      // Weighted normal equations for d = a*x + b*y + c, centred on the query
+      // point so the system stays well conditioned.
+      double sxx = 0, sxy = 0, sx = 0, syy = 0, sy = 0, sw = 0;
+      double sdx = 0, sdy = 0, sd = 0;
+      for (size_t n = 0; n < take; ++n) {
+        const Pt& q = pts[near[n].second];
+        const double x = q.x - px, y = q.y - py, dd = q.d, ww = w[n];
+        sxx += ww * x * x; sxy += ww * x * y; sx += ww * x;
+        syy += ww * y * y; sy += ww * y;      sw += ww;
+        sdx += ww * dd * x; sdy += ww * dd * y; sd += ww * dd;
+      }
+      // 3x3 symmetric solve by cofactors. No Eigen needed for this size.
+      const double m11 = sxx, m12 = sxy, m13 = sx;
+      const double m22 = syy, m23 = sy,  m33 = sw;
+      const double c11 = m22 * m33 - m23 * m23;
+      const double c12 = m13 * m23 - m12 * m33;
+      const double c13 = m12 * m23 - m13 * m22;
+      const double det = m11 * c11 + m12 * c12 + m13 * c13;
+      if (std::fabs(det) < 1e-9) break;
+      const double c22 = m11 * m33 - m13 * m13;
+      const double c23 = m12 * m13 - m11 * m23;
+      const double c33 = m11 * m22 - m12 * m12;
+      a0 = float((c11 * sdx + c12 * sdy + c13 * sd) / det);
+      b0 = float((c12 * sdx + c22 * sdy + c23 * sd) / det);
+      c0 = float((c13 * sdx + c23 * sdy + c33 * sd) / det);
+      ok = true;
+
+      std::vector<float> res(take);
+      for (size_t n = 0; n < take; ++n) {
+        const Pt& q = pts[near[n].second];
+        res[n] = q.d - (a0 * (q.x - px) + b0 * (q.y - py) + c0);
+      }
+      std::vector<float> absr(take);
+      for (size_t n = 0; n < take; ++n) absr[n] = std::fabs(res[n]);
+      std::sort(absr.begin(), absr.end());
+      scale = std::max(sigma_floor, 1.4826f * absr[absr.size() / 2]);
+      const float cut = 4.685f * scale;   // Tukey, 95% efficiency
+      for (size_t n = 0; n < take; ++n) {
+        const float u = res[n] / cut;
+        w[n] = (std::fabs(u) < 1.f) ? (1.f - u * u) * (1.f - u * u) : 0.f;
+      }
+    }
+    if (!ok) continue;
+    // c0 is the fitted disparity AT the query point, since the fit was centred.
+    pr.disparity[i] = c0;
+    pr.sigma[i] = scale;
+    pr.valid[i] = 1;
+  }
+  return pr;
+}
+
+SmoothResult match_iterated_smoothness(const std::vector<Keypoint>& left,
+                                      const std::vector<uint64_t>& desc_left,
+                                      const std::vector<Keypoint>& right,
+                                      const std::vector<uint64_t>& desc_right,
+                                      const MatchConfig& cfg, int passes,
+                                      int k_neighbours) {
+  SmoothResult out;
+  MatchConfig base = cfg;      // for scoring the objective without smoothness
+  base.smooth = nullptr;
+  base.w_smooth = 0.f;
+
+  MatchConfig cur = cfg;
+  cur.smooth = nullptr;
+  SmoothPrior prior;
+  std::vector<Match> prev;
+
+  for (int pass = 0; pass < std::max(1, passes); ++pass) {
+    const std::vector<Match> m =
+        match_masda(left, desc_left, right, desc_right, cur);
+
+    // Re-score every accepted match with the BASE score so passes are comparable.
+    float base_obj = 0.f;
+    std::vector<double> ady;
+    for (const Match& x : m) {
+      base_obj += pair_score(left[x.left], right[x.right], desc_left[x.left],
+                             desc_right[x.right], 48, base, -1);
+      ady.push_back(std::fabs(double(x.dy)));
+    }
+    base_obj += base.gamma * float(int(left.size()) - int(m.size()));
+    base_obj += base.lambda * float(int(right.size()) - int(m.size()));
+
+    std::sort(ady.begin(), ady.end());
+    out.base_objective.push_back(base_obj);
+    out.counts.push_back(int(m.size()));
+    out.median_abs_dy.push_back(ady.empty() ? 0.f
+                                            : float(ady[ady.size() / 2]));
+    size_t cov = 0;
+    for (uint8_t v : prior.valid) cov += v ? 1 : 0;
+    out.prior_coverage.push_back(
+        prior.valid.empty() ? 0.f : float(cov) / float(prior.valid.size()));
+
+    // How much did the assignment actually move? If nothing changes, further
+    // passes are wasted.
+    int changed = 0;
+    if (!prev.empty()) {
+      std::vector<int> before(left.size(), -1);
+      for (const Match& x : prev) before[x.left] = x.right;
+      for (const Match& x : m)
+        if (before[x.left] != x.right) ++changed;
+    }
+    out.changed.push_back(changed);
+
+    if (pass == 0) out.first_pass = m;
+    out.matches = m;
+    prev = m;
+
+    if (pass + 1 < passes) {
+      prior = fit_smooth_prior(m, left, k_neighbours);
+      cur = cfg;
+      cur.smooth = &prior;
+    }
+  }
   return out;
 }
 
