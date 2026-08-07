@@ -114,6 +114,8 @@ int main(int argc, char** argv) {
   CensusConfig ccfg;
   int limit = 0;
   float nn_ratio = 0.85f;
+  int scale = 0;          // 0 = single level; else coarse-to-fine factor
+  int prior_cell = 64;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has = i + 1 < argc;
@@ -127,6 +129,9 @@ int main(int argc, char** argv) {
     else if (a == "--sigma-y" && has) cfg.sigma_y = float(std::atof(argv[++i]));
     else if (a == "--w-y" && has) cfg.w_y = float(std::atof(argv[++i]));
     else if (a == "--nn-ratio" && has) nn_ratio = float(std::atof(argv[++i]));
+    else if (a == "--coarse-to-fine" && has) scale = std::atoi(argv[++i]);
+    else if (a == "--w-prior" && has) cfg.w_prior = float(std::atof(argv[++i]));
+    else if (a == "--prior-cell" && has) prior_cell = std::atoi(argv[++i]);
     else { std::fprintf(stderr, "unknown argument '%s'\n", a.c_str()); return 2; }
   }
 
@@ -157,8 +162,9 @@ int main(int argc, char** argv) {
     std::fprintf(out, "frame,method,left,right,xl,yl,xr,yr,disparity,dy,score,"
                       "belief\n");
 
-  Agg masda, nn;
+  Agg masda, nn, c2f;
   std::vector<double> cand, iters, conv, osc, left_counts;
+  std::vector<double> c2f_cand, c2f_cov, c2f_ms, c2f_iters, c2f_osc;
   size_t done = 0;
   for (const std::string& num : nums) {
     if (limit && done >= size_t(limit)) break;
@@ -175,6 +181,18 @@ int main(int argc, char** argv) {
       dl[k] = census_at(a, int(kl[k].x + 0.5f), int(kl[k].y + 0.5f), ccfg);
     for (size_t k = 0; k < kr.size(); ++k)
       dr[k] = census_at(b, int(kr[k].x + 0.5f), int(kr[k].y + 0.5f), ccfg);
+
+    if (scale > 1) {
+      CoarseToFineResult r = match_coarse_to_fine(a, b, det, ccfg, cfg, scale,
+                                                  prior_cell);
+      c2f.add(r.matches, r.coarse_ms + r.fine_ms, r.fine_stats.left,
+              r.fine_stats.right, cfg);
+      c2f_cand.push_back(double(r.fine_stats.candidates));
+      c2f_cov.push_back(double(r.prior.coverage()));
+      c2f_ms.push_back(r.coarse_ms);
+      c2f_iters.push_back(double(r.fine_stats.iterations_run));
+      c2f_osc.push_back(double(r.fine_stats.oscillating));
+    }
 
     MatchStats st;
     const double t0 = now_ms();
@@ -225,6 +243,23 @@ int main(int argc, char** argv) {
   std::printf("results, averaged over %zu pairs\n", done);
   masda.report("MASDA");
   nn.report("mutual-NN");
+  if (!c2f.count.empty()) {
+    c2f.report("MASDA c2f");
+    double cc = 0, cv = 0, cms = 0, ci = 0, co = 0;
+    for (double x : c2f_cand) cc += x;
+    for (double x : c2f_cov) cv += x;
+    for (double x : c2f_ms) cms += x;
+    for (double x : c2f_iters) ci += x;
+    for (double x : c2f_osc) co += x;
+    const double n2 = double(c2f_cand.size());
+    double kl2 = 0;
+    for (double x : left_counts) kl2 += x;
+    std::printf("\n  coarse-to-fine at 1/%d: prior covers %.0f%% of cells, "
+                "%.0f fine candidate edges (%.2f per keypoint),\n"
+                "  %.1f iterations, %.2f oscillating, coarse pass %.2f ms\n",
+                scale, 100.0 * cv / n2, cc / n2,
+                kl2 > 0 ? cc / kl2 : 0.0, ci / n2, co / n2, cms / n2);
+  }
 
   if (!masda.objective.empty() && !nn.objective.empty()) {
     double om = 0, on = 0, cm = 0, cn = 0;

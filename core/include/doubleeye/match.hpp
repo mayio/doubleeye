@@ -40,6 +40,47 @@
 
 namespace doubleeye {
 
+struct Match {
+  int left = -1;
+  int right = -1;
+  float score = 0.f;      // s(i,j)
+  float belief = 0.f;     // max-sum belief at the accepted edge
+  float disparity = 0.f;  // xL - xR, sub-pixel
+  float dy = 0.f;         // yL - yR, the free rectification health metric
+};
+
+// A soft, spatially varying expectation of disparity, built from a coarse pass.
+//
+// The plan is explicit that this must be SOFT: hard pruning at the coarse level
+// is how thin structures get lost, and an apartment is full of chair and table
+// legs. So it enters s(i,j) as a penalty and never removes a candidate.
+//
+// Confidence comes out of the data rather than being configured. Each cell's
+// sigma is a robust spread (MAD) of the coarse disparities that landed in it, so
+// a cell straddling a depth discontinuity automatically gets a wide, weak prior,
+// and a cell with too few coarse matches is marked invalid and imposes none at
+// all. That is the plan's "keep the full range where coarse confidence is low or
+// near a coarse disparity discontinuity", obtained for free.
+struct DisparityPrior {
+  int cell = 64;              // full-resolution pixels per cell
+  int cols = 0;
+  int rows = 0;
+  std::vector<float> disparity;   // predicted, full-resolution px
+  std::vector<float> sigma;       // robust spread, full-resolution px
+  std::vector<uint8_t> valid;
+
+  bool lookup(float x, float y, float* d, float* sd) const;
+  float coverage() const;         // fraction of cells with a usable prediction
+};
+
+// Build the prior from coarse matches. `scale` is the downsample factor, so a
+// coarse disparity of 4.7 px at scale 8 predicts 37.6 px at full resolution.
+DisparityPrior build_disparity_prior(const std::vector<Match>& coarse,
+                                     const std::vector<Keypoint>& coarse_left,
+                                     int full_width, int full_height, int scale,
+                                     int cell = 64, int min_count = 3,
+                                     float sigma_floor = 2.0f);
+
 struct MatchConfig {
   // --- candidate generation ---
   // The pair is rectified (verified: zero distortion, identity rotation), so a
@@ -60,20 +101,15 @@ struct MatchConfig {
   float w_y = 1.0f;               // weight on that penalty
 
   // --- MASDA ---
+  // Soft disparity prior. Null means no prior, i.e. a single-level search.
+  const DisparityPrior* prior = nullptr;
+  float w_prior = 1.0f;           // weight on the (d - d_pred)/sigma penalty
+
   int iterations = 20;
   float damping = 0.4f;           // plan expects 0.3-0.5 for stereo
   float gamma = 0.0f;             // misdetection: score of leaving a left kp unmatched
   float lambda = 0.0f;            // clutter: score of leaving a right kp unmatched
   float converge_eps = 1e-4f;     // stop when the largest message change is below
-};
-
-struct Match {
-  int left = -1;
-  int right = -1;
-  float score = 0.f;      // s(i,j)
-  float belief = 0.f;     // max-sum belief at the accepted edge
-  float disparity = 0.f;  // xL - xR, sub-pixel
-  float dy = 0.f;         // yL - yR, the free rectification health metric
 };
 
 struct MatchStats {
@@ -108,6 +144,31 @@ std::vector<Match> match_mutual_nn(const std::vector<Keypoint>& left,
                                    const MatchConfig& cfg,
                                    float ratio = 0.85f,
                                    MatchStats* stats = nullptr);
+
+// Two-level search: match at 1/scale resolution, build a soft disparity prior from
+// the result, then match at full resolution with that prior folded into s(i,j).
+//
+// The plan calls this the biggest single lever, for two compounding reasons: the
+// candidate count per keypoint falls, and -- more importantly -- false candidates
+// from repetitive structure disappear before they can create the near-ties that
+// drive BP oscillation on this graph.
+struct CoarseToFineResult {
+  std::vector<Match> matches;
+  std::vector<Match> coarse_matches;
+  DisparityPrior prior;
+  MatchStats fine_stats;
+  MatchStats coarse_stats;
+  double coarse_ms = 0.0;
+  double fine_ms = 0.0;
+};
+
+CoarseToFineResult match_coarse_to_fine(const Image8& left_img,
+                                        const Image8& right_img,
+                                        const DetectorConfig& det,
+                                        const CensusConfig& census,
+                                        const MatchConfig& cfg,
+                                        int scale = 8,
+                                        int prior_cell = 64);
 
 // Exact maximum-weight matching by exhaustive search. Only for tests on tiny
 // problems -- it is factorial. Having ground truth to compare against is the

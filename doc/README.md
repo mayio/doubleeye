@@ -82,6 +82,7 @@ across them is the same: **on this platform the expensive failures are silent.**
 | MASDA costs **1.67 ms**, 5% of the frame budget against 26 ms for preprocessing — "MASDA is not the bottleneck" confirmed | [09](09-matching.md) |
 | The messages **never formally converge** yet the decision is stable from 20 iterations; oscillation is real but currently benign | [09](09-matching.md) |
 | Belief **sign is not a match/no-match decision** — gating on it returned zero matches on tied problems whose optimum matched everything | [09](09-matching.md) |
+| **Coarse-to-fine does not help here**: k is already 2.7 not 100–200, and inflating it 5× leaves the answer *identical*, so there are no false candidates to remove | [09](09-matching.md) |
 | Preprocessing was **299% of the 30 Hz budget on the TX2**; FAST candidates plus concurrent L/R brought it to **78.8%**, keeping 96% of keypoints | [06](06-preprocessing.md) |
 | Below ~5 DN the FAST **sparse path becomes slower than the dense scan** it replaces — sparsification has a crossover | [06](06-preprocessing.md) |
 | Concurrency returned **1.54× not 2×** on a 6-core board, corroborating memory bandwidth as the real constraint | [06](06-preprocessing.md) |

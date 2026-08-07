@@ -1,5 +1,7 @@
 #include "doubleeye/match.hpp"
 
+#include <time.h>
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -198,6 +200,69 @@ std::vector<Match> emit(const std::vector<Edge>& edges,
 
 }  // namespace
 
+bool DisparityPrior::lookup(float x, float y, float* d, float* sd) const {
+  if (cols <= 0 || rows <= 0) return false;
+  const int cx = std::min(cols - 1, std::max(0, int(x) / cell));
+  const int cy = std::min(rows - 1, std::max(0, int(y) / cell));
+  const size_t i = size_t(cy) * cols + cx;
+  if (!valid[i]) return false;
+  if (d) *d = disparity[i];
+  if (sd) *sd = sigma[i];
+  return true;
+}
+
+float DisparityPrior::coverage() const {
+  if (valid.empty()) return 0.f;
+  size_t n = 0;
+  for (uint8_t v : valid) n += v ? 1 : 0;
+  return float(n) / float(valid.size());
+}
+
+DisparityPrior build_disparity_prior(const std::vector<Match>& coarse,
+                                     const std::vector<Keypoint>& coarse_left,
+                                     int full_width, int full_height, int scale,
+                                     int cell, int min_count, float sigma_floor) {
+  DisparityPrior pr;
+  pr.cell = std::max(8, cell);
+  pr.cols = (full_width + pr.cell - 1) / pr.cell;
+  pr.rows = (full_height + pr.cell - 1) / pr.cell;
+  const size_t n = size_t(pr.cols) * pr.rows;
+  pr.disparity.assign(n, 0.f);
+  pr.sigma.assign(n, 0.f);
+  pr.valid.assign(n, 0);
+  if (coarse.empty() || scale < 1) return pr;
+
+  std::vector<std::vector<float>> bucket(n);
+  for (const Match& m : coarse) {
+    if (m.left < 0 || size_t(m.left) >= coarse_left.size()) continue;
+    // Coarse coordinates and disparity both scale up by the same factor.
+    const float x = coarse_left[m.left].x * float(scale);
+    const float y = coarse_left[m.left].y * float(scale);
+    const int cx = std::min(pr.cols - 1, std::max(0, int(x) / pr.cell));
+    const int cy = std::min(pr.rows - 1, std::max(0, int(y) / pr.cell));
+    bucket[size_t(cy) * pr.cols + cx].push_back(m.disparity * float(scale));
+  }
+
+  for (size_t i = 0; i < n; ++i) {
+    std::vector<float>& v = bucket[i];
+    if (int(v.size()) < min_count) continue;   // too little evidence: no prior
+    std::sort(v.begin(), v.end());
+    const float med = v[v.size() / 2];
+    // Median absolute deviation, scaled to a Gaussian-equivalent sigma. This is
+    // what makes the prior self-widening: a cell spanning a depth discontinuity
+    // has a large MAD and therefore a weak prior, which is precisely where the
+    // plan wants the full disparity range kept.
+    std::vector<float> dev(v.size());
+    for (size_t k = 0; k < v.size(); ++k) dev[k] = std::fabs(v[k] - med);
+    std::sort(dev.begin(), dev.end());
+    const float mad = dev[dev.size() / 2];
+    pr.disparity[i] = med;
+    pr.sigma[i] = std::max(sigma_floor, 1.4826f * mad);
+    pr.valid[i] = 1;
+  }
+  return pr;
+}
+
 float pair_score(const Keypoint& l, const Keypoint& r, uint64_t dl, uint64_t dr,
                  int census_bits, const MatchConfig& cfg) {
   // Descriptor term: bits agree by chance half the time, so hamming == bits/2
@@ -209,7 +274,18 @@ float pair_score(const Keypoint& l, const Keypoint& r, uint64_t dl, uint64_t dr,
   // y-residual. The plan asks for this as a unary term regardless, since median
   // |dy| over matched pairs doubles as a free online monitor for extrinsic drift.
   const float dy = (l.y - r.y) / (cfg.sigma_y > 0 ? cfg.sigma_y : 1.f);
-  return desc - cfg.w_y * dy * dy;
+  float score = desc - cfg.w_y * dy * dy;
+
+  // Soft coarse-disparity prior. A penalty, never a veto: the plan is explicit
+  // that hard pruning at the coarse level is how thin structures get lost.
+  if (cfg.prior) {
+    float d_pred = 0.f, sd = 1.f;
+    if (cfg.prior->lookup(l.x, l.y, &d_pred, &sd) && sd > 0.f) {
+      const float e = ((l.x - r.x) - d_pred) / sd;
+      score -= cfg.w_prior * e * e;
+    }
+  }
+  return score;
 }
 
 std::vector<Match> match_masda(const std::vector<Keypoint>& left,
@@ -416,6 +492,70 @@ std::vector<Match> match_brute_force(const std::vector<Keypoint>& left,
     mt.dy = left[i].y - right[best_assign[i]].y;
     out.push_back(mt);
   }
+  return out;
+}
+
+CoarseToFineResult match_coarse_to_fine(const Image8& left_img,
+                                        const Image8& right_img,
+                                        const DetectorConfig& det,
+                                        const CensusConfig& census,
+                                        const MatchConfig& cfg,
+                                        int scale, int prior_cell) {
+  CoarseToFineResult out;
+  const auto clock_ms = []() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec * 1e-6;
+  };
+
+  // --- coarse pass ---
+  const double t0 = clock_ms();
+  const Image8 cl = downsample(left_img, scale);
+  const Image8 cr = downsample(right_img, scale);
+  if (!cl.empty() && !cr.empty()) {
+    // The coarse level is small, so the detector's border and grid must shrink
+    // with it or it finds almost nothing.
+    DetectorConfig cdet = det;
+    cdet.cell = std::max(4, det.cell / scale);
+    cdet.border = std::max(6, det.border / 2);
+
+    const std::vector<Keypoint> kl = detect_keypoints_fast(cl, cdet);
+    const std::vector<Keypoint> kr = detect_keypoints_fast(cr, cdet);
+    std::vector<uint64_t> dl(kl.size()), dr(kr.size());
+    for (size_t k = 0; k < kl.size(); ++k)
+      dl[k] = census_at(cl, int(kl[k].x + 0.5f), int(kl[k].y + 0.5f), census);
+    for (size_t k = 0; k < kr.size(); ++k)
+      dr[k] = census_at(cr, int(kr[k].x + 0.5f), int(kr[k].y + 0.5f), census);
+
+    // Disparity range scales down with resolution; the epipolar band does not
+    // shrink below a pixel, since rectification residual is absolute.
+    MatchConfig ccfg = cfg;
+    ccfg.prior = nullptr;
+    ccfg.min_disparity = std::max(0.5f, cfg.min_disparity / float(scale));
+    ccfg.max_disparity = cfg.max_disparity / float(scale);
+    ccfg.max_dy = std::max(1.0f, cfg.max_dy / float(scale));
+    ccfg.sigma_y = std::max(0.5f, cfg.sigma_y / float(scale));
+
+    out.coarse_matches = match_masda(kl, dl, kr, dr, ccfg, &out.coarse_stats);
+    out.prior = build_disparity_prior(out.coarse_matches, kl, left_img.width,
+                                     left_img.height, scale, prior_cell);
+  }
+  out.coarse_ms = clock_ms() - t0;
+
+  // --- fine pass, with the prior folded into s(i,j) ---
+  const double t1 = clock_ms();
+  const std::vector<Keypoint> kl = detect_keypoints_fast(left_img, det);
+  const std::vector<Keypoint> kr = detect_keypoints_fast(right_img, det);
+  std::vector<uint64_t> dl(kl.size()), dr(kr.size());
+  for (size_t k = 0; k < kl.size(); ++k)
+    dl[k] = census_at(left_img, int(kl[k].x + 0.5f), int(kl[k].y + 0.5f), census);
+  for (size_t k = 0; k < kr.size(); ++k)
+    dr[k] = census_at(right_img, int(kr[k].x + 0.5f), int(kr[k].y + 0.5f), census);
+
+  MatchConfig fine = cfg;
+  fine.prior = out.prior.cols > 0 ? &out.prior : nullptr;
+  out.matches = match_masda(kl, dl, kr, dr, fine, &out.fine_stats);
+  out.fine_ms = clock_ms() - t1;
   return out;
 }
 

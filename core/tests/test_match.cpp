@@ -280,6 +280,70 @@ void test_convergence_reporting() {
   check(true, "oscillation is measured rather than assumed away");
 }
 
+void test_disparity_prior() {
+  std::printf("soft disparity prior\n");
+  // A synthetic coarse result: eight matches in one region, all at coarse
+  // disparity 5, so at scale 8 the prior should predict 40 px there.
+  std::vector<Keypoint> ck;
+  std::vector<Match> cm;
+  for (int i = 0; i < 8; ++i) {
+    ck.push_back(kp(10.f + float(i), 6.f));   // coarse coords -> ~80..136, 48
+    Match m;
+    m.left = i;
+    m.right = i;
+    m.disparity = 5.f;
+    cm.push_back(m);
+  }
+  const DisparityPrior pr = build_disparity_prior(cm, ck, 848, 480, 8, 64, 3);
+  float d = 0.f, sd = 0.f;
+  check(pr.lookup(88.f, 48.f, &d, &sd), "prior is available where coarse matched");
+  check(std::fabs(d - 40.f) < 1e-3f,
+        "predicts 40 px at full resolution from 5 px at scale 8");
+  check(sd >= 2.0f, "sigma respects the floor (" + std::to_string(sd) + ")");
+  check(!pr.lookup(800.f, 460.f, &d, &sd),
+        "no prior where the coarse pass found nothing");
+  check(pr.coverage() > 0.f && pr.coverage() < 1.f,
+        "coverage is partial as expected (" + std::to_string(pr.coverage()) + ")");
+
+  // A cell straddling a discontinuity must widen rather than pick a side. This is
+  // the plan's requirement that the full range survive near depth edges.
+  std::vector<Keypoint> ck2;
+  std::vector<Match> cm2;
+  for (int i = 0; i < 10; ++i) {
+    ck2.push_back(kp(10.f + float(i % 5), 6.f));
+    Match m;
+    m.left = i;
+    m.right = i;
+    m.disparity = (i < 5) ? 5.f : 12.f;   // two surfaces in one cell
+    cm2.push_back(m);
+  }
+  const DisparityPrior pr2 = build_disparity_prior(cm2, ck2, 848, 480, 8, 64, 3);
+  float d2 = 0.f, sd2 = 0.f;
+  check(pr2.lookup(88.f, 48.f, &d2, &sd2), "prior exists at the discontinuity");
+  check(sd2 > sd * 2.f,
+        "sigma widens sharply at a depth discontinuity (" +
+            std::to_string(sd2) + " vs " + std::to_string(sd) + ")");
+
+  // And the prior must never veto: a candidate far from the prediction is
+  // penalised, not removed.
+  MatchConfig c = plain();
+  std::vector<Keypoint> L{kp(88.f, 48.f)};
+  std::vector<Keypoint> R{kp(88.f - 40.f, 48.f)};
+  std::vector<uint64_t> dL{desc_with(20)}, dR{desc_with(20)};
+  c.prior = &pr;
+  c.w_prior = 1.0f;
+  const auto agree = match_masda(L, dL, R, dR, c);
+  check(agree.size() == 1, "candidate agreeing with the prior still matches");
+  R[0] = kp(88.f - 20.f, 48.f);   // disparity 20 where 40 was predicted
+  const auto disagree = match_masda(L, dL, R, dR, c);
+  check(disagree.empty(),
+        "a candidate 10 sigma from the prediction is penalised below gamma");
+  c.w_prior = 0.f;
+  check(match_masda(L, dL, R, dR, c).size() == 1,
+        "and it returns with w_prior = 0, so the prior penalised rather than "
+        "pruned");
+}
+
 void test_empty_inputs() {
   std::printf("degenerate inputs\n");
   std::vector<Keypoint> none;
@@ -302,6 +366,7 @@ int main() {
   test_degenerate_descriptors();
   test_masda_beats_nn_on_ambiguity();
   test_convergence_reporting();
+  test_disparity_prior();
   test_empty_inputs();
   std::printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "ALL PASSED",
               g_failures, g_failures == 1 ? "" : "s");

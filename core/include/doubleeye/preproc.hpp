@@ -47,6 +47,12 @@ bool load_raw_y8(const std::string& path, int width, int height, Image8* out);
 // PGM so intermediate images can be inspected without an image library.
 bool save_pgm(const std::string& path, const Image8& img);
 
+// Box-average downsample by an integer factor, for the coarse level of the
+// coarse-to-fine search. Averaging rather than decimating on purpose: dropping
+// pixels aliases the projected dot pattern, which is exactly the high-frequency
+// content that would then fabricate false coarse matches.
+Image8 downsample(const Image8& img, int factor);
+
 // ---------------------------------------------------------------------------
 // Census
 

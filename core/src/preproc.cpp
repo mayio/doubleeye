@@ -82,6 +82,27 @@ bool save_pgm(const std::string& path, const Image8& img) {
   return n == img.pixels();
 }
 
+Image8 downsample(const Image8& img, int factor) {
+  if (img.empty() || factor < 1) return Image8();
+  if (factor == 1) return img;
+  const int w = img.width / factor, h = img.height / factor;
+  if (w < 1 || h < 1) return Image8();
+  Image8 out(w, h);
+  const int n = factor * factor;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      unsigned sum = 0;
+      for (int dy = 0; dy < factor; ++dy) {
+        const uint8_t* row = &img.data[size_t(y * factor + dy) * img.width
+                                      + x * factor];
+        for (int dx = 0; dx < factor; ++dx) sum += row[dx];
+      }
+      out.at(x, y) = uint8_t((sum + n / 2) / n);
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 
 CensusImage census_transform(const Image8& img, CensusConfig cfg) {

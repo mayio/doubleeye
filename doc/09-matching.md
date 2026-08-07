@@ -114,12 +114,77 @@ and damping to need raising past 0.5.
 
 **20 iterations is the operating point.** More costs time and buys 0.1%.
 
-## What is not done
+## Coarse-to-fine: built, measured, and **not** worth it here
 
-- **Coarse-to-fine.** The plan's biggest single lever: match at 1/8 resolution,
-  fit a disparity field, then use it as a *soft* prior in `s(i,j)`. That should cut
-  candidates per keypoint from the current ~2.7 and, more importantly, remove the
-  false candidates that create the near-ties driving the oscillation above.
+The plan calls this the biggest single lever, for two compounding reasons: cutting
+candidates per keypoint from ~100–200 down to 8–16, and removing the false
+candidates from repetitive structure that create near-ties. It is implemented as
+the plan specifies — a **soft** prior, never hard pruning, since hard pruning at
+the coarse level is how thin structures get lost.
+
+The prior is self-widening in the way the plan asks for, and that part works: each
+cell's sigma is the MAD of the coarse disparities landing in it, so a cell
+straddling a depth discontinuity automatically gets a wide, weak prior. Measured
+in the tests: sigma goes from 2.0 px on a clean surface to **83 px** across a
+discontinuity, and a cell with too few coarse matches imposes no prior at all.
+
+**But it makes the result worse on real data** (emitter on, `bags/full_on`):
+
+| configuration | k | matches | objective |
+|---|---|---|---|
+| single level | 2.7 | **615.2** | **410.9** |
+| coarse-to-fine 1/8 | 2.7 | 609.5 | 405.5 |
+| coarse-to-fine 1/4 | 2.7 | 509.0 | 325.3 |
+| coarse-to-fine 1/4, `w_prior` 0.25 | 2.7 | 537.5 | — |
+
+Lowering the prior's weight recovers some of the loss but never beats single level.
+
+### Why the premise does not hold here
+
+**k is already 2.7, not 100–200.** The plan's motivation assumed a wide search, but
+this pair is rectified, so a ±2 px epipolar band plus a disparity range already
+does the restricting a coarse pass was meant to do.
+
+Better evidence than that arithmetic: deliberately widening the search does not
+change the answer at all.
+
+| max_dy / max_candidates | k | matches |
+|---|---|---|
+| 2 / 24 | 2.7 | 615.2 |
+| 6 / 64 | 7.2 | **615.2** |
+| 12 / 128 | 13.8 | **615.2** |
+
+Inflating k by 5× leaves the result *identical*, because the y-residual term in
+`s(i,j)` already scores those extra candidates below gamma. **There are no false
+candidates left for a disparity prior to remove.** So the prior can only contribute
+its own error — coarse Census on downsampled projected dots is much less
+distinctive, and coarse disparity quantises to ±0.5 px, which is ±2–4 px once
+scaled up.
+
+Prior coverage also shows the mechanism: only **1%** of cells at 1/8, because the
+106×60 coarse image yields too few keypoints to reach three matches per cell. At
+1/4 coverage rises to 29% and the damage rises with it — the prior is active more
+often, and being active is what hurts.
+
+### When it would matter
+
+Kept in the code, off by default, because the premise could return:
+
+- **Unrectified or drifted calibration**, where the epipolar band must widen and k
+  genuinely grows.
+- **Much higher keypoint density**, where per-row candidates multiply.
+- **Temporal matching** between consecutive frames, which the plan wants for
+  ego-motion. There the search is 2-D and unconstrained by rectification, so k
+  really is large and a prior — from IMU-derived rotation compensation — should pay.
+
+This is the plan's own instruction followed: measure before deriving. The measurement
+says don't.
+
+## What is not done
+- **Fixing the timing comparison.** The coarse-to-fine path times detection plus
+  matching, while the single-level MASDA figure times matching only. The two
+  numbers are not comparable and the conclusion above rests on match counts and
+  objective rather than on timing.
 - **Calibrating gamma and lambda.** Currently hand-set. The plan's candidate is a
   small MLP over descriptor distance, y-residual, coarse-disparity residual and
   response ratio.
