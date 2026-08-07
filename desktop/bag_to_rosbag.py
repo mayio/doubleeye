@@ -99,6 +99,10 @@ def main():
                     help="output .bag (default: <bag>.bag beside the directory)")
     ap.add_argument("--rate", type=float, default=10.0,
                     help="synthesised frame rate when frames.csv is absent")
+    ap.add_argument("--pitch-mm", type=float, default=24.0,
+                    help="MEASURED square size for the printed Kalibr target. "
+                         "Default is the measured 24.0 mm, not the nominal 25: "
+                         "the print came out at 96%% scale.")
     args = ap.parse_args()
 
     if not (args.bag / "frames").is_dir():
@@ -172,8 +176,9 @@ def main():
     print("  /cam0/image_raw  sensor_msgs/Image mono8   (ir1, left)")
     print("  /cam1/image_raw  sensor_msgs/Image mono8   (ir2, right)")
 
-    pitch = 0.025
-    print("\nNext, on a machine with Kalibr (the Jetson has ROS Melodic):")
+    pitch = args.pitch_mm / 1000.0
+    print("\nNext, on a machine with Kalibr (ROS 1 Noetic in Docker; the desktop"
+          " cannot host ROS 1):")
     print("\n  cat > checkerboard.yaml <<'YAML'")
     print("  target_type: 'checkerboard'")
     print("  targetCols: 9")
@@ -186,7 +191,9 @@ def main():
     print("    --topics /cam0/image_raw /cam1/image_raw \\")
     print("    --models pinhole-radtan pinhole-radtan \\")
     print("    --target checkerboard.yaml")
-    print("\nUse your MEASURED square pitch, not the nominal 25 mm.")
+    print(f"\nPitch above is {args.pitch_mm:g} mm, the MEASURED value. The A4"
+          " print came out")
+    print("at 96% scale, so the nominal 25 mm would be wrong by 4%.")
     print("Compare the result against the factory values in")
     print("doc/04-baseline-measurements.md — fx 430.551, baseline 49.883 mm.")
     return 0

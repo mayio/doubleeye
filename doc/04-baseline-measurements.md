@@ -283,13 +283,18 @@ Kalibr: Kalibr's irreplaceable capability is *camera-IMU* calibration, and for
 intrinsics, distortion and the stereo extrinsic OpenCV solves the same problem in
 seconds with no ROS.
 
+Board pitch was **measured at 24.0 mm** (240 mm across all ten columns), not the
+nominal 25.0 — see below.
+
 | | factory (ASIC) | pinhole fit | radtan fit |
 |---|---|---|---|
 | reprojection RMS | — | **0.269 px** | 0.271 px |
-| fx | 430.551 | 427.937 (**−0.61%**) | 432.855 |
+| fx | 430.551 | 427.937 (**−0.61%**) | 432.847 |
 | cx | 427.381 | 427.035 (−0.35 px) | 424.373 |
 | cy | 243.158 | 243.397 (+0.24 px) | 239.745 |
-| baseline | 49.883 mm | 52.030 mm (**+4.30%**) | 51.969 mm |
+| baseline | 49.883 mm | **49.949 mm (+0.13%)** | 49.890 mm |
+| R from identity | — | **0.034°** | 0.107° |
+| off-axis T | — | 0.066 / 0.162 mm | 0.093 / 0.382 mm |
 
 Three conclusions.
 
@@ -303,20 +308,33 @@ identity** and the off-axis translation is 0.069 / 0.168 mm against a 52 mm
 baseline. That is what a rectified pair looks like, arrived at from images rather
 than read out of the device.
 
-**The baseline disagreement is almost certainly the ruler, not the camera.** This
-follows from which quantity depends on what: `fx` is an angle ratio in pixels and
-is *independent* of the assumed square size, while the recovered translation
-scales with it exactly. fx agrees to −0.61% while the baseline is off by +4.30% —
-seven times as much — so the scale input is the suspect.
+**The baseline disagreement was the ruler, and it was predicted before being
+measured.** The first fit, assuming the nominal 25.0 mm pitch, gave a baseline of
+52.030 mm — **+4.30%** against factory, while fx was off by only −0.61%. Those two
+are distinguishable in principle: `fx` is an angle ratio in pixels and is
+*independent* of the assumed square size, whereas the recovered translation scales
+with it exactly. A baseline disagreeing seven times more than fx therefore
+implicates the scale input, not the optics.
 
-If the factory baseline is right, the true pitch is **23.97 mm, not 25.0**, a print
-scale of **95.9%**. That is very much what a printer does with "fit to page" left
-on. **Measure the board across all ten columns and re-run with the measured
-pitch**; if it reads ~240 mm rather than 250, both numbers reconcile at once and
-nothing is wrong with the camera.
+Working backwards from the factory baseline predicted a true pitch of **23.968 mm**,
+a print scale of 95.9%. **Measured: 240 mm across ten columns, i.e. 24.0 mm.**
+Re-running with that reconciles the baseline to **+0.13%** — 66 microns — and
+leaves fx unchanged, exactly as the scale argument requires.
 
-The remaining −0.61% on fx is consistent with the small-target caveat: median
-board coverage was ~5% of frame, which under-constrains focal length.
+The print came out at **96% scale**, which is what a printer does with "fit to
+page" left on. `make_checkerboard.py` now says so with the real number attached.
+
+**Conclusion: the factory calibration is validated, so use it.** The plan asks for
+intrinsics to be re-measured because factory calibration drifts thermally and
+mechanically. On this unit it has not: an independent fit reproduces the baseline
+to 0.13%, the principal point to under 0.35 px, and confirms zero distortion and a
+rectified pair. The residual −0.61% on fx is the *fit's* weakness rather than the
+camera's, since median board coverage was only ~5% of frame, which
+under-constrains focal length. Factory fx is the better number.
+
+Practical consequence for depth: f·B measured is 21.375 px·m against the factory
+21.48, so the depth *scale* is consistent to about 0.5%. At 3 m that is ~1.5 cm,
+inside the ~4 cm Δz the geometry gives there anyway.
 
 ## Development link throughput
 

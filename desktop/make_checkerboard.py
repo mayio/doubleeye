@@ -127,10 +127,11 @@ def main():
              if (ic % 2) != (ir % 2) else
              "  !! both same parity - 180 deg ambiguous, consider changing"))
     print()
-    print("After printing, MEASURE before you trust the pitch. Span many")
-    print("squares and divide, e.g. across all "
-          f"{args.cols} columns you should read {bw:.1f} mm.")
-    print("Use the measured pitch in the configs below, not the nominal one.")
+    print("MEASURE THE PRINT -- this is not advisory. The first A4 printed for")
+    print(f"this project came out at 96% scale ({args.pitch:g} mm became 24.0 mm),")
+    print("which propagated straight into a 4% stereo-baseline error.")
+    print(f"Span all {args.cols} columns: they should read {bw:.1f} mm. Divide by")
+    print(f"{args.cols} and use THAT in the configs below, not the nominal value.")
     print()
     print("Kalibr target yaml (checkerboard.yaml):")
     print("  target_type: 'checkerboard'")

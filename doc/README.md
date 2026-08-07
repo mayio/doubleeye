@@ -42,10 +42,11 @@ leftovers with no hardware behind them, and are not the IMU.
 
 The **camera half of step 3 is under way**: it needs no IMU. A calibration set
 exists — `bags/calib01`, 82 poses, **100% detected in both channels** — collected
-with the live view. A stereo calibration has been run
-(OpenCV, not Kalibr, which is only needed for camera-IMU): fx reproduces factory
-to 0.61% and zero distortion is confirmed. One action outstanding — measure the
-printed square pitch, since the numbers indicate a 95.9% print scale. See
+with the live view. **Done.** An independent OpenCV
+calibration on 49 poses reproduces the factory baseline to 0.13% and the principal
+point to under 0.35 px, and confirms zero distortion and a rectified pair. The
+factory calibration has not drifted, so it stands. A 4.3% baseline discrepancy
+turned out to be a 96% print scale, now measured and corrected. See
 [04-baseline-measurements.md](04-baseline-measurements.md#calibration-set-collected-2026-08-07)
 for the set's properties and its one real caveat, which is board size.
 
@@ -84,7 +85,8 @@ across them is the same: **on this platform the expensive failures are silent.**
 | A calibration set of 82 poses reached **100% detection in both channels**, so the print is IR-visible | [04](04-baseline-measurements.md) |
 | ...yet a third of those poses had a **non-flat board**. Detection success says nothing about planarity | [04](04-baseline-measurements.md) |
 | Calibration reproduces factory fx to **0.61%** and confirms zero distortion — freeing radtan made the fit *worse* | [04](04-baseline-measurements.md) |
-| The baseline is off by **+4.3%** while fx is off by 0.61%. Only the baseline scales with square size, so the **print is ~95.9% scale**, not the camera | [04](04-baseline-measurements.md) |
+| A **+4.3% baseline error was traced to the printer, not the camera** — predicted pitch 23.97 mm, measured 24.0, reconciling the baseline to **+0.13%** | [04](04-baseline-measurements.md) |
+| So the **factory calibration is validated, not drifted** — use it; our fx is the weaker number, limited by board coverage | [04](04-baseline-measurements.md) |
 | cmake 3.10 accepts neither `-S`/`-B` nor `--build -j`; given either it **prints usage and exits without building** | [03](03-obstacles.md) obstacle 13 |
 
 ## Conventions used throughout
