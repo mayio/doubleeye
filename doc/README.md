@@ -34,10 +34,10 @@ cannot be verified in the current configuration — see
 Bring-up step 2 (IMU Allan variance) is **unblocked on the hardware side.** The
 Pixhawk runs ArduPilot, the IMU stream is up from 3.2 Hz to 53 Hz, the SD card is
 confirmed present and healthy, and raw pre-filter IMU logging is enabled. What
-remains is a multi-hour static log and the analysis. Gyro and accel filters were raised from
-4/10 Hz to 20 Hz, and logging is verified live at ~130 MB/hour. Since the vehicle
-has no battery and cannot move, the conditions for a static Allan-variance
-recording are already ideal. See [08-imu.md](08-imu.md).
+remains is a multi-hour static log and the analysis. **Complete.** Noise density from raw
+1 kHz batch samples, bias instability and random walk from the continuous 50 Hz
+stream — valid there because a 20 Hz filter cannot affect averaging times of
+seconds. Cross-checked between two independent logs. See [08-imu.md](08-imu.md).
 Separately, the `nvs_bmi160` module and its device-tree node are stock L4T
 leftovers with no hardware behind them, and are not the IMU.
 
@@ -99,7 +99,7 @@ across them is the same: **on this platform the expensive failures are silent.**
 | `INS_LOG_BAT_MASK` does not retrofit batch logging into an already-open log — **a multi-hour recording would have been useless** until a reboot | [08](08-imu.md) |
 | Filtered IMU data **understates gyro noise density by 41%**, measured against raw 999.6 Hz batch samples from the same log | [08](08-imu.md) |
 | Gravity reads **9.074 m/s², −7.5%** — the accelerometer needs 6-position calibration | [08](08-imu.md) |
-| The batch sampler logs **1 s windows, not a stream**, so bias instability cannot be read from concatenated blocks | [08](08-imu.md) |
+| The batch sampler logs **1 s windows, not a stream**, so bias instability cannot be read from concatenated blocks — but it *is* readable from the continuous 50 Hz stream, since a 20 Hz filter cannot affect tau of seconds | [08](08-imu.md) |
 | The Pixhawk **re-enumerates ACM0→ACM1** across a reboot; use the udev by-id link | [08](08-imu.md) |
 | A calibration set of 82 poses reached **100% detection in both channels**, so the print is IR-visible | [04](04-baseline-measurements.md) |
 | ...yet a third of those poses had a **non-flat board**. Detection success says nothing about planarity | [04](04-baseline-measurements.md) |

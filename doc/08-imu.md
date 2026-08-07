@@ -224,7 +224,51 @@ Both sources in the same log:
 So the warning was not theoretical. `INS_GYRO_FILTER` at 20 Hz removes exactly the
 high-frequency content the white-noise estimate is made of.
 
-### Valid results so far
+### Bias instability is measurable after all — separation of scales
+
+An earlier version of this document said bias instability was blocked on
+continuously logged *raw* data. That was wrong, and the correction is a scale
+argument: **`INS_GYRO_FILTER` at 20 Hz removes content only above 20 Hz**, so it
+affects the short-tau end of the Allan curve and nothing else. Bias instability and
+random walk live at averaging times of seconds to minutes, where a 20 Hz low-pass
+is completely transparent.
+
+So each parameter comes from whichever source can actually measure it:
+
+| parameter | source | why |
+|---|---|---|
+| noise density | raw batch, 1 kHz | needs the high-frequency content the filter removes |
+| bias instability | continuous `IMU`, 50 Hz | tau of seconds; filtering irrelevant, and it is gap-free |
+| random walk | continuous `IMU`, 50 Hz | same |
+
+The windowing that invalidated long-tau estimates from batch data is therefore not
+a blocker; it just means the two ends of the curve come from different messages.
+
+### Complete noise characterisation
+
+| | gyroscope | accelerometer |
+|---|---|---|
+| `*_noise_density` | **1.28e−4 rad/s/√Hz** | **3.85e−3 m/s²/√Hz** |
+| bias instability | **6.4e−5 rad/s** at tau 4–13 s | **1.6e−3 m/s²** at tau 6–13 s |
+| `*_random_walk` | **4.0e−5** | **6.2e−4** |
+
+Worst axis in each case, since Kalibr takes one scalar. Noise density from a log
+with raw batch samples; the long-tau figures from a 9.3-minute continuous record.
+
+**Cross-checked between two independent logs.** The 78 s log and the 557 s log agree
+on gyro bias instability where they overlap (2.8–8.2e−5 against 4.2–6.4e−5), which
+is reassuring given they come from different sources at different rates.
+
+The tool now checks record length **conditionally** rather than always warning. On
+the 78 s log it correctly objects — "a minimum sits at tau 14 s against a resolvable
+limit of 16 s" — and on the 557 s log it correctly clears, since the latest minimum
+at 13 s sits well inside the 111 s that record resolves. Warning unconditionally
+had trained the reader to ignore it.
+
+**Bring-up step 2 is complete.** A multi-hour log would tighten the long-tau figures
+but is no longer needed to obtain them.
+
+### Earlier partial results
 
 | Parameter | Value (worst axis) |
 |---|---|
@@ -270,8 +314,8 @@ which follows the device rather than enumeration order:
 
 ## Still open
 
-- **Bias instability and random walk**, which need *continuous* inertial data
-  rather than the sampler's 1 s windows. Noise density is done.
+- ~~Bias instability and random walk~~ — **done**, from the continuous stream. A
+  multi-hour log would tighten them but is not required.
 - **6-position accelerometer calibration** — gravity is 7.5% low.
 - **Reset `LOG_DISARMED` to 0** afterwards, or the card fills at ~3 GB/day.
 - **Time alignment.** `TIMESYNC` is present in the stream, which is ArduPilot's own

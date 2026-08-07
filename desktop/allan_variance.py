@@ -281,31 +281,102 @@ def main():
                 if key in p and np.isfinite(p[key])]
         return max(vals) if vals else float("nan")
 
+    def worst_long(label, key):
+        vals = [p[key] for p in results.get(label + "_long", {}).values()
+                if key in p and np.isfinite(p[key])]
+        return max(vals) if vals else float("nan")
+
     print("\n--- Kalibr imu.yaml ---")
+    print("# noise_density from raw 1 kHz batch samples;")
+    print("# random_walk from the continuous 50 Hz stream (see above for why that")
+    print("# is valid despite filtering)")
     print(f"accelerometer_noise_density: {worst('accelerometer', 'noise_density'):.6e}")
-    print(f"accelerometer_random_walk:   {worst('accelerometer', 'random_walk'):.6e}")
+    arw = worst_long('accelerometer', 'random_walk')
+    print(f"accelerometer_random_walk:   "
+          f"{arw if np.isfinite(arw) else worst('accelerometer', 'random_walk'):.6e}")
     print(f"gyroscope_noise_density:     {worst('gyroscope', 'noise_density'):.6e}")
-    print(f"gyroscope_random_walk:       {worst('gyroscope', 'random_walk'):.6e}")
+    grw = worst_long('gyroscope', 'random_walk')
+    print(f"gyroscope_random_walk:       "
+          f"{grw if np.isfinite(grw) else worst('gyroscope', 'random_walk'):.6e}")
     print("rostopic: /imu0")
     if sources:
         print(f"update_rate: {sources[0][3]:.1f}")
     print("\n(worst of the three axes for each, since Kalibr takes one scalar each)")
 
+    # Long-tau parameters from the CONTINUOUS stream.
+    #
+    # An earlier version said bias instability needed continuous RAW data and was
+    # therefore blocked. That was wrong, and the reason is a separation of scales:
+    # INS_GYRO_FILTER at 20 Hz only removes content ABOVE 20 Hz, so it affects the
+    # short-tau end of the Allan curve and nothing else. Bias instability and
+    # random walk live at tau of seconds to minutes, where a 20 Hz low-pass is
+    # completely transparent.
+    #
+    # So each parameter comes from the source that can actually measure it:
+    #   noise density        batch samples, raw, 1 kHz, valid only below one window
+    #   bias instability     continuous IMU messages, filtered, 50 Hz, gap-free
+    #   random walk          same
+    if imu_t.size > 200:
+        span = imu_t[-1] - imu_t[0]
+        fs_c = (imu_t.size - 1) / span
+        print("\n=== long-tau parameters, from the CONTINUOUS 50 Hz stream ===")
+        print(f"  {imu_t.size} samples over {span / 60:.1f} min at {fs_c:.1f} Hz,"
+              " gap-free")
+        print("  Valid despite being filtered: a 20 Hz low-pass cannot affect")
+        print("  averaging times of seconds to minutes. Only the short-tau end")
+        print("  needs raw samples, and that is what the batch data is for.")
+        for label, unit, data in (("gyroscope", "rad/s", imu_g),
+                                  ("accelerometer", "m/s^2", imu_a)):
+            print(f"\n  {label}")
+            for k in range(3):
+                taus, sig = allan_deviation(
+                    np.asarray(data[:, k], dtype=np.float64), 1.0 / fs_c)
+                if taus.size < 6:
+                    continue
+                i_min = int(np.argmin(sig))
+                bias = sig[i_min] / 0.6642
+                long = taus > taus[i_min] * 2
+                rw = (float(np.median(sig[long] * np.sqrt(3.0 / taus[long])))
+                      if long.sum() >= 2 else float("nan"))
+                print(f"    {AXES[k]}: bias instability {bias:.3e} {unit} at "
+                      f"tau {taus[i_min]:.1f} s,  random walk {rw:.3e}")
+                results.setdefault(label + "_long", {})[AXES[k]] = {
+                    "bias_instability": float(bias), "random_walk": rw,
+                    "tau_min": float(taus[i_min])}
+        tau_max = (imu_t[-1] - imu_t[0]) / 5.0
+        print(f"\n  Trustworthy out to tau ~ {tau_max:.0f} s (a fifth of the"
+              " record). If a")
+        print("  minimum sits near that edge, the record is too short and the")
+        print("  bias-instability figure is a lower bound.")
+
     if any(s[5] > 1 for s in sources):
-        print("\n!! Only `*_noise_density` above is a measurement. The random-walk")
-        print("   figures come from tau beyond the batch window and are artefacts.")
+        print("\n!! `*_noise_density` above comes from windowed batch data and is")
+        print("   valid; the bias/random-walk figures printed alongside it are not.")
+        print("   Use the long-tau section instead for those two.")
     if any("FILTERED" in s[4] for s in sources):
         print("\n!! These came from FILTERED data and understate the noise")
         print("   density. Do not put them in a Kalibr yaml. Fix the batch")
         print("   logging first.")
-    span_s = len(sources[0][2]) / sources[0][3]
-    if span_s < 3600:
-        print(f"\nNote: only {span_s / 60:.0f} minutes of data. Noise density needs"
-              " minutes and is")
-        print("      already reliable; bias instability and random walk need the"
-              " curve's")
-        print("      minimum to be inside the record, so they want several hours.")
-        print("      Re-run on a longer log before trusting those two.")
+    # Only warn about record length if it actually bites, i.e. if a bias-instability
+    # minimum sits near the edge of what the record can resolve. Warning
+    # unconditionally trained the reader to ignore it.
+    long_taus = [p["tau_min"] for lab in ("gyroscope_long", "accelerometer_long")
+                 for p in results.get(lab, {}).values() if "tau_min" in p]
+    if long_taus and imu_t.size > 200:
+        limit = (imu_t[-1] - imu_t[0]) / 5.0
+        worst_tau = max(long_taus)
+        if worst_tau > 0.5 * limit:
+            print(f"\n!! A bias-instability minimum sits at tau {worst_tau:.0f} s"
+                  f" against a resolvable limit of {limit:.0f} s.")
+            print("   The record is too short; treat those figures as lower bounds"
+                  " and re-run on a longer log.")
+        else:
+            print(f"\nRecord length is adequate: the latest minimum is at tau"
+                  f" {worst_tau:.0f} s, well")
+            print(f"inside the {limit:.0f} s this record resolves. These are"
+                  " measurements, not bounds.")
+    elif not long_taus:
+        print("\nNote: no continuous stream found, so no long-tau parameters.")
     return 0
 
 
