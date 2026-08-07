@@ -325,6 +325,186 @@ std::vector<Keypoint> detect_keypoints(const Image8& img,
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// FAST
+
+namespace {
+
+// Bresenham circle of radius 3, starting at the top and going clockwise. Order
+// matters: contiguity is defined around this ring.
+const int kCircleX[16] = {0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1};
+const int kCircleY[16] = {-3, -3, -2, -1, 0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3};
+
+// Is there a circular run of at least n set bits in the low 16 bits?
+inline bool circular_run(unsigned mask, int n) {
+  const unsigned doubled = mask | (mask << 16);
+  const unsigned want = (n >= 32) ? 0xFFFFFFFFu : ((1u << n) - 1u);
+  for (int i = 0; i < 16; ++i) {
+    if (((doubled >> i) & want) == want) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+bool is_fast_corner(const Image8& img, int x, int y, int threshold) {
+  if (x < 3 || y < 3 || x >= img.width - 3 || y >= img.height - 3) return false;
+  const int centre = img.at(x, y);
+  const int hi = centre + threshold;
+  const int lo = centre - threshold;
+
+  // High-speed rejection on the four compass points, which are 4 apart on the
+  // ring. A run of 9 consecutive indices out of 16 must contain at least TWO of
+  // them -- the worst case, indices 1..9, contains only 4 and 8. Requiring three
+  // is the correct test for FAST-12, not FAST-9, and using it here silently
+  // discarded real corners: a square's corner pixel has exactly two dark compass
+  // points, so every one of them was rejected.
+  int bright = 0, dark = 0;
+  for (int k = 0; k < 16; k += 4) {
+    const int v = img.at(x + kCircleX[k], y + kCircleY[k]);
+    if (v > hi) ++bright;
+    else if (v < lo) ++dark;
+  }
+  if (bright < 2 && dark < 2) return false;
+
+  unsigned bright_mask = 0, dark_mask = 0;
+  for (int k = 0; k < 16; ++k) {
+    const int v = img.at(x + kCircleX[k], y + kCircleY[k]);
+    if (v > hi) bright_mask |= (1u << k);
+    else if (v < lo) dark_mask |= (1u << k);
+  }
+  return circular_run(bright_mask, 9) || circular_run(dark_mask, 9);
+}
+
+float shi_tomasi_at(const Image8& img, int x, int y, int grad_window) {
+  const int r = std::max(1, grad_window / 2);
+  // Gradients are needed over the window, and each Sobel needs one pixel beyond.
+  if (x - r - 1 < 0 || y - r - 1 < 0 ||
+      x + r + 1 >= img.width || y + r + 1 >= img.height)
+    return 0.f;
+
+  float sxx = 0.f, syy = 0.f, sxy = 0.f;
+  for (int dy = -r; dy <= r; ++dy) {
+    for (int dx = -r; dx <= r; ++dx) {
+      const int px = x + dx, py = y + dy;
+      const uint8_t* rm = &img.data[size_t(py - 1) * img.width];
+      const uint8_t* r0 = &img.data[size_t(py) * img.width];
+      const uint8_t* rp = &img.data[size_t(py + 1) * img.width];
+      const float gx = (float(rm[px + 1]) - float(rm[px - 1])
+                        + 2.f * (float(r0[px + 1]) - float(r0[px - 1]))
+                        + float(rp[px + 1]) - float(rp[px - 1])) * 0.125f;
+      const float gy = (float(rp[px - 1]) - float(rm[px - 1])
+                        + 2.f * (float(rp[px]) - float(rm[px]))
+                        + float(rp[px + 1]) - float(rm[px + 1])) * 0.125f;
+      sxx += gx * gx;
+      syy += gy * gy;
+      sxy += gx * gy;
+    }
+  }
+  const float n = 1.f / float((2 * r + 1) * (2 * r + 1));
+  const float a = sxx * n, b = syy * n, c = sxy * n;
+  const float half_tr = 0.5f * (a + b);
+  const float disc = std::sqrt(std::max(0.f, 0.25f * (a - b) * (a - b) + c * c));
+  return half_tr - disc;
+}
+
+std::vector<Keypoint> detect_keypoints_fast(const Image8& img,
+                                            const DetectorConfig& cfg) {
+  std::vector<Keypoint> result;
+  if (img.empty()) return result;
+  const int w = img.width, h = img.height;
+  const int border = std::max(cfg.border, 5);  // FAST needs 3, Sobel one more
+
+  // 1. FAST nominates candidates, densely but cheaply.
+  std::vector<Keypoint> cand;
+  cand.reserve(4096);
+  for (int y = border; y < h - border; ++y) {
+    for (int x = border; x < w - border; ++x) {
+      if (!is_fast_corner(img, x, y, cfg.fast_threshold)) continue;
+      Keypoint kp;
+      kp.x = float(x);
+      kp.y = float(y);
+      kp.response = shi_tomasi_at(img, x, y, cfg.grad_window);
+      if (kp.response < cfg.min_response) continue;
+      cand.push_back(kp);
+    }
+  }
+  if (cand.empty()) return result;
+
+  // 2. Suppress within nms_radius, strongest first. Sparse candidates make this
+  // a sort plus an occupancy stamp rather than a neighbourhood scan per pixel.
+  std::sort(cand.begin(), cand.end(),
+            [](const Keypoint& a, const Keypoint& b) {
+              return a.response > b.response;
+            });
+  const int rad = std::max(1, cfg.nms_radius);
+  std::vector<uint8_t> taken(img.pixels(), 0);
+  std::vector<Keypoint> kept;
+  kept.reserve(cand.size());
+  for (const Keypoint& kp : cand) {
+    const int xi = int(kp.x), yi = int(kp.y);
+    bool blocked = false;
+    for (int dy = -rad; dy <= rad && !blocked; ++dy) {
+      const int py = yi + dy;
+      if (py < 0 || py >= h) continue;
+      for (int dx = -rad; dx <= rad; ++dx) {
+        const int px = xi + dx;
+        if (px < 0 || px >= w) continue;
+        if (taken[size_t(py) * w + px]) { blocked = true; break; }
+      }
+    }
+    if (blocked) continue;
+    taken[size_t(yi) * w + xi] = 1;
+    kept.push_back(kp);
+  }
+
+  // 3. Texture floor, then sub-pixel, then grid bucketing -- all sparse.
+  const int cell = std::max(4, cfg.cell);
+  const int cols = (w + cell - 1) / cell;
+  const int rows = (h + cell - 1) / cell;
+  std::vector<std::vector<Keypoint>> buckets(size_t(cols) * rows);
+  for (Keypoint kp : kept) {
+    const int xi = int(kp.x), yi = int(kp.y);
+    kp.local_std = local_std_at(img, xi, yi, 7);
+    if (kp.local_std < cfg.min_local_std) continue;
+
+    if (cfg.subpixel) {
+      // Parabola through three sparse response samples per axis.
+      const float c = kp.response;
+      const float l = shi_tomasi_at(img, xi - 1, yi, cfg.grad_window);
+      const float r = shi_tomasi_at(img, xi + 1, yi, cfg.grad_window);
+      const float dxx = l - 2.f * c + r;
+      if (std::fabs(dxx) > 1e-12f) {
+        const float d = 0.5f * (l - r) / dxx;
+        if (std::fabs(d) <= 0.5f) kp.x += d;
+      }
+      const float u = shi_tomasi_at(img, xi, yi - 1, cfg.grad_window);
+      const float dn = shi_tomasi_at(img, xi, yi + 1, cfg.grad_window);
+      const float dyy = u - 2.f * c + dn;
+      if (std::fabs(dyy) > 1e-12f) {
+        const float d = 0.5f * (u - dn) / dyy;
+        if (std::fabs(d) <= 0.5f) kp.y += d;
+      }
+    }
+    buckets[size_t(yi / cell) * cols + (xi / cell)].push_back(kp);
+  }
+
+  const size_t keep = size_t(std::max(1, cfg.per_cell));
+  for (auto& bucket : buckets) {
+    if (bucket.size() > keep) {
+      std::partial_sort(bucket.begin(), bucket.begin() + keep, bucket.end(),
+                        [](const Keypoint& a, const Keypoint& b) {
+                          return a.response > b.response;
+                        });
+      bucket.resize(keep);
+    }
+    result.insert(result.end(), bucket.begin(), bucket.end());
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+
 float cell_occupancy(const std::vector<Keypoint>& kps, int width, int height,
                      int cell) {
   if (width <= 0 || height <= 0) return 0.f;

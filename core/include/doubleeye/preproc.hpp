@@ -131,6 +131,11 @@ struct DetectorConfig {
   float min_local_std = 2.0f;  // the measured noise floor
   int border = 8;              // must exceed the Census half-window
   bool subpixel = true;
+  // 8 DN, chosen by measurement: 96% of the dense detector's keypoints and 98%
+  // of its cell coverage at 1.45x the speed. Below ~5 the candidate count grows
+  // until the sparse path costs MORE than the dense scan it replaces.
+  int fast_threshold = 8;
+  int nms_radius = 3;          // candidate suppression radius, FAST path only
 };
 
 // Shi-Tomasi (minimum eigenvalue of the structure tensor) rather than Harris.
@@ -148,6 +153,33 @@ std::vector<float> shi_tomasi_response(const Image8& img, int grad_window);
 // precision is worst and most needs measurements -- gets nothing.
 std::vector<Keypoint> detect_keypoints(const Image8& img,
                                        const DetectorConfig& cfg);
+
+// ---------------------------------------------------------------------------
+// FAST-based detection — the cheap path
+//
+// Profiling said the dense Shi-Tomasi response costs 49 ms per frame on the TX2,
+// which is most of the 299%-of-budget figure. But almost all of it is thrown
+// away: ~1100 keypoints survive out of 407040 pixels.
+//
+// This is the same mistake the dense Census transform made, and the same fix
+// applies. FAST is a handful of comparisons per pixel and cheap enough to run
+// densely; the structure tensor is then only evaluated at the few thousand pixels
+// FAST nominates. Shi-Tomasi still does the scoring and sub-pixel work, so
+// keypoint *quality* is unchanged -- FAST only decides where to look.
+
+// FAST-9 on the 16-pixel Bresenham circle of radius 3: a corner needs 9
+// contiguous circle pixels all brighter than centre+t or all darker than
+// centre-t.
+bool is_fast_corner(const Image8& img, int x, int y, int threshold);
+
+// Shi-Tomasi minimum eigenvalue at one point, structure tensor summed directly
+// over the window. The sparse counterpart of shi_tomasi_response().
+float shi_tomasi_at(const Image8& img, int x, int y, int grad_window);
+
+// FAST for candidates, Shi-Tomasi at candidates only. Same output contract as
+// detect_keypoints(): thresholded, suppressed, grid-bucketed, sub-pixel refined.
+std::vector<Keypoint> detect_keypoints_fast(const Image8& img,
+                                            const DetectorConfig& cfg);
 
 // Fraction of grid cells that ended up with at least one keypoint. A single
 // number for "is the coverage actually spread out", which is the property the

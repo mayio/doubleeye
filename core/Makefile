@@ -11,7 +11,11 @@
 # <experimental/filesystem>, and nothing here needs it.
 
 CXX      ?= g++
-CXXFLAGS ?= -O3 -std=c++14 -Wall -Wextra
+# -pthread is required, not optional. std::thread on the Jetson's glibc 2.27
+# needs it explicitly; the desktop's glibc >= 2.34 merged pthread into libc, so
+# omitting it links fine there and fails only on the target. A difference that
+# only shows up on the machine that matters is worth a comment.
+CXXFLAGS ?= -O3 -std=c++14 -Wall -Wextra -pthread
 # On aarch64 NEON is baseline in armv8-a, so no flag is needed for the Jetson.
 # ARCHFLAGS is left empty by default because -march=native would make the
 # desktop binary non-portable, and this code is meant to move between machines.

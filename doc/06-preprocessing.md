@@ -86,8 +86,9 @@ bandwidth are, and to profile before touching CUDA. Done, and it holds.
 | per stereo pair | 33.9 ms | **99.6 ms** |
 | fraction of the 33.3 ms budget at 30 Hz | 102% | **299%** |
 
-**On the target hardware, preprocessing is three times over budget, and it is
-essentially all detector.** Census is 0.3% of the cost.
+**On the target hardware, preprocessing was three times over budget, and it was
+essentially all detector.** Census is 0.3% of the cost. Both problems are addressed
+below; the figure is now **78.8%** of budget.
 
 ### Two optimisations already applied, both behaviour-preserving
 
@@ -108,21 +109,77 @@ image — a descriptor for all 407040 pixels — and then read roughly 1100 of t
 and nowhere else. That is an architectural error, not a micro-optimisation, and
 no amount of SIMD would have fixed it.
 
-### Identified next steps, in expected order of value
+### FAST for candidates — done, and it closes the gap
 
-1. **FAST for candidate detection, Shi-Tomasi only at candidates.** The same
-   sparse-the-expensive-operator move that gave 480× on Census. FAST is a handful
-   of comparisons per pixel and is cheap enough to run densely; the structure
-   tensor then only needs evaluating at a few thousand FAST corners instead of
-   407040 pixels. The plan already sanctions "FAST/Harris". This is very likely to
-   close the 3× on its own.
-2. **Process the two channels concurrently.** Left and right are completely
-   independent and the board has 6 cores. Roughly halves wall-clock per pair for
-   almost no effort.
-3. **NEON.** The plan explicitly anticipates this. Worth doing after 1 and 2,
-   because it is the most invasive and may turn out unnecessary.
-4. **Detect on a reduced-resolution level.** Falls out of the coarse-to-fine
+Applied the same sparsify-the-expensive-operator move that gave 480× on Census.
+FAST-9 nominates candidates densely but cheaply; the structure tensor is then
+evaluated only at those few thousand pixels. Shi-Tomasi still does all scoring and
+sub-pixel work, so keypoint *quality* is unchanged — FAST only decides where to
+look.
+
+**Threshold sweep on a real recording** (desktop, `bags/full_on`):
+
+| FAST threshold | keypoints | cell occupancy | detect ms | % of budget |
+|---|---|---|---|---|
+| 4 | 1107 | 0.926 | 22.9 | 138% |
+| 6 | 1099 | 0.921 | 15.6 | 94% |
+| **8** | **1072** | **0.909** | **12.9** | **78%** |
+| 12 | 947 | 0.849 | 9.4 | 57% |
+| 16 | 753 | 0.722 | 7.8 | 47% |
+| 20 | 608 | 0.602 | 6.3 | 38% |
+| *dense Shi-Tomasi* | *1115* | *0.928* | *18.6* | *112%* |
+
+**8 DN is the default**: 96% of the dense detector's keypoints and 98% of its cell
+coverage, at 1.45× the speed.
+
+Note the row at threshold 4: the sparse path is **slower than the dense scan it
+replaces** (22.9 ms against 18.6). Below about 5 DN the candidate count grows until
+per-candidate work exceeds a single dense pass. Sparsification is not free, and it
+has a crossover.
+
+### Concurrent left/right — and the result on the target
+
+Left and right are wholly independent and the board has 6 cores, so the tool can
+time them concurrently (`--parallel`) and report what a real pipeline would get per
+stereo pair rather than the serial sum.
+
+**On the TX2, at locked clocks:**
+
+| Configuration | per stereo pair | % of the 33.3 ms budget |
+|---|---|---|
+| dense Shi-Tomasi, serial | 100.15 ms | 300.5% |
+| FAST (thr 8), serial | 40.45 ms | 121.3% |
+| **FAST + concurrent L/R** | **26.28 ms** | **78.8%** |
+
+**Under budget, 3.8× faster than where it started, keeping 96% of the keypoints
+and 98% of the coverage.**
+
+One detail worth reading: concurrency bought 1.54×, not 2× (40.45 → 26.28 rather
+than → 20.2). Two threads on a 6-core board should scale almost perfectly on
+compute, so the shortfall is contention — which is exactly the plan's prediction
+that **memory bandwidth**, not arithmetic, is the real constraint on this hardware.
+It also means further threading will yield less than headcount suggests.
+
+NEON remains available and is now optional rather than necessary.
+
+### Two platform traps hit while doing this
+
+- **`-pthread` is required.** `std::thread` links fine on the desktop without it
+  because glibc ≥ 2.34 merged pthread into libc. The Jetson's glibc 2.27 does not,
+  so it failed only on the machine that matters. Now in `CXXFLAGS`.
+- **`tar` preserves mtimes**, so syncing sources whose desktop timestamps predate
+  the Jetson's object files makes `make` decide there is nothing to do and relink a
+  stale binary. This is obstacle 10 in a new disguise. `deploy.sh` now extracts
+  with `-m`.
+
+### Remaining options, no longer urgent
+
+1. **NEON.** Now optional. Would buy headroom for the matcher rather than being
+   needed to fit the detector.
+2. **Detect on a reduced-resolution level.** Falls out of the coarse-to-fine
    pyramid the plan wants anyway.
+3. **More threads.** Expect sub-linear returns, given concurrency already returned
+   1.54× instead of 2×.
 
 Deliberately **not** CUDA. The plan rejects it for this workload and nothing
 measured here contradicts that — the problem is redundant work and scalar code,

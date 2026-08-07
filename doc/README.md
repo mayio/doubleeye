@@ -47,10 +47,9 @@ validated against real ROS Melodic, so what remains is running Kalibr itself. Se
 [04-baseline-measurements.md](04-baseline-measurements.md#calibration-set-collected-2026-08-07)
 for the set's properties and its one real caveat, which is board size.
 
-Preprocessing (`core/`) exists and is measured. On the TX2 it currently runs at
-**299% of the 30 Hz budget**, essentially all of it the keypoint detector, with
-Census at 0.3% — see [06-preprocessing.md](06-preprocessing.md) for the
-optimisation path.
+Preprocessing (`core/`) is **within budget on the target**: 26.28 ms per stereo
+pair against 33.3 ms, or 78.8%, down from 300.5% — see
+[06-preprocessing.md](06-preprocessing.md).
 
 ## Findings at a glance
 
@@ -69,7 +68,10 @@ across them is the same: **on this platform the expensive failures are silent.**
 | The projector **halves the textureless area**, 57% → 25%, and lifts keypoint coverage from 67% to 93% of cells | [04](04-baseline-measurements.md), [06](06-preprocessing.md) |
 | **Mean intensity cannot see the projector** — it moved 1.8 DN across the same A/B. Local contrast is the only valid metric | [03](03-obstacles.md) obstacle 12 |
 | Census descriptors are **3.3× degenerate** under the projector (338 distinct for 1115 keypoints) — exactly the ambiguity MASDA's uniqueness constraint is for | [06](06-preprocessing.md) |
-| Preprocessing costs **299% of the 30 Hz budget on the TX2**, essentially all detector, Census at 0.3% | [06](06-preprocessing.md) |
+| Preprocessing was **299% of the 30 Hz budget on the TX2**; FAST candidates plus concurrent L/R brought it to **78.8%**, keeping 96% of keypoints | [06](06-preprocessing.md) |
+| Below ~5 DN the FAST **sparse path becomes slower than the dense scan** it replaces — sparsification has a crossover | [06](06-preprocessing.md) |
+| Concurrency returned **1.54× not 2×** on a 6-core board, corroborating memory bandwidth as the real constraint | [06](06-preprocessing.md) |
+| `std::thread` needs `-pthread` on the Jetson's glibc 2.27 but **links silently without it** on the desktop's 2.34+ | [06](06-preprocessing.md) |
 | Computing Census densely wasted **99.7%** of the work; making it sparse cut 61 ms to 0.13 ms with identical output | [06](06-preprocessing.md) |
 | The Pixhawk reports "PX4 FMU v2.x" over USB but **runs ArduPilot** — the descriptor is the bootloader identity | [01](01-hardware.md) |
 | `nvs_bmi160` and its device-tree node are **stock leftovers with no hardware behind them** — not the IMU | [01](01-hardware.md) |

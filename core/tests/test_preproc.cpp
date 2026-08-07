@@ -173,6 +173,75 @@ void test_detect_and_bucketing() {
         "texture floor suppresses everything when set above the range");
 }
 
+void test_fast() {
+  std::printf("FAST detection\n");
+  const Image8 flat = uniform(64, 64, 100);
+  check(!is_fast_corner(flat, 32, 32, 20), "uniform image has no FAST corner");
+  check(!is_fast_corner(flat, 1, 1, 20), "border pixel is not a corner");
+
+  // A bright square: its corners must fire, the middle of an edge must not.
+  Image8 sq = uniform(64, 64, 30);
+  for (int y = 20; y < 44; ++y)
+    for (int x = 20; x < 44; ++x) sq.at(x, y) = 220;
+  check(is_fast_corner(sq, 20, 20, 20), "square corner is a FAST corner");
+  check(!is_fast_corner(sq, 32, 20, 20), "mid-edge is not a FAST corner");
+  check(!is_fast_corner(sq, 32, 32, 20), "interior is not a FAST corner");
+
+  // Threshold must actually gate: a low-contrast corner should drop out.
+  Image8 faint = uniform(64, 64, 100);
+  for (int y = 20; y < 44; ++y)
+    for (int x = 20; x < 44; ++x) faint.at(x, y) = 110;  // only 10 DN
+  check(is_fast_corner(faint, 20, 20, 5), "faint corner found at threshold 5");
+  check(!is_fast_corner(faint, 20, 20, 30), "faint corner rejected at 30");
+
+  // shi_tomasi_at must agree with the dense response it replaces. If these
+  // diverge, the sparse path is silently scoring keypoints differently.
+  const std::vector<float> dense = shi_tomasi_response(sq, 3);
+  double worst = 0.0;
+  for (int y = 6; y < 58; ++y) {
+    for (int x = 6; x < 58; ++x) {
+      const double d = std::fabs(dense[size_t(y) * 64 + x]
+                                 - shi_tomasi_at(sq, x, y, 3));
+      worst = std::max(worst, d);
+    }
+  }
+  check_near(worst, 0.0, 1e-2, "sparse shi_tomasi_at matches the dense response");
+}
+
+void test_fast_vs_dense_agreement() {
+  std::printf("FAST path against the dense path\n");
+  // Grid of squares, as in the bucketing test: both detectors should produce
+  // comparable counts and coverage, since FAST only chooses where to look.
+  Image8 img = uniform(256, 128, 20);
+  for (int cy = 16; cy < 128; cy += 32)
+    for (int cx = 16; cx < 256; cx += 32)
+      for (int y = cy - 5; y <= cy + 5; ++y)
+        for (int x = cx - 5; x <= cx + 5; ++x) img.at(x, y) = 200;
+
+  DetectorConfig cfg;
+  cfg.cell = 32;
+  cfg.per_cell = 2;
+  cfg.min_local_std = 0.5f;
+  const std::vector<Keypoint> dense = detect_keypoints(img, cfg);
+  const std::vector<Keypoint> fast = detect_keypoints_fast(img, cfg);
+
+  check(!fast.empty(), "FAST path finds keypoints");
+  const float occ_d = cell_occupancy(dense, 256, 128, 32);
+  const float occ_f = cell_occupancy(fast, 256, 128, 32);
+  check(occ_f >= occ_d * 0.8f,
+        "FAST coverage within 20% of dense (" + std::to_string(occ_f) +
+            " vs " + std::to_string(occ_d) + ")");
+
+  bool in_bounds = true;
+  for (const Keypoint& kp : fast)
+    if (kp.x < 0 || kp.x > 256 || kp.y < 0 || kp.y > 128) in_bounds = false;
+  check(in_bounds, "FAST keypoints inside the image");
+
+  const int cols = (256 + 31) / 32, rows = (128 + 31) / 32;
+  check(fast.size() <= size_t(cols * rows * cfg.per_cell),
+        "FAST path respects the per-cell cap");
+}
+
 void test_load_rejects_wrong_size() {
   std::printf("raw loader guards geometry\n");
   const std::string path = "/tmp/de_test_frame.raw";
@@ -201,6 +270,8 @@ int main() {
   test_local_std();
   test_shi_tomasi_ordering();
   test_detect_and_bucketing();
+  test_fast();
+  test_fast_vs_dense_agreement();
   test_load_rejects_wrong_size();
   std::printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "ALL PASSED",
               g_failures, g_failures == 1 ? "" : "s");

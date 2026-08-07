@@ -22,6 +22,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace doubleeye;
@@ -43,6 +44,8 @@ struct Args {
   DetectorConfig det;
   int limit = 0;   // 0 = all pairs
   bool dump = false;
+  std::string detector = "fast";   // fast | shitomasi
+  bool parallel = false;
 };
 
 void usage(const char* argv0) {
@@ -55,6 +58,10 @@ void usage(const char* argv0) {
       "  --min-response F         Shi-Tomasi threshold (default 1.0)\n"
       "  --min-local-std F        texture floor in DN (default 2.0)\n"
       "  --limit N                only process the first N pairs\n"
+      "  --detector WHICH         fast (default) | shitomasi\n"
+      "  --fast-threshold N       FAST intensity margin in DN (default 20)\n"
+      "  --parallel               process ir1 and ir2 concurrently, and report\n"
+      "                           wall-clock per PAIR (what a real pipeline gets)\n"
       "  --dump                   also write a PGM of frame 1 for eyeballing\n",
       argv0);
 }
@@ -101,6 +108,7 @@ std::vector<std::string> paired_frame_numbers(const std::string& bag) {
 
 struct Stats {
   std::vector<double> t_detect, t_census, kp_count, occupancy;
+  std::vector<double> t_pair_wall;   // --parallel only
 };
 
 void summarise(const char* label, std::vector<double> v, const char* unit) {
@@ -145,6 +153,15 @@ int main(int argc, char** argv) {
     else if (s == "--min-response" && has) a.det.min_response = float(std::atof(argv[++i]));
     else if (s == "--min-local-std" && has) a.det.min_local_std = float(std::atof(argv[++i]));
     else if (s == "--limit" && has) a.limit = std::atoi(argv[++i]);
+    else if (s == "--detector" && has) {
+      a.detector = argv[++i];
+      if (a.detector != "fast" && a.detector != "shitomasi") {
+        std::fprintf(stderr, "bad --detector '%s'\n", a.detector.c_str());
+        return 2;
+      }
+    }
+    else if (s == "--fast-threshold" && has) a.det.fast_threshold = std::atoi(argv[++i]);
+    else if (s == "--parallel") a.parallel = true;
     else if (s == "--dump") a.dump = true;
     else { std::fprintf(stderr, "unknown argument '%s'\n", s.c_str()); usage(argv[0]); return 2; }
   }
@@ -175,6 +192,11 @@ int main(int argc, char** argv) {
               meta.count("emitter") ? meta.at("emitter").c_str() : "?");
   std::printf("census           %dx%d (%d bits)\n", 2 * ccfg.half_w + 1,
               2 * ccfg.half_h + 1, ccfg.bits());
+  std::printf("detector         %s%s\n", a.detector.c_str(),
+              a.detector == "fast"
+                  ? " (FAST candidates, Shi-Tomasi scoring)" : " (dense)");
+  if (a.detector == "fast")
+    std::printf("fast threshold   %d DN\n", a.det.fast_threshold);
   std::printf("grid             %d px cells, top %d each\n", a.det.cell,
               a.det.per_cell);
   std::printf("thresholds       response >= %.2f, local std >= %.2f DN\n",
@@ -194,6 +216,37 @@ int main(int argc, char** argv) {
 
   for (const std::string& num : numbers) {
     if (a.limit > 0 && processed >= size_t(a.limit)) break;
+
+    // Left and right are wholly independent, and the board has 6 cores. Timing
+    // them concurrently measures what a real pipeline would actually achieve per
+    // stereo pair, rather than the serial sum this tool otherwise reports.
+    if (a.parallel) {
+      Image8 imgs[2];
+      bool ok = true;
+      for (int stream = 1; stream <= 2; ++stream) {
+        char path[512];
+        std::snprintf(path, sizeof(path), "%s/frames/ir%d_%s.raw", a.bag.c_str(),
+                      stream, num.c_str());
+        if (!load_raw_y8(path, a.width, a.height, &imgs[stream - 1])) ok = false;
+      }
+      if (ok) {
+        const double t0 = now_ms();
+        std::vector<Keypoint> out[2];
+        std::thread workers[2];
+        for (int k = 0; k < 2; ++k) {
+          workers[k] = std::thread([&, k]() {
+            out[k] = (a.detector == "fast") ? detect_keypoints_fast(imgs[k], a.det)
+                                            : detect_keypoints(imgs[k], a.det);
+            for (const Keypoint& kp : out[k])
+              census_at(imgs[k], int(kp.x + 0.5f), int(kp.y + 0.5f), ccfg);
+          });
+        }
+        workers[0].join();
+        workers[1].join();
+        stats.t_pair_wall.push_back(now_ms() - t0);
+      }
+    }
+
     for (int stream = 1; stream <= 2; ++stream) {
       char path[512];
       std::snprintf(path, sizeof(path), "%s/frames/ir%d_%s.raw", a.bag.c_str(),
@@ -205,7 +258,9 @@ int main(int argc, char** argv) {
       }
 
       const double t0 = now_ms();
-      const std::vector<Keypoint> kps = detect_keypoints(img, a.det);
+      const std::vector<Keypoint> kps =
+          (a.detector == "fast") ? detect_keypoints_fast(img, a.det)
+                                 : detect_keypoints(img, a.det);
       const double t1 = now_ms();
       // Sparse: one descriptor per keypoint, not one per pixel.
       std::vector<uint64_t> descs(kps.size(), 0ull);
@@ -244,6 +299,15 @@ int main(int argc, char** argv) {
   summarise("cell occupancy", stats.occupancy, "fraction of cells");
   summarise("detect time", stats.t_detect, "ms");
   summarise("census time", stats.t_census, "ms");
+
+  if (!stats.t_pair_wall.empty()) {
+    summarise("pair wall-clock", stats.t_pair_wall, "ms (2 threads)");
+    double sum = 0;
+    for (double x : stats.t_pair_wall) sum += x;
+    const double per_pair = sum / double(stats.t_pair_wall.size());
+    std::printf("\n  concurrent: %.2f ms per stereo pair -> %.1f%% of the "
+                "33.3 ms budget\n", per_pair, 100.0 * per_pair / 33.333);
+  }
 
   if (!stats.t_detect.empty()) {
     double d = 0, c = 0;

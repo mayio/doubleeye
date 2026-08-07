@@ -66,7 +66,10 @@ esac
 
 echo "==> syncing jetson/ to ${HOST}:~/${REMOTE_DIR}/"
 ssh "$HOST" "mkdir -p ~/${REMOTE_DIR}"
-tar czf - jetson | ssh "$HOST" "tar xzf - -C ~/${REMOTE_DIR}"
+# -m sets extracted mtimes to now. Without it tar preserves the DESKTOP mtimes,
+# which can be older than the Jetson's object files, so make decides there is
+# nothing to do and relinks a stale binary -- obstacle 10 in a new disguise.
+tar czf - jetson | ssh "$HOST" "tar xzf - -m -C ~/${REMOTE_DIR}"
 
 # cmake on the TX2 is 3.10.2, which supports NEITHER `-S`/`-B` (3.13+) NOR
 # `--build -j` (3.12+). Passing either makes cmake print its usage text and exit
