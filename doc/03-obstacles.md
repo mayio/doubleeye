@@ -497,6 +497,21 @@ it printed usage to stderr and exited **0**. Downstream, `de_pipe` reported
 If a consumer reports no frames, read the producer's stderr before suspecting
 hardware.
 
+**It happened twice.** `desktop/de_live_ros2.py` was shipped with `--streams both`
+hardcoded, so the first real run of the live viewer failed exactly this way. The
+obstacle was written up from the first occurrence while the script still contained
+it. Documenting a trap is not the same as removing it; the call sites need grepping.
+
+There is a lesson about verification here too. The end-to-end test that was supposed
+to catch this was
+
+    ssh jetson '...' | python3 - <<'PY'
+
+which cannot work: `python3 -` reads its *program* from stdin, so the heredoc took
+stdin and the piped data went nowhere. The test reported 0 packets for a pipeline
+that was fine, which is indistinguishable from the bug it was meant to detect. Put
+the reader in a file when the thing being read is stdin.
+
 ## 18. A pipe hides the exit status, including in one-liners written to check builds
 
     make -s 2>&1 | tail -8 && echo BUILD_OK

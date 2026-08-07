@@ -5,7 +5,7 @@
 
 Pipeline, all of it started by this script:
 
-    ssh jetson 'rs_ir_stream --streams both | de_pipe ...'   <- capture + match
+    ssh jetson 'rs_ir_stream --emitter on | de_pipe ...'     <- capture + match
         |  DEMR packets over the ssh pipe
     this script                                              <- ROS 2 publisher
         |  /doubleeye/image_raw, /depth, /points, /camera_info, /tf
@@ -74,6 +74,10 @@ def main() -> int:
     ap.add_argument("--min-margin", type=float, default=0.10)
     ap.add_argument("--exposure-us", type=int, default=0)
     ap.add_argument("--emitter", default=None, choices=[None, "on", "off"])
+    ap.add_argument("--out-fps", type=float, default=10.0,
+                    help="frames/s per channel off the camera (default 10). "
+                         "Each packet carries the left image, so 30 fps is "
+                         "~12 MB/s over the ssh pipe")
     ap.add_argument("--every", type=int, default=1,
                     help="publish every Nth pair, for a slow link")
     ap.add_argument("--dilate", type=int, default=3,
@@ -99,7 +103,13 @@ def main() -> int:
         proc = None
         stream = open(a.local, "rb")
     else:
-        remote = (f"cd ~/{a.remote_dir}/jetson/build && ./rs_ir_stream --streams both"
+        # No --streams flag: rs_ir_stream emits both channels by default and
+        # --single restricts to ir1. Passing one makes it print usage and exit 0,
+        # which downstream looks exactly like a camera producing nothing. See
+        # doc/03-obstacles.md obstacle 17 -- which this script was violating while
+        # the obstacle was being written.
+        remote = (f"cd ~/{a.remote_dir}/jetson/build && ./rs_ir_stream"
+                  + f" --out-fps {a.out_fps}"
                   + (f" --exposure-us {a.exposure_us}" if a.exposure_us else "")
                   + (f" --emitter {a.emitter}" if a.emitter else "")
                   + f" | ~/{a.remote_dir}/core/build/de_pipe"
