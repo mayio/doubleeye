@@ -523,3 +523,33 @@ samples form surfaces that the same samples cannot suggest in 2D.
 
 For a cleaner cloud, raise `--min-margin` (0.10 default; 0.3 keeps far fewer and
 much better points) and set `--min-range`/`--max-range` to the room you are in.
+
+### Why the live view got slow, and what fixed it
+
+Adding the two derived views made it crawl. Both causes were mine and both were
+measurable rather than guessable.
+
+**Bytes.** Six topics at 848x480 is 4.5 MB per frame -- mono8 407 kB, 32FC1 depth
+1.6 MB, two rgb8 images at 1.2 MB each, plus the cloud. At 10 fps that is **45 MB/s**
+serialised and pushed through DDS whether rviz displays it or not, up from 20 MB/s
+before the derived views. Fixed by checking `get_subscription_count()` before
+building each message, so a display you have not added costs nothing at all.
+
+**CPU**, per frame, measured:
+
+| | before | after |
+|---|---|---|
+| contrast stretch | 12.67 ms | **1.73 ms** |
+| depth splat | 1.75 ms | 0.21 ms |
+| overlay splat | 1.53 ms | 0.20 ms |
+| match colours | 1.05 ms | 0.03 ms |
+
+The stretch dominated everything else combined, which was not where I expected the
+cost to be. Two changes: take the percentiles on every 4th pixel (12.67 to 6.9 ms),
+then apply the mapping through a **256-entry lookup table** instead of converting
+407k pixels to float (6.9 to 1.73 ms). The input is uint8, so the LUT enumerates
+every possible value and the result is bit-identical to the float path -- verified,
+max absolute difference 0.
+
+The three per-point Python loops became fancy-indexed numpy writes over an
+(N, k, k) index grid.

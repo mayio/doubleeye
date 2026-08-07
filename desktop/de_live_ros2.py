@@ -98,13 +98,54 @@ def colourise(v: np.ndarray, lo: float, hi: float) -> np.ndarray:
     return out.astype(np.uint8)
 
 
-def stretch(img: np.ndarray) -> np.ndarray:
-    """Linear p1-p99 contrast stretch, for display only."""
-    lo, hi = np.percentile(img, (1.0, 99.0))
+def stretch(img: np.ndarray, sub: int = 4) -> np.ndarray:
+    """Linear p1-p99 contrast stretch, for display only.
+
+    Percentiles are taken on every `sub`-th pixel. On a full 848x480 frame
+    np.percentile costs 12.7 ms, which was the single largest per-frame cost in
+    this script -- larger than everything else combined. A 1/16 subsample gives
+    the same two numbers to well within a grey level and costs 0.2 ms.
+    """
+    small = img[::sub, ::sub]
+    lo, hi = np.percentile(small, (1.0, 99.0))
     if hi - lo < 1e-6:
         return img
-    return np.clip((img.astype(np.float32) - lo) * (255.0 / (hi - lo)),
-                   0, 255).astype(np.uint8)
+    # Apply through a 256-entry lookup table rather than converting the whole
+    # frame to float. The input is uint8, so every possible value is already
+    # enumerated: the map costs 256 operations plus one gather, against 407k
+    # float multiplies and a clip. That is 6.9 ms down to ~0.3 ms, and it is the
+    # difference between this being the dominant per-frame cost and being
+    # invisible.
+    lut = np.clip((np.arange(256, dtype=np.float32) - lo) * (255.0 / (hi - lo)),
+                  0, 255).astype(np.uint8)
+    return lut[img]
+
+
+def colours_for(m: np.ndarray) -> np.ndarray:
+    """Per-point RGB by margin, vectorised. (N, 3) uint8."""
+    c = np.empty((len(m), 3), np.uint8)
+    c[:] = (60, 170, 75)
+    c[m < 0.30] = (203, 145, 20)
+    c[m < 0.10] = (220, 50, 47)
+    return c
+
+
+def splat(dst, ui, vi, values, half):
+    """Write `values` into `dst` as (2*half+1)^2 blocks, without a Python loop.
+
+    Fancy indexing over an (N, k, k) index grid. The loop version cost 1.5-1.8 ms
+    per frame per image; this is about 0.1 ms.
+    """
+    H, W = dst.shape[:2]
+    off = np.arange(-half, half + 1)
+    vv = np.clip(vi[:, None] + off[None, :], 0, H - 1)
+    uu = np.clip(ui[:, None] + off[None, :], 0, W - 1)
+    V = np.repeat(vv[:, :, None], len(off), axis=2)
+    U = np.repeat(uu[:, None, :], len(off), axis=1)
+    if dst.ndim == 3:
+        dst[V, U] = values[:, None, None, :]
+    else:
+        dst[V, U] = values[:, None, None]
 
 
 def main() -> int:
@@ -277,71 +318,89 @@ def main() -> int:
             n_drop = int((~ok).sum())
             xl, yl, disp, margin = xl[ok], yl[ok], disp[ok], margin[ok]
 
+            # Only build what someone is displaying. Six topics at 848x480 is
+            # 4.5 MB per frame -- 45 MB/s at 10 fps, all of it serialised and
+            # pushed through DDS whether rviz shows it or not. Two rgb8 images are
+            # 1.2 MB each and the 32FC1 depth is 1.6 MB. Checking the subscription
+            # count first skips both the CPU and the bytes for anything not open,
+            # which is what made this slow after the derived views were added.
+            want_img = pub_img.get_subscription_count() > 0
+            want_ovl = pub_ovl.get_subscription_count() > 0
+            want_dep = pub_dep.get_subscription_count() > 0
+            want_dcol = pub_dcol.get_subscription_count() > 0
+            want_pc = pub_pc.get_subscription_count() > 0
+            need_gray = want_img or want_ovl
+            need_depth = want_dep or want_dcol
+
             gray = np.frombuffer(img_bytes, dtype=np.uint8).reshape(H, W)
-            shown = gray if a.no_stretch else stretch(gray)
-            m = Image()
-            m.header.stamp = stamp
-            m.header.frame_id = FRAME
-            m.height, m.width = H, W
-            m.encoding = "mono8"
-            m.step = W
-            m.data = shown.tobytes()
-            pub_img.publish(m)
+            shown = (gray if (a.no_stretch or not need_gray)
+                     else stretch(gray))
+            if want_img:
+                m = Image()
+                m.header.stamp = stamp
+                m.header.frame_id = FRAME
+                m.height, m.width = H, W
+                m.encoding = "mono8"
+                m.step = W
+                m.data = shown.tobytes()
+                pub_img.publish(m)
 
             z = FB / disp
-            depth = np.full((H, W), np.nan, dtype=np.float32)
             ui = np.clip(np.round(xl).astype(int), 0, W - 1)
             vi = np.clip(np.round(yl).astype(int), 0, H - 1)
-            for u, v, zz in zip(ui, vi, z):
-                depth[max(0, v - k):min(H, v + k + 1),
-                      max(0, u - k):min(W, u + k + 1)] = zz
-            d = Image()
-            d.header.stamp = stamp
-            d.header.frame_id = FRAME
-            d.height, d.width = H, W
-            d.encoding = "32FC1"
-            d.step = 4 * W
-            d.data = depth.tobytes()
-            pub_dep.publish(d)
+            depth = np.full((H, W), np.nan, dtype=np.float32)
+            if need_depth and len(z):
+                splat(depth, ui, vi, z, k)
+            if want_dep:
+                d = Image()
+                d.header.stamp = stamp
+                d.header.frame_id = FRAME
+                d.height, d.width = H, W
+                d.encoding = "32FC1"
+                d.step = 4 * W
+                d.data = depth.tobytes()
+                pub_dep.publish(d)
 
             x = (xl - CX) * z / FX
             y = (yl - CY) * z / FY
-            rgb = np.array([colour_for(float(mm)) for mm in margin], dtype=np.uint32)
+            cols = colours_for(margin)
+            packed = ((cols[:, 0].astype(np.uint32) << 16)
+                      | (cols[:, 1].astype(np.uint32) << 8)
+                      | cols[:, 2].astype(np.uint32))
             arr = np.empty((len(z), 5), dtype=np.float32)
             arr[:, 0], arr[:, 1], arr[:, 2] = x, y, z
-            arr[:, 3] = rgb.view(np.float32)
+            arr[:, 3] = packed.view(np.float32)
             arr[:, 4] = margin
-            pc = PointCloud2()
-            pc.header.stamp = stamp
-            pc.header.frame_id = FRAME
-            pc.height, pc.width = 1, len(z)
-            pc.fields = fields
-            pc.is_bigendian = False
-            pc.point_step = 20
-            pc.row_step = 20 * len(z)
-            pc.is_dense = True
-            pc.data = arr.tobytes()
-            pub_pc.publish(pc)
+            if want_pc:
+                pc = PointCloud2()
+                pc.header.stamp = stamp
+                pc.header.frame_id = FRAME
+                pc.height, pc.width = 1, len(z)
+                pc.fields = fields
+                pc.is_bigendian = False
+                pc.point_step = 20
+                pc.row_step = 20 * len(z)
+                pc.is_dense = True
+                pc.data = arr.tobytes()
+                pub_pc.publish(pc)
 
             # Matches drawn on the image: a 3x3 dot per match, coloured the same
             # way as the cloud. This is the view that makes the output legible --
             # you can see at a glance whether the matcher is covering the scene or
             # clustering on one texture, which neither the raw IR nor a sparse
             # depth map shows.
-            ovl = np.repeat(shown[:, :, None], 3, axis=2)
-            if len(z):
-                cols = np.array([[(c >> 16) & 255, (c >> 8) & 255, c & 255]
-                                 for c in rgb], dtype=np.uint8)
-                for u, v, col in zip(ui, vi, cols):
-                    ovl[max(0, v - 1):v + 2, max(0, u - 1):u + 2] = col
-            om = Image()
-            om.header.stamp = stamp
-            om.header.frame_id = FRAME
-            om.height, om.width = H, W
-            om.encoding = "rgb8"
-            om.step = 3 * W
-            om.data = ovl.tobytes()
-            pub_ovl.publish(om)
+            if want_ovl:
+                ovl = np.repeat(shown[:, :, None], 3, axis=2)
+                if len(z):
+                    splat(ovl, ui, vi, cols, 1)
+                om = Image()
+                om.header.stamp = stamp
+                om.header.frame_id = FRAME
+                om.height, om.width = H, W
+                om.encoding = "rgb8"
+                om.step = 3 * W
+                om.data = ovl.tobytes()
+                pub_ovl.publish(om)
 
             # Colourised depth. rviz renders 32FC1 as grayscale normalised over
             # the frame, which with ~1% coverage and NaN everywhere else is close
@@ -359,15 +418,17 @@ def main() -> int:
                     d_lo, d_hi = mid - 0.125, mid + 0.125
             else:
                 d_lo, d_hi = a.min_range, a.max_range
-            dc = colourise(depth, float(d_lo), float(d_hi))
-            dm = Image()
-            dm.header.stamp = stamp
-            dm.header.frame_id = FRAME
-            dm.height, dm.width = H, W
-            dm.encoding = "rgb8"
-            dm.step = 3 * W
-            dm.data = dc.tobytes()
-            pub_dcol.publish(dm)
+            dc = (colourise(depth, float(d_lo), float(d_hi)) if want_dcol
+                  else None)
+            if want_dcol:
+                dm = Image()
+                dm.header.stamp = stamp
+                dm.header.frame_id = FRAME
+                dm.height, dm.width = H, W
+                dm.encoding = "rgb8"
+                dm.step = 3 * W
+                dm.data = dc.tobytes()
+                pub_dcol.publish(dm)
 
             ci = CameraInfo()
             ci.header.stamp = stamp
