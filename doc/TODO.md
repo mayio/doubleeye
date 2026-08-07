@@ -198,3 +198,30 @@ consistent with real sync. Not proof.
 - **`stty raw` is mandatory** before reading a tty directly, or you get a few hundred
   bytes where the real rate is kilobytes per second — indistinguishable from a dead
   link.
+
+## Article / matcher validation (added 2026-08-07)
+
+Done:
+- Real-data validation on Middlebury 2003 Teddy + Cones. `article/regen_all.py`
+  regenerates every article number and figure and writes `results.json`.
+- Fixed `rng_for()` seeding from Python's per-process salted `hash()`. Numbers
+  were irreproducible across runs; one conclusion had flipped sign as a result.
+
+Open, in rough priority order:
+- **Detector repeatability is the binding constraint on real data.** Only 48% of
+  Teddy's left keypoints (51% on Cones) have any right keypoint within 1 px of
+  their true correspondence, which accounts for 102 of Teddy's 132 errors.
+  Precision on the attainable subset is 0.876 / 0.963 against a raw 0.615 / 0.781.
+  Two cheap experiments: (a) detect once and track into the second image instead
+  of detecting twice; (b) lower the right-image detector threshold to
+  over-propose and let gamma discard the surplus.
+- Sub-pixel disparity. `detect()` returns integer positions, so median disparity
+  error is 0.50 px on Teddy, exactly the integer-vs-quarter-pixel quantisation.
+  Fit the correlation surface between the two windows rather than differencing
+  two independently refined positions.
+- Fix swapped lambda/gamma in `core/src/match.cpp` relative to the article's
+  convention (lambda = clutter/left-unmatched, gamma = misdetection/right).
+- Port `_seg_max_excluding` (the O(E) second-max trick) into the C++ matcher.
+- Run the C++ matcher against Middlebury too, so the C++ and NumPy paths are
+  compared on identical data with ground truth. This is now possible without a
+  rangefinder and no longer blocks on hardware.
