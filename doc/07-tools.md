@@ -459,6 +459,31 @@ this script reading slower, so nothing queues without bound.
 trap as cmake 3.10 in obstacle 10. If `de_pipe` reports `0 pairs`, check the
 stream's stderr before suspecting the camera.
 
-**QoS.** The publisher uses BEST_EFFORT, because rviz subscribes to sensor data
-best-effort by default and a reliability mismatch is a common reason topics appear
-in the list and never display anything.
+**QoS: publish RELIABLE.** This was wrong in the first version and it is worth
+stating precisely, because the symptom is topics that appear in rviz's list and
+never display anything.
+
+DDS compatibility is one-directional -- the publisher must be at least as strong as
+the subscriber:
+
+| publisher | subscriber | result |
+|---|---|---|
+| RELIABLE | RELIABLE | fine |
+| RELIABLE | BEST_EFFORT | fine |
+| BEST_EFFORT | RELIABLE | **incompatible, nothing is sent** |
+| BEST_EFFORT | BEST_EFFORT | fine |
+
+rviz2's displays request RELIABLE unless you change the Reliability Policy dropdown
+on each one. Publishing BEST_EFFORT therefore produced
+
+    New subscription discovered on topic '/doubleeye/depth', requesting
+    incompatible QoS. No messages will be sent to it.
+    Last incompatible policy: RELIABILITY
+
+for every topic, images and point cloud alike. A RELIABLE publisher is compatible
+with everything, so it is the correct default even for a live stream.
+
+Back-pressure is not a concern: a slow consumer slows the publish loop, which slows
+the ssh read, which drops frames at the camera. That is the intended behaviour
+rather than an unbounded queue. `--best-effort` exists for a genuinely lossy link,
+and then rviz's dropdowns have to be changed to match.

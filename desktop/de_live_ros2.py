@@ -78,6 +78,10 @@ def main() -> int:
                     help="frames/s per channel off the camera (default 10). "
                          "Each packet carries the left image, so 30 fps is "
                          "~12 MB/s over the ssh pipe")
+    ap.add_argument("--best-effort", action="store_true",
+                    help="publish BEST_EFFORT instead of RELIABLE. Only for a "
+                         "lossy link, and rviz displays then need their "
+                         "Reliability Policy set to Best Effort to match")
     ap.add_argument("--every", type=int, default=1,
                     help="publish every Nth pair, for a slow link")
     ap.add_argument("--dilate", type=int, default=3,
@@ -124,11 +128,28 @@ def main() -> int:
 
     rclpy.init()
     node = Node("doubleeye_live")
-    # Best-effort: for a live view, a dropped frame is better than a stalled one,
-    # and rviz's default subscription for sensor data is best-effort anyway --
-    # mismatched reliability is a common reason topics appear but never display.
-    qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
-                     history=HistoryPolicy.KEEP_LAST, depth=1)
+    # RELIABLE by default, which is the only choice that works with rviz2 out of
+    # the box. DDS compatibility is one-directional: a publisher must be at least
+    # as strong as the subscriber, so
+    #
+    #   publisher RELIABLE    + subscriber RELIABLE or BEST_EFFORT   -> both fine
+    #   publisher BEST_EFFORT + subscriber RELIABLE                  -> INCOMPATIBLE
+    #
+    # and rviz2's displays request RELIABLE unless you change the Reliability
+    # Policy dropdown per display. Publishing BEST_EFFORT therefore produced
+    # "requesting incompatible QoS ... Last incompatible policy: RELIABILITY" and
+    # no images at all. A RELIABLE publisher is compatible with everything, so it
+    # is the right default even for a live stream.
+    #
+    # Back-pressure is not a problem here: a slow consumer slows this loop, which
+    # slows the ssh read, which drops frames at the camera. That is the intended
+    # behaviour rather than an unbounded queue. --best-effort is available for a
+    # lossy link, but then rviz needs its dropdown changed to match.
+    qos = QoSProfile(
+        reliability=(ReliabilityPolicy.BEST_EFFORT if a.best_effort
+                     else ReliabilityPolicy.RELIABLE),
+        history=HistoryPolicy.KEEP_LAST, depth=5)
+    print(f"QoS: {'BEST_EFFORT (set rviz display Reliability to Best Effort)' if a.best_effort else 'RELIABLE (works with rviz2 defaults)'}")
     pub_img = node.create_publisher(Image, "/doubleeye/image_raw", qos)
     pub_dep = node.create_publisher(Image, "/doubleeye/depth", qos)
     pub_pc = node.create_publisher(PointCloud2, "/doubleeye/points", qos)
