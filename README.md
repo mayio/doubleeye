@@ -23,8 +23,13 @@ lives in `jetson/` and nowhere else.
 | `jetson/` | TX2 (`jetsontx2`, 192.168.2.114) | librealsense2 only — no OpenCV |
 | `desktop/` | dev box (`blackstone`) | numpy, matplotlib |
 
-Preprocessing and MASDA itself, when written, go in a third top-level directory
-that depends on neither.
+| `core/` | anywhere | **nothing but C++14 stdlib** |
+| `tools/` | desktop | bash |
+
+`core/` is the plan's portability rule made concrete: Census transform, keypoint
+detection and their tests depend on no platform library at all, so they build
+with plain `make` on both machines. See
+[doc/06-preprocessing.md](doc/06-preprocessing.md).
 
 Jetson-side code is C++14. That is both the stated preference and, here, the
 path of least resistance: librealsense 2.22 is already installed with headers

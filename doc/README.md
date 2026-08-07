@@ -18,6 +18,7 @@ duplicates it; this is the engineering record that sits underneath it.
 | [03-obstacles.md](03-obstacles.md) | Every problem hit, with symptom → diagnosis → resolution. The most useful document here. |
 | [04-baseline-measurements.md](04-baseline-measurements.md) | Measured numbers, for citation and for regression comparison |
 | [05-operations.md](05-operations.md) | How to record, pull, view, analyse, and print a calibration target |
+| [06-preprocessing.md](06-preprocessing.md) | Census + keypoints: design, measured output, and the profiling result |
 
 ## Status at time of writing
 
@@ -33,6 +34,11 @@ Jetson is sufficient for bench work — see
 [01-hardware.md](01-hardware.md#the-imu-is-a-pixhawk-248--how-to-power-it).
 Separately, the `nvs_bmi160` module and its device-tree node are stock L4T
 leftovers with no hardware behind them, and are not the IMU.
+
+Preprocessing (`core/`) exists and is measured. On the TX2 it currently runs at
+**299% of the 30 Hz budget**, essentially all of it the keypoint detector, with
+Census at 0.3% — see [06-preprocessing.md](06-preprocessing.md) for the
+optimisation path.
 
 ## Conventions used throughout
 
