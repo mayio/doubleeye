@@ -203,6 +203,13 @@ def main() -> int:
                          "both limits: a quarter come out nearer than 0.19 m")
     ap.add_argument("--max-range", type=float, default=6.0,
                     help="farthest depth to search, metres (default 6.0)")
+    ap.add_argument("--cell", type=int, default=0,
+                    help="detector grid cell in px (0 = matcher default 32). "
+                         "Lower means denser keypoints: 12 gives ~3x more "
+                         "matches. Whether that makes the depth image better is "
+                         "NOT established -- see doc/07-tools.md")
+    ap.add_argument("--per-cell", type=int, default=0,
+                    help="keypoints kept per grid cell (0 = default 3)")
     ap.add_argument("--no-stretch", action="store_true",
                     help="publish the IR image raw. By default it is contrast "
                          "stretched p1-p99 for display, because 1500 us of IR "
@@ -256,7 +263,9 @@ def main() -> int:
                     f" --right-density {a.right_density}"
                     f" --min-margin {a.min_margin}"
                     f" --min-disparity {dmin:.3f}"
-                    f" --max-disparity {dmax:.3f}")
+                    f" --max-disparity {dmax:.3f}"
+                    + (f" --cell {a.cell}" if a.cell else "")
+                    + (f" --per-cell {a.per_cell}" if a.per_cell else ""))
         print(f"starting on {a.host}:\n  {remote}\n")
         proc = subprocess.Popen(["ssh", a.host, remote],
                                 stdout=subprocess.PIPE, stderr=None,

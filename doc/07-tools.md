@@ -576,3 +576,39 @@ useful and it is the fastest way to see whether `--min-margin` is set high enoug
 Cost is 12.6 ms per frame, and it is only computed when something subscribes.
 Interpolation runs at stride 8 and upsamples: stride 4 costs 457 ms for *identical*
 coverage, since the convex hull does not change, only how finely it is sampled.
+
+### Why it does not look like the Teddy depth map, and what is unresolved
+
+It cannot, and that is worth stating plainly rather than tuning towards. The Teddy
+image in the article is **structured-light ground truth**: a disparity for every
+pixel, measured by a different instrument. This pipeline produces a few hundred to a
+few thousand matched keypoints over 407k pixels. Sparse stereo does not make depth
+maps; it makes correspondences for geometry to consume. `depth_dense` interpolates
+between them so a surface is visible, but the information between support points was
+never measured.
+
+`--cell` and `--per-cell` control keypoint density and are now exposed. Measured on
+the Jetson, denser detection roughly triples matches:
+
+| cell / per-cell | matches per frame |
+|---|---|
+| 32 / 3 (default) | ~650 |
+| 16 / 3 | 1766 |
+| 12 / 2 | 1755 |
+| 8 / 2 | 1889 |
+
+**Whether that improves the depth image is not established.** Rendering a dense
+capture next to a sparse one showed noticeably more speckle in the dense version,
+which would fit everything else measured here -- more keypoints per epipolar band
+means more competition, lower score margin, lower precision -- but the two were
+*different captures of a moved scene*, so the comparison is confounded and proves
+nothing. An attempt at a controlled within-frame metric produced a degenerate result
+and was discarded rather than reported. Try both; do not assume denser is better.
+
+**On points jumping between frames.** Keypoints are detected independently in every
+frame, so they land on different pixels each time and the cloud flickers even when
+nothing moves. Raising `--min-margin` reduces it by removing the least stable
+matches. The real fix is temporal: accumulate over frames for a static camera, or
+track keypoints instead of re-detecting them. Neither is built. It is the same
+finding as detector repeatability in 09-matching.md, seen from the time axis instead
+of the stereo axis -- the detector, not the matcher, is the unstable part.
