@@ -28,11 +28,12 @@ TOOL    := $(BUILD)/de_preprocess
 MATCHER := $(BUILD)/de_match
 BENCH   := $(BUILD)/de_bench
 PROF    := $(BUILD)/de_profile
+PIPE    := $(BUILD)/de_pipe
 TESTBIN := $(BUILD)/test_preproc
 TESTMAT := $(BUILD)/test_match
 
 .PHONY: all clean test
-all: $(TOOL) $(MATCHER) $(BENCH) $(PROF)
+all: $(TOOL) $(MATCHER) $(BENCH) $(PROF) $(PIPE)
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -50,6 +51,9 @@ $(BENCH): tools/de_bench.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
 
 $(PROF): tools/de_profile.cpp $(OBJS)
+	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
+
+$(PIPE): tools/de_pipe.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
 
 $(TESTBIN): tests/test_preproc.cpp $(OBJS)

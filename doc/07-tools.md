@@ -400,3 +400,40 @@ points really are the ones to distrust. Expect outliers at both ends of the
 disparity gate: the Z range on `full_on` runs 0.10 m to 17.46 m, and both extremes
 sit exactly at the gate limits (220 px and ~1.2 px), which is what a wrong match
 at a gate boundary looks like. Filtering the cloud by margin removes most of them.
+
+### Live: camera to rviz2
+
+Detection and matching run **on the Jetson**, so what you see is the real
+pipeline's output rather than a laptop reimplementation. Only the ROS 2 half runs
+on the laptop, which keeps the capture path ROS-free.
+
+    ssh jetson 'rs_ir_stream --emitter on | de_pipe ...'   capture + match
+        |  DEMR packets over the ssh pipe
+    desktop/de_live_ros2.py                                ROS 2 publisher
+        |  /doubleeye/image_raw /depth /points /camera_info /tf
+    rviz2
+
+One command, which starts the remote side itself:
+
+    source /opt/ros/jazzy/setup.bash
+    python3 desktop/de_live_ros2.py --emitter on
+
+then `rviz2`, Fixed Frame `map`, and the same three displays as the offline recipe.
+
+Verified end to end on the Jetson: 101 pairs in 12 s at 10 fps/channel, 0 unpaired
+dropped, ~570 matches per frame, sub-pixel disparity present in the packets.
+
+**Bandwidth.** Each packet carries the left image, so 848x480 is 407 kB plus 16
+bytes per match: ~4 MB/s at 10 fps, ~12 MB/s at 30. Gigabit ethernet is fine, wifi
+generally is not. `--every N` publishes every Nth pair; the surplus is dropped by
+this script reading slower, so nothing queues without bound.
+
+**`rs_ir_stream` has no `--streams` flag.** It sends both channels by default and
+`--single` restricts to ir1. Passing an unknown flag makes it print usage and exit
+0, which downstream looks exactly like a camera that produced no frames -- the same
+trap as cmake 3.10 in obstacle 10. If `de_pipe` reports `0 pairs`, check the
+stream's stderr before suspecting the camera.
+
+**QoS.** The publisher uses BEST_EFFORT, because rviz subscribes to sensor data
+best-effort by default and a reliability mismatch is a common reason topics appear
+in the list and never display anything.
