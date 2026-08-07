@@ -104,6 +104,7 @@ python3 -m venv .venv && .venv/bin/pip install -r desktop/requirements.txt
 | `check_planarity.py` | Was the board actually flat? |
 | `view_keypoints.py` | Is the preprocessing output well distributed? |
 | `make_checkerboard.py` | Produce a printable target |
+| `bag_to_rosbag.py` | Produce a rosbag for Kalibr |
 | `mavlink_probe.py` | What is the Pixhawk actually saying? |
 
 ### `live_view.py` — the interactive one
@@ -201,6 +202,28 @@ the 3.3× degeneracy under the projector was found.
 Scale-exact PDF. Prints the matching Kalibr yaml and OpenCV `Size`. Printing
 cautions — laser not inkjet, 100% scale, measure the result, mount rigid — are in
 [05-operations.md](05-operations.md).
+
+### `bag_to_rosbag.py`
+
+```sh
+.venv/bin/python desktop/bag_to_rosbag.py bags/calib01_flat
+```
+
+Writes `bags/calib01_flat.bag` with `/cam0/image_raw` and `/cam1/image_raw`,
+`sensor_msgs/Image` `mono8`, following Kalibr's topic convention. Prints the
+`kalibr_calibrate_cameras` command and target yaml to go with it.
+
+Uses `rosbags`, a pure-Python writer, so the desktop needs no ROS — which it
+could not have anyway, since Ubuntu 24.04 has no ROS 1. Verified against real
+ROS Melodic on the Jetson: `rosbag info` reports version 2.0 with the canonical
+`sensor_msgs/Image` MD5.
+
+**Timestamps.** Real host times are used when `frames.csv` is present. A set
+collected by `live_view --collect` has images only, so stamps are synthesised on a
+uniform grid — correct for `kalibr_calibrate_cameras`, which only needs a left and
+right image of the same instant to share a stamp, but **not** valid for
+`kalibr_calibrate_imu_camera`, which estimates a time offset. The tool warns when
+it synthesises.
 
 ### `mavlink_probe.py`
 

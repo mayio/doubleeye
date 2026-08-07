@@ -40,8 +40,8 @@ leftovers with no hardware behind them, and are not the IMU.
 
 The **camera half of step 3 is under way**: it needs no IMU. A calibration set
 exists — `bags/calib01`, 82 poses, **100% detected in both channels** — collected
-with the live view. What remains is the calibration itself, which needs a
-`bags/<run>` → rosbag converter for Kalibr. See
+with the live view. The rosbag converter now exists and its output is
+validated against real ROS Melodic, so what remains is running Kalibr itself. See
 [04-baseline-measurements.md](04-baseline-measurements.md#calibration-set-collected-2026-08-07)
 for the set's properties and its one real caveat, which is board size.
 
