@@ -103,6 +103,53 @@ Connection multiplexing and compression are there because the TX2 is on WiFi at
 roughly 100 ms RTT; without `ControlPersist`, every command pays a fresh
 handshake.
 
+## ROS — used as a tool, not as the architecture
+
+**ROS Melodic is already installed on the TX2** at `/opt/ros/melodic`, with
+`rosbag`, `roscpp`, `cv_bridge`, `image_transport`, `camera_calibration`,
+`sensor_msgs` and `tf2` present and the binaries working. `mavros` is not
+installed. Melodic's Python is 2.7; `rospy` does not import under Python 3 here.
+
+That makes ROS nearly free to adopt where it earns its place, and the decision
+splits cleanly.
+
+### Where ROS is the right answer
+
+- **Kalibr, bring-up step 3.** Kalibr *is* a ROS package and consumes rosbags,
+  so this is not really a choice. The plan already anticipated it: "Kalibr with
+  `--time-calibration` runs fine on Ubuntu 18.04/Melodic — the old toolchain is
+  an advantage here for once." An already-provisioned Melodic makes it more so.
+- **A fast stereo sanity check** before Kalibr: `camera_calibration` is already
+  installed and will give rough intrinsics and extrinsics from a checkerboard.
+- **The Pixhawk**, via `ros-melodic-mavros`, which publishes
+  `/mavros/imu/data_raw` and saves writing MAVLink parsing by hand.
+- **rosbag as an interchange format** for the above.
+
+### Where ROS must not go, and why
+
+- **`core/`.** It stays dependency-free. That is the plan's portability rule and
+  the thing that keeps a later Orin Nano migration a weekend.
+- **The runtime capture and preprocessing path.** This one is settled by our own
+  measurements rather than by taste. Preprocessing already costs **99.6 ms per
+  stereo pair against a 33.3 ms budget** on the TX2, and the plan identifies
+  memory bandwidth — 58.4 GB/s shared between CPU and GPU — as the real
+  constraint. ROS 1 transport adds serialisation and copies to precisely the
+  resource that is already short. Putting the hot path on ROS would spend the
+  scarcest thing we have to buy convenience we do not need, since the capture
+  tool is 250 lines and already verified.
+
+So: **record ROS-free, convert offline when a ROS tool needs it.** The capture
+path stays fast and simple; Kalibr still gets the rosbag it wants.
+
+### Consequence — the bridge that is needed
+
+A `bags/<run>` → rosbag converter, publishing the two IR streams as image
+topics (and later the Pixhawk IMU). That unlocks `kalibr_calibrate_cameras`
+against recordings the existing tools already produce.
+
+Worth noting the camera half of step 3 needs **no IMU**, so it is unblocked as
+soon as a checkerboard exists — see [05-operations.md](05-operations.md).
+
 ## Language and standard choices
 
 **Jetson side is C++14.** Two reasons, pointing the same way:
