@@ -21,6 +21,7 @@ duplicates it; this is the engineering record that sits underneath it.
 | [06-preprocessing.md](06-preprocessing.md) | Census + keypoints: design, measured output, and the profiling result |
 | [07-tools.md](07-tools.md) | **Every tool, what it answers, how to run it** — start here when returning to the project |
 | [08-imu.md](08-imu.md) | Pixhawk/ArduPilot: links, isolated venv, parameters applied, and what is still open |
+| [09-matching.md](09-matching.md) | **MASDA** — messages, validation against brute force, and the measured advantage over nearest-neighbour |
 
 ## Status at time of writing
 
@@ -54,6 +55,12 @@ Preprocessing (`core/`) is **within budget on the target**: 26.28 ms per stereo
 pair against 33.3 ms, or 78.8%, down from 300.5% — see
 [06-preprocessing.md](06-preprocessing.md).
 
+**MASDA exists and works.** Validated against exhaustive search (58/60 exact
+optima) and measured on real stereo pairs, where it finds **46% more matches than
+nearest-neighbour with the projector on** and only 13% more with it off — the
+advantage scaling with ambiguity exactly as the plan argues. See
+[09-matching.md](09-matching.md).
+
 ## Findings at a glance
 
 The results worth knowing, with pointers. Several were surprises, and the pattern
@@ -71,6 +78,10 @@ across them is the same: **on this platform the expensive failures are silent.**
 | The projector **halves the textureless area**, 57% → 25%, and lifts keypoint coverage from 67% to 93% of cells | [04](04-baseline-measurements.md), [06](06-preprocessing.md) |
 | **Mean intensity cannot see the projector** — it moved 1.8 DN across the same A/B. Local contrast is the only valid metric | [03](03-obstacles.md) obstacle 12 |
 | Census descriptors are **3.3× degenerate** under the projector (338 distinct for 1115 keypoints) — exactly the ambiguity MASDA's uniqueness constraint is for | [06](06-preprocessing.md) |
+| MASDA finds **+46% matches over nearest-neighbour with the projector on, +13% with it off** — the advantage scales with ambiguity, as argued | [09](09-matching.md) |
+| MASDA costs **1.67 ms**, 5% of the frame budget against 26 ms for preprocessing — "MASDA is not the bottleneck" confirmed | [09](09-matching.md) |
+| The messages **never formally converge** yet the decision is stable from 20 iterations; oscillation is real but currently benign | [09](09-matching.md) |
+| Belief **sign is not a match/no-match decision** — gating on it returned zero matches on tied problems whose optimum matched everything | [09](09-matching.md) |
 | Preprocessing was **299% of the 30 Hz budget on the TX2**; FAST candidates plus concurrent L/R brought it to **78.8%**, keeping 96% of keypoints | [06](06-preprocessing.md) |
 | Below ~5 DN the FAST **sparse path becomes slower than the dense scan** it replaces — sparsification has a crossover | [06](06-preprocessing.md) |
 | Concurrency returned **1.54× not 2×** on a 6-core board, corroborating memory bandwidth as the real constraint | [06](06-preprocessing.md) |

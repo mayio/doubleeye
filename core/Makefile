@@ -23,28 +23,37 @@ ARCHFLAGS ?=
 
 INC     := -Iinclude
 BUILD   := build
-SRC     := src/preproc.cpp
-OBJ     := $(BUILD)/preproc.o
+OBJS    := $(BUILD)/preproc.o $(BUILD)/match.o
 TOOL    := $(BUILD)/de_preprocess
+MATCHER := $(BUILD)/de_match
 TESTBIN := $(BUILD)/test_preproc
+TESTMAT := $(BUILD)/test_match
 
 .PHONY: all clean test
-all: $(TOOL)
+all: $(TOOL) $(MATCHER)
 
 $(BUILD):
 	@mkdir -p $(BUILD)
 
-$(OBJ): $(SRC) include/doubleeye/preproc.hpp | $(BUILD)
+$(BUILD)/%.o: src/%.cpp include/doubleeye/preproc.hpp include/doubleeye/match.hpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) -c $< -o $@
 
-$(TOOL): tools/de_preprocess.cpp $(OBJ)
+$(TOOL): tools/de_preprocess.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
 
-$(TESTBIN): tests/test_preproc.cpp $(OBJ)
+$(MATCHER): tools/de_match.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
 
-test: $(TESTBIN)
+$(TESTBIN): tests/test_preproc.cpp $(OBJS)
+	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
+
+$(TESTMAT): tests/test_match.cpp $(OBJS)
+	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
+
+test: $(TESTBIN) $(TESTMAT)
 	@$(TESTBIN)
+	@echo
+	@$(TESTMAT)
 
 clean:
 	rm -rf $(BUILD)
