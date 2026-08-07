@@ -280,3 +280,93 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# 5. The unifying figure: does score margin predict precision on real data too?
+
+def margins_per_kp(S):
+    """Best-minus-second-best per left keypoint; nan if it has <2 candidates."""
+    out = np.full(S.shape[0], np.nan)
+    for i, row in enumerate(S):
+        f = row[np.isfinite(row)]
+        if f.size >= 2:
+            f = np.sort(f)[::-1]
+            out[i] = f[0] - f[1]
+    return out
+
+
+def region_stats(scene, regions):
+    """Median score margin and MASDA precision over subsets of one real scene.
+
+    Margin is medianed over every keypoint in the region with at least two
+    candidates, matching how section 3 measures it, rather than over matched
+    keypoints only -- ambiguity is a property of the problem, not of the answer.
+    """
+    left, right, gt, known = fetch(scene)
+    H, W = left.shape
+    ms.H, ms.W = H, W
+    pl, _ = ms.detect(left)
+    pr, _ = ms.detect(right)
+    dl, dr = ms.census(left, pl), ms.census(right, pr)
+    S = ms.build_problem(pl, dl, pr, dr, dmin=1.0, dmax=float(NDISP))
+    m, n = S.shape
+    ei, ej, se = ms.to_edges(S)
+    a, _ = ms.masda_sparse(ei, ej, se, m, n, -0.1, -0.1)
+    xi = np.clip(np.round(pl[:, 0]).astype(int), 0, W - 1)
+    yi = np.clip(np.round(pl[:, 1]).astype(int), 0, H - 1)
+    kk, kg = known[yi, xi], gt[yi, xi]
+    mg = margins_per_kp(S)
+    res = {}
+    for label, sel in regions(pl, kg, kk):
+        tp = tot = 0
+        for i, j in a.items():
+            if not kk[i] or not sel[i]:
+                continue
+            tot += 1
+            if abs((pl[i, 0] - pr[j, 0]) - kg[i]) <= TOL:
+                tp += 1
+        v = mg[sel & np.isfinite(mg)]
+        if tot and len(v):
+            res[label] = dict(n=tot, prec=tp / tot, margin=float(np.median(v)))
+    return res
+
+
+def fig_margin_vs_precision(points, fname="margin_vs_precision"):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(8.2, 5.4))
+    for kind, marker, colour in (("synthetic", "o", "#2c6fbb"),
+                                 ("real", "s", "#c1121f")):
+        xs = [p["margin"] for p in points if p["kind"] == kind]
+        ys = [p["prec"] for p in points if p["kind"] == kind]
+        ax.plot(xs, ys, marker, ms=10, color=colour, label=kind, zorder=3)
+    # Greedy declutter: points cluster at high margin, so nudge a label down
+    # whenever it would land on one already placed.
+    placed = []
+    for pt in points:
+        dy = -4
+        while any(abs(pt["margin"] - mx) < 0.13 and abs(pt["prec"] + dy / 260 - my) < 0.042
+                  for mx, my in placed):
+            dy -= 13
+        kw = {}
+        if dy < -4:                      # displaced: draw a leader to its marker
+            kw["arrowprops"] = dict(arrowstyle="-", lw=0.7, color="0.45",
+                                    shrinkA=1, shrinkB=4)
+        ax.annotate(pt["label"], (pt["margin"], pt["prec"]),
+                    textcoords="offset points", xytext=(10, dy), fontsize=9,
+                    va="center", **kw)
+        placed.append((pt["margin"], pt["prec"] + dy / 260))
+    ax.set_xlabel("median score margin (best minus second best)")
+    ax.set_ylabel("precision of MASDA matches")
+    ax.set_title("Ambiguity predicts precision, on synthetic and real data alike")
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(0, 1.0)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+    os.makedirs(ms.FIG, exist_ok=True)
+    fig.savefig(f"{ms.FIG}/{fname}.png", dpi=115)
+    plt.close(fig)
+    print(f"  wrote {ms.FIG}/{fname}.png")

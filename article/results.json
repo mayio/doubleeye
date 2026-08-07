@@ -1,0 +1,864 @@
+{
+ "synthetic": {
+  "broadband": {
+   "kp": 1377,
+   "edges": 3227,
+   "uniq": 1303,
+   "margin": 0.75,
+   "tied": 0.04697286012526096,
+   "matchable": 841,
+   "methods": {
+    "MASDA": {
+     "matches": 807,
+     "tp": 661,
+     "fp": 146,
+     "precision": 0.8190830235439901,
+     "recall": 0.7859690844233056,
+     "objective": 476.67499894574286
+    },
+    "Mutual-NN": {
+     "matches": 764,
+     "tp": 650,
+     "fp": 114,
+     "precision": 0.8507853403141361,
+     "recall": 0.7728894173602854,
+     "objective": 460.3666655801237
+    },
+    "Optimal LAP": {
+     "matches": 807,
+     "tp": 662,
+     "fp": 145,
+     "precision": 0.8203221809169765,
+     "recall": 0.7871581450653984,
+     "objective": 476.67499897927047
+    }
+   }
+  },
+  "dots": {
+   "kp": 1640,
+   "edges": 3947,
+   "uniq": 1532,
+   "margin": 0.7500000298023224,
+   "tied": 0.051304347826086956,
+   "matchable": 861,
+   "methods": {
+    "MASDA": {
+     "matches": 917,
+     "tp": 700,
+     "fp": 217,
+     "precision": 0.7633587786259542,
+     "recall": 0.8130081300813008,
+     "objective": 521.6749986924232
+    },
+    "Mutual-NN": {
+     "matches": 854,
+     "tp": 690,
+     "fp": 164,
+     "precision": 0.8079625292740047,
+     "recall": 0.8013937282229965,
+     "objective": 491.2833319313824
+    },
+    "Optimal LAP": {
+     "matches": 917,
+     "tp": 700,
+     "fp": 217,
+     "precision": 0.7633587786259542,
+     "recall": 0.8130081300813008,
+     "objective": 521.6749986924232
+    }
+   }
+  },
+  "periodic": {
+   "kp": 2019,
+   "edges": 4556,
+   "uniq": 1491,
+   "margin": 0.0833333432674408,
+   "tied": 0.3873295910184443,
+   "matchable": 589,
+   "methods": {
+    "MASDA": {
+     "matches": 1152,
+     "tp": 255,
+     "fp": 897,
+     "precision": 0.22135416666666666,
+     "recall": 0.432937181663837,
+     "objective": 652.3416672676801
+    },
+    "Mutual-NN": {
+     "matches": 426,
+     "tp": 78,
+     "fp": 348,
+     "precision": 0.18309859154929578,
+     "recall": 0.13242784380305603,
+     "objective": 17.34999957159161
+    },
+    "Optimal LAP": {
+     "matches": 1151,
+     "tp": 243,
+     "fp": 908,
+     "precision": 0.21112076455256298,
+     "recall": 0.41256366723259763,
+     "objective": 656.6833339877427
+    }
+   }
+  }
+ },
+ "timing": {
+  "broadband": {
+   "nodes": 2751,
+   "edges": 3227,
+   "dense_ms": 2632.73331799428,
+   "sparse_ms": 8.555280001019128,
+   "jv_ms": 1505.5143959980342,
+   "x_dense": 307.7319874604527,
+   "x_jv": 175.9748828581523,
+   "obj_ratio": 0.9999999999296636,
+   "correct": [
+    661,
+    661,
+    662
+   ]
+  },
+  "dots": {
+   "nodes": 3236,
+   "edges": 3947,
+   "dense_ms": 5727.475397005037,
+   "sparse_ms": 16.05515999835916,
+   "jv_ms": 2520.765670000401,
+   "x_dense": 356.7373602997657,
+   "x_jv": 157.0065742264807,
+   "obj_ratio": 1.0,
+   "correct": [
+    700,
+    701,
+    700
+   ]
+  },
+  "periodic": {
+   "nodes": 3881,
+   "edges": 4556,
+   "dense_ms": 9132.279467004992,
+   "sparse_ms": 17.24495500093326,
+   "jv_ms": 3962.463887000922,
+   "x_dense": 529.5623831149906,
+   "x_jv": 229.77525234403234,
+   "obj_ratio": 0.9933884926031279,
+   "correct": [
+    255,
+    255,
+    243
+   ]
+  }
+ },
+ "ordering": {
+  "thin bars": {
+   "per_seed": [
+    {
+     "off": {
+      "correct": 536,
+      "matches": 749,
+      "prec": 0.7156208277703605,
+      "crossings": 48,
+      "pairs": 2996
+     },
+     "k0.1": {
+      "correct": 536,
+      "matches": 749,
+      "prec": 0.7156208277703605,
+      "crossings": 45
+     },
+     "k0.4": {
+      "correct": 536,
+      "matches": 748,
+      "prec": 0.7165775401069518,
+      "crossings": 42
+     },
+     "k0.8": {
+      "correct": 536,
+      "matches": 748,
+      "prec": 0.7165775401069518,
+      "crossings": 42
+     }
+    },
+    {
+     "off": {
+      "correct": 472,
+      "matches": 695,
+      "prec": 0.679136690647482,
+      "crossings": 38,
+      "pairs": 2567
+     },
+     "k0.1": {
+      "correct": 474,
+      "matches": 694,
+      "prec": 0.6829971181556196,
+      "crossings": 37
+     },
+     "k0.4": {
+      "correct": 472,
+      "matches": 693,
+      "prec": 0.6810966810966811,
+      "crossings": 34
+     },
+     "k0.8": {
+      "correct": 473,
+      "matches": 693,
+      "prec": 0.6825396825396826,
+      "crossings": 34
+     }
+    },
+    {
+     "off": {
+      "correct": 549,
+      "matches": 760,
+      "prec": 0.7223684210526315,
+      "crossings": 72,
+      "pairs": 3127
+     },
+     "k0.1": {
+      "correct": 549,
+      "matches": 762,
+      "prec": 0.7204724409448819,
+      "crossings": 65
+     },
+     "k0.4": {
+      "correct": 550,
+      "matches": 759,
+      "prec": 0.7246376811594203,
+      "crossings": 52
+     },
+     "k0.8": {
+      "correct": 550,
+      "matches": 759,
+      "prec": 0.7246376811594203,
+      "crossings": 52
+     }
+    },
+    {
+     "off": {
+      "correct": 525,
+      "matches": 711,
+      "prec": 0.7383966244725738,
+      "crossings": 48,
+      "pairs": 2608
+     },
+     "k0.1": {
+      "correct": 526,
+      "matches": 711,
+      "prec": 0.739803094233474,
+      "crossings": 47
+     },
+     "k0.4": {
+      "correct": 524,
+      "matches": 712,
+      "prec": 0.7359550561797753,
+      "crossings": 44
+     },
+     "k0.8": {
+      "correct": 523,
+      "matches": 712,
+      "prec": 0.7345505617977528,
+      "crossings": 43
+     }
+    },
+    {
+     "off": {
+      "correct": 478,
+      "matches": 672,
+      "prec": 0.7113095238095238,
+      "crossings": 48,
+      "pairs": 2485
+     },
+     "k0.1": {
+      "correct": 483,
+      "matches": 671,
+      "prec": 0.7198211624441133,
+      "crossings": 40
+     },
+     "k0.4": {
+      "correct": 483,
+      "matches": 670,
+      "prec": 0.7208955223880597,
+      "crossings": 37
+     },
+     "k0.8": {
+      "correct": 483,
+      "matches": 670,
+      "prec": 0.7208955223880597,
+      "crossings": 36
+     }
+    }
+   ],
+   "agg": {
+    "off": {
+     "correct_mean": 512.0,
+     "correct_sd": 31.20897306865447,
+     "cross_mean": 50.8,
+     "cross_sd": 11.285388783732708
+    },
+    "k0.1": {
+     "correct_mean": 513.6,
+     "correct_sd": 29.709257816377708,
+     "cross_mean": 46.8,
+     "cross_sd": 9.765244492586962
+    },
+    "k0.4": {
+     "correct_mean": 513.0,
+     "correct_sd": 30.331501776206203,
+     "cross_mean": 41.8,
+     "cross_sd": 6.209669878504009
+    },
+    "k0.8": {
+     "correct_mean": 513.0,
+     "correct_sd": 29.993332592427937,
+     "cross_mean": 41.4,
+     "cross_sd": 6.3118935352238
+    }
+   },
+   "d_correct": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ],
+    [
+     2.0,
+     0.0,
+     1.0
+    ],
+    [
+     0.0,
+     1.0,
+     1.0
+    ],
+    [
+     1.0,
+     -1.0,
+     -2.0
+    ],
+    [
+     5.0,
+     5.0,
+     5.0
+    ]
+   ],
+   "d_cross": [
+    [
+     -3.0,
+     -6.0,
+     -6.0
+    ],
+    [
+     -1.0,
+     -4.0,
+     -4.0
+    ],
+    [
+     -7.0,
+     -20.0,
+     -20.0
+    ],
+    [
+     -1.0,
+     -4.0,
+     -5.0
+    ],
+    [
+     -8.0,
+     -11.0,
+     -12.0
+    ]
+   ]
+  },
+  "periodic": {
+   "per_seed": [
+    {
+     "off": {
+      "correct": 255,
+      "matches": 1152,
+      "prec": 0.22135416666666666,
+      "crossings": 222,
+      "pairs": 9845
+     },
+     "k0.1": {
+      "correct": 249,
+      "matches": 1149,
+      "prec": 0.21671018276762402,
+      "crossings": 151
+     },
+     "k0.4": {
+      "correct": 240,
+      "matches": 1143,
+      "prec": 0.2099737532808399,
+      "crossings": 123
+     },
+     "k0.8": {
+      "correct": 238,
+      "matches": 1143,
+      "prec": 0.20822397200349957,
+      "crossings": 121
+     }
+    },
+    {
+     "off": {
+      "correct": 236,
+      "matches": 1142,
+      "prec": 0.20665499124343256,
+      "crossings": 228,
+      "pairs": 9763
+     },
+     "k0.1": {
+      "correct": 219,
+      "matches": 1139,
+      "prec": 0.1922739244951712,
+      "crossings": 161
+     },
+     "k0.4": {
+      "correct": 229,
+      "matches": 1136,
+      "prec": 0.20158450704225353,
+      "crossings": 132
+     },
+     "k0.8": {
+      "correct": 229,
+      "matches": 1134,
+      "prec": 0.2019400352733686,
+      "crossings": 128
+     }
+    },
+    {
+     "off": {
+      "correct": 231,
+      "matches": 1118,
+      "prec": 0.20661896243291591,
+      "crossings": 224,
+      "pairs": 9433
+     },
+     "k0.1": {
+      "correct": 223,
+      "matches": 1116,
+      "prec": 0.19982078853046595,
+      "crossings": 156
+     },
+     "k0.4": {
+      "correct": 220,
+      "matches": 1114,
+      "prec": 0.19748653500897667,
+      "crossings": 134
+     },
+     "k0.8": {
+      "correct": 221,
+      "matches": 1114,
+      "prec": 0.19838420107719928,
+      "crossings": 134
+     }
+    },
+    {
+     "off": {
+      "correct": 197,
+      "matches": 1140,
+      "prec": 0.17280701754385966,
+      "crossings": 234,
+      "pairs": 9745
+     },
+     "k0.1": {
+      "correct": 197,
+      "matches": 1139,
+      "prec": 0.17295873573309922,
+      "crossings": 127
+     },
+     "k0.4": {
+      "correct": 206,
+      "matches": 1134,
+      "prec": 0.18165784832451498,
+      "crossings": 93
+     },
+     "k0.8": {
+      "correct": 204,
+      "matches": 1134,
+      "prec": 0.17989417989417988,
+      "crossings": 94
+     }
+    },
+    {
+     "off": {
+      "correct": 235,
+      "matches": 1136,
+      "prec": 0.2068661971830986,
+      "crossings": 228,
+      "pairs": 9981
+     },
+     "k0.1": {
+      "correct": 230,
+      "matches": 1134,
+      "prec": 0.20282186948853614,
+      "crossings": 149
+     },
+     "k0.4": {
+      "correct": 229,
+      "matches": 1131,
+      "prec": 0.20247568523430592,
+      "crossings": 119
+     },
+     "k0.8": {
+      "correct": 225,
+      "matches": 1130,
+      "prec": 0.19911504424778761,
+      "crossings": 119
+     }
+    }
+   ],
+   "agg": {
+    "off": {
+     "correct_mean": 230.8,
+     "correct_sd": 18.82976367350371,
+     "cross_mean": 227.2,
+     "cross_sd": 4.1182520563948
+    },
+    "k0.1": {
+     "correct_mean": 223.6,
+     "correct_sd": 16.823792675850473,
+     "cross_mean": 148.8,
+     "cross_sd": 11.668761716651858
+    },
+    "k0.4": {
+     "correct_mean": 224.8,
+     "correct_sd": 11.338430226446693,
+     "cross_mean": 120.2,
+     "cross_sd": 14.688771221582831
+    },
+    "k0.8": {
+     "correct_mean": 223.4,
+     "correct_sd": 11.217842929904126,
+     "cross_mean": 119.2,
+     "cross_sd": 13.673331708109767
+    }
+   },
+   "d_correct": [
+    [
+     -6.0,
+     -15.0,
+     -17.0
+    ],
+    [
+     -17.0,
+     -7.0,
+     -7.0
+    ],
+    [
+     -8.0,
+     -11.0,
+     -10.0
+    ],
+    [
+     0.0,
+     9.0,
+     7.0
+    ],
+    [
+     -5.0,
+     -6.0,
+     -10.0
+    ]
+   ],
+   "d_cross": [
+    [
+     -71.0,
+     -99.0,
+     -101.0
+    ],
+    [
+     -67.0,
+     -96.0,
+     -100.0
+    ],
+    [
+     -68.0,
+     -90.0,
+     -90.0
+    ],
+    [
+     -107.0,
+     -141.0,
+     -140.0
+    ],
+    [
+     -79.0,
+     -109.0,
+     -109.0
+    ]
+   ]
+  }
+ },
+ "real": {
+  "teddy": {
+   "scene": "teddy",
+   "H": 375,
+   "W": 450,
+   "m": 627,
+   "n": 637,
+   "E": 1683,
+   "gt_unknown": 0.020183703703703704,
+   "margin": 0.5416666269302368,
+   "tied": 0.07733333333333334,
+   "t_sparse": 5.497229998582043,
+   "t_nn": 3.2060020021162927,
+   "t_jv": 155.9277580017806,
+   "t_dense": 495.4269640002167,
+   "masda": {
+    "matches": 353,
+    "tp": 211,
+    "fp": 132,
+    "unscorable": 10,
+    "scorable": 343,
+    "precision": 0.6151603498542274,
+    "recall": 0.7104377104377104,
+    "matchable": 297,
+    "mae": 5.049562454223633,
+    "med_err": 0.5,
+    "obj": 153.6166670627892
+   },
+   "nn": {
+    "matches": 301,
+    "tp": 198,
+    "fp": 93,
+    "unscorable": 10,
+    "scorable": 291,
+    "precision": 0.6804123711340206,
+    "recall": 0.6666666666666666,
+    "matchable": 297,
+    "mae": 3.646907329559326,
+    "med_err": 0.5,
+    "obj": 121.13333365991713
+   },
+   "opt": {
+    "matches": 353,
+    "tp": 209,
+    "fp": 134,
+    "unscorable": 10,
+    "scorable": 343,
+    "precision": 0.60932944606414,
+    "recall": 0.7037037037037037,
+    "matchable": 297,
+    "mae": 5.161807537078857,
+    "med_err": 0.5,
+    "obj": 153.61666708141564
+   },
+   "dense": {
+    "matches": 353,
+    "tp": 211,
+    "fp": 132,
+    "unscorable": 10,
+    "scorable": 343,
+    "precision": 0.6151603498542274,
+    "recall": 0.7104377104377104,
+    "matchable": 297,
+    "mae": 5.049562454223633,
+    "med_err": 0.5,
+    "obj": 153.6166670627892
+   },
+   "cross_off": 44,
+   "cross_tot": 961,
+   "xpairs": 4423,
+   "ord_0.1": {
+    "matches": 351,
+    "tp": 214,
+    "fp": 127,
+    "unscorable": 10,
+    "scorable": 341,
+    "precision": 0.6275659824046921,
+    "recall": 0.7205387205387206,
+    "matchable": 297,
+    "mae": 4.603372573852539,
+    "med_err": 0.5,
+    "crossings": 30
+   },
+   "ord_0.3": {
+    "matches": 350,
+    "tp": 213,
+    "fp": 127,
+    "unscorable": 10,
+    "scorable": 340,
+    "precision": 0.6264705882352941,
+    "recall": 0.7171717171717171,
+    "matchable": 297,
+    "mae": 4.460294246673584,
+    "med_err": 0.5,
+    "crossings": 29
+   },
+   "ord_0.8": {
+    "matches": 350,
+    "tp": 213,
+    "fp": 127,
+    "unscorable": 10,
+    "scorable": 340,
+    "precision": 0.6264705882352941,
+    "recall": 0.7171717171717171,
+    "matchable": 297,
+    "mae": 4.460294246673584,
+    "med_err": 0.5,
+    "crossings": 29
+   }
+  },
+  "cones": {
+   "scene": "cones",
+   "H": 375,
+   "W": 450,
+   "m": 845,
+   "n": 876,
+   "E": 1591,
+   "gt_unknown": 0.032171851851851854,
+   "margin": 0.6666666865348816,
+   "tied": 0.06581740976645435,
+   "t_sparse": 5.419043001893442,
+   "t_nn": 4.878783998719882,
+   "t_jv": 451.38172899896745,
+   "t_dense": 1054.1795840035775,
+   "masda": {
+    "matches": 441,
+    "tp": 336,
+    "fp": 94,
+    "unscorable": 11,
+    "scorable": 430,
+    "precision": 0.7813953488372093,
+    "recall": 0.7832167832167832,
+    "matchable": 429,
+    "mae": 2.616279125213623,
+    "med_err": 0.5,
+    "obj": 204.97500021234154
+   },
+   "nn": {
+    "matches": 407,
+    "tp": 320,
+    "fp": 76,
+    "unscorable": 11,
+    "scorable": 396,
+    "precision": 0.8080808080808081,
+    "recall": 0.745920745920746,
+    "matchable": 429,
+    "mae": 2.3282828330993652,
+    "med_err": 0.375,
+    "obj": 182.5500002607703
+   },
+   "opt": {
+    "matches": 441,
+    "tp": 334,
+    "fp": 96,
+    "unscorable": 11,
+    "scorable": 430,
+    "precision": 0.7767441860465116,
+    "recall": 0.7785547785547785,
+    "matchable": 429,
+    "mae": 2.668604612350464,
+    "med_err": 0.5,
+    "obj": 204.97500021234154
+   },
+   "dense": {
+    "matches": 441,
+    "tp": 332,
+    "fp": 98,
+    "unscorable": 11,
+    "scorable": 430,
+    "precision": 0.772093023255814,
+    "recall": 0.7738927738927739,
+    "matchable": 429,
+    "mae": 2.6639535427093506,
+    "med_err": 0.5,
+    "obj": 204.97500021234154
+   },
+   "cross_off": 11,
+   "cross_tot": 834,
+   "xpairs": 1203,
+   "ord_0.1": {
+    "matches": 441,
+    "tp": 336,
+    "fp": 94,
+    "unscorable": 11,
+    "scorable": 430,
+    "precision": 0.7813953488372093,
+    "recall": 0.7832167832167832,
+    "matchable": 429,
+    "mae": 2.567441940307617,
+    "med_err": 0.5,
+    "crossings": 8
+   },
+   "ord_0.3": {
+    "matches": 441,
+    "tp": 335,
+    "fp": 95,
+    "unscorable": 11,
+    "scorable": 430,
+    "precision": 0.7790697674418605,
+    "recall": 0.7808857808857809,
+    "matchable": 429,
+    "mae": 2.5767440795898438,
+    "med_err": 0.5,
+    "crossings": 6
+   },
+   "ord_0.8": {
+    "matches": 441,
+    "tp": 335,
+    "fp": 95,
+    "unscorable": 11,
+    "scorable": 430,
+    "precision": 0.7790697674418605,
+    "recall": 0.7808857808857809,
+    "matchable": 429,
+    "mae": 2.5767440795898438,
+    "med_err": 0.5,
+    "crossings": 6
+   }
+  }
+ },
+ "margin_vs_precision": [
+  {
+   "kind": "synthetic",
+   "label": "periodic",
+   "margin": 0.0833333432674408,
+   "prec": 0.22135416666666666,
+   "n": 1152
+  },
+  {
+   "kind": "real",
+   "label": "Teddy wall, printed",
+   "n": 138,
+   "prec": 0.5144927536231884,
+   "margin": 0.4166666567325592
+  },
+  {
+   "kind": "real",
+   "label": "Teddy (all)",
+   "n": 343,
+   "prec": 0.6151603498542274,
+   "margin": 0.5416666269302368
+  },
+  {
+   "kind": "real",
+   "label": "Teddy wall, plain",
+   "n": 46,
+   "prec": 0.8043478260869565,
+   "margin": 0.6666666865348816
+  },
+  {
+   "kind": "real",
+   "label": "Cones (all)",
+   "n": 430,
+   "prec": 0.7813953488372093,
+   "margin": 0.6666666865348816
+  },
+  {
+   "kind": "synthetic",
+   "label": "broadband",
+   "margin": 0.75,
+   "prec": 0.8190830235439901,
+   "n": 807
+  },
+  {
+   "kind": "synthetic",
+   "label": "dots",
+   "margin": 0.7500000298023224,
+   "prec": 0.7633587786259542,
+   "n": 917
+  }
+ ]
+}

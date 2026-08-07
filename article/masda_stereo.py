@@ -15,17 +15,28 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import zlib
+
 from scipy.optimize import linear_sum_assignment
 
 RNG = np.random.default_rng(20251126)
+
+BASE_SEED = 20251126     # vary this to check a result is not seed noise
 
 
 def rng_for(name: str) -> np.random.Generator:
     """A generator seeded per purpose, so a scene does not depend on how many
     random draws happened before it. The module-level RNG is consumed in call
     order, which made results differ between `main()` and a direct call -- fine
-    for a demo, not fine for numbers anyone might quote."""
-    return np.random.default_rng(abs(hash(("masda", name))) % (2 ** 32))
+    for a demo, not fine for numbers anyone might quote.
+
+    The seed must come from a *stable* hash. Python's builtin hash() is salted
+    per process (PEP 456), so seeding from it gave a different scene on every
+    run: deterministic within one process, irreproducible across two. crc32 is
+    stable across processes, versions and machines.
+    """
+    key = f"masda:{BASE_SEED}:{name}".encode()
+    return np.random.default_rng(zlib.crc32(key))
 W, H = 480, 320
 FIG = "figures"
 

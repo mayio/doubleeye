@@ -160,12 +160,43 @@ scheme. **Re-run `masda_stereo.py` and update the tables before publishing.**
 
 ## Table provenance
 
-Every number in the article is the output of `python3 masda_stereo.py` at the
-committed revision, with per-purpose seeded RNGs (`rng_for`) so results do not
-depend on call order. If you change the script, regenerate and re-check the tables:
-§3 margins, §5 the three result tables and the ratio table, §6 the two timing
-tables, §7.1 the ordering sweep.
+Regenerate every number and figure the article quotes with one command:
 
-The ordering result is a negative one. The factor reduces crossings monotonically in
-kappa and slightly reduces correct matches, in both the thin-bar and the periodic
-scene. An earlier run suggested a small gain; that was noise from an unseeded RNG.
+    python regen_all.py
+
+It writes `results.json` alongside the figures, so a changed number shows up in a
+diff. Prior to this the article's numbers came from several ad-hoc scripts, which is
+how they drifted.
+
+### Seeding, and a bug worth knowing about
+
+`masda_stereo.rng_for(name)` used to seed from Python's builtin `hash()`. String
+hashing is salted per process (PEP 456), so the seed differed on every run: the
+scene was deterministic *within* a process and irreproducible *across* two. Nobody
+could have reproduced the published tables, and worse, one conclusion about the
+ordering factor turned out to be a comparison between two different random scenes.
+It now seeds from `zlib.crc32`, which is stable across processes, versions and
+machines. `BASE_SEED` can be varied to check that a result is not seed noise, and
+the ordering experiment does exactly that across five seeds.
+
+The lesson generalises: any result reported from a single random scene is a claim
+about that scene. The ordering sweep reports mean and spread over seeds because the
+first two attempts at it disagreed in sign.
+
+## Real data
+
+`masda_middlebury.py` runs the same matcher on Middlebury 2003 Teddy and Cones.
+Middlebury states "We grant permission to use and publish all images and disparity
+maps on this website", so the images and the derived figures are safe to publish;
+cite Scharstein & Szeliski, CVPR 2003. Images download on first run into `data/`,
+which is gitignored rather than vendored.
+
+Two caveats recorded in the script:
+
+- `vision.middlebury.edu` serves an incomplete certificate chain (it omits its
+  intermediate), so TLS verification fails locally. The download is unverified and
+  the payload is checked instead: expected size, expected disparity scale, and a
+  disparity range consistent with the published `ndisp`.
+- Middlebury marks unknown ground truth as 0 rather than shipping a visibility mask,
+  so `evaluate_real` is separate from the synthetic `evaluate`. Matches landing on
+  unknown ground truth are counted and excluded from precision, not scored as wrong.
