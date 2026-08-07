@@ -20,9 +20,9 @@ duplicates it; this is the engineering record that sits underneath it.
 | [04-baseline-measurements.md](04-baseline-measurements.md) | Measured numbers, for citation and for regression comparison |
 | [05-operations.md](05-operations.md) | How to record, pull, view, analyse, and print a calibration target |
 | [06-preprocessing.md](06-preprocessing.md) | Census + keypoints: design, measured output, and the profiling result |
-| [07-tools.md](07-tools.md) | **Every tool, what it answers, how to run it** — start here when returning to the project |
+| [07-tools.md](07-tools.md) | **Every tool, what it answers, how to run it** — start here when returning to the project. Includes the **ROS 2 / rviz2 setup** and both viewer paths, live and offline |
 | [08-imu.md](08-imu.md) | Pixhawk/ArduPilot: links, isolated venv, parameters applied, and what is still open |
-| [09-matching.md](09-matching.md) | **MASDA** — messages, validation against brute force, and the measured advantage over nearest-neighbour |
+| [09-matching.md](09-matching.md) | **MASDA** — messages, validation against brute force, the advantage over nearest-neighbour, ground-truth results on Middlebury, and the frame budget |
 - [10-architecture.md](10-architecture.md) — what runs on the GPU, what runs on the CPU, and why nothing is on the GPU yet.
 
 ## Status at time of writing
@@ -62,6 +62,18 @@ optima) and measured on real stereo pairs, where it finds **46% more matches tha
 nearest-neighbour with the projector on** and only 13% more with it off — the
 advantage scaling with ambiguity exactly as the plan argues. See
 [09-matching.md](09-matching.md).
+
+## Seeing the results
+
+Two ways, both in [07-tools.md](07-tools.md). Live, with matching on the Jetson and
+only the ROS 2 half on the laptop:
+
+    source /opt/ros/jazzy/setup.bash
+    python3 desktop/de_live_ros2.py --emitter on   # then rviz2, Fixed Frame: map
+
+Or offline from a recorded bag, via `desktop/bag_to_ros2.py`. ROS 2 Jazzy is needed
+on the laptop and nothing is needed on the Jetson; the install, the two-Pythons
+split and the rviz2 display list are all in 07-tools.
 
 ## Findings at a glance
 
