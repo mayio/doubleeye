@@ -221,7 +221,10 @@ Open, in rough priority order:
   two independently refined positions.
 - Fix swapped lambda/gamma in `core/src/match.cpp` relative to the article's
   convention (lambda = clutter/left-unmatched, gamma = misdetection/right).
-- Port `_seg_max_excluding` (the O(E) second-max trick) into the C++ matcher.
+- ~~Port `_seg_max_excluding` into the C++ matcher~~ -- not needed. `Top2` in
+  `core/src/match.cpp` already gives O(1) "max excluding one element"; the NumPy
+  trick exists only because NumPy cannot loop cheaply. The matcher is also not
+  where the time goes.
 - Run the C++ matcher against Middlebury too, so the C++ and NumPy paths are
   compared on identical data with ground truth. This is now possible without a
   rangefinder and no longer blocks on hardware.
@@ -256,5 +259,34 @@ Open:
 - Sub-pixel disparity. `detect()` returns integer positions, so median disparity
   error is 0.50 px, exactly the integer-vs-quarter-pixel quantisation. Fit the
   correlation surface between the two windows.
-- Port `_seg_max_excluding` (the O(E) second-max trick) into the C++ matcher.
+- ~~Port `_seg_max_excluding` into the C++ matcher~~ -- not needed. `Top2` in
+  `core/src/match.cpp` already gives O(1) "max excluding one element"; the NumPy
+  trick exists only because NumPy cannot loop cheaply. The matcher is also not
+  where the time goes.
 - Use the margin downstream: weight or gate matches by it before triangulation.
+
+## Frame budget, measured 2026-08-07
+
+**The pipeline does not close at 30 Hz.** Jetson, MAXN, 848x480, 120 pairs:
+
+| stage | ms/pair | share of 33.3 ms |
+|---|---|---|
+| preprocessing, L/R concurrent | 26.54 | 79.6% |
+| MASDA baseline | 5.14 | 15.4% |
+| **total baseline** | **31.68** | **95.1%** |
+| MASDA `--right-density 6 --min-margin 0.10` | 8.84 | 26.5% |
+| **total recommended** | **35.38** | **106.2%** |
+
+Detection is 20.98 of the 21.24 ms per frame, so zeroing the matcher entirely
+still leaves preprocessing at 80%. Needs a decision, in this order:
+
+1. Run correspondence at 15 Hz. 66.7 ms budget, 53% used even with the
+   recommended config. Costs latency only, and 15 Hz is plausibly enough for
+   indoor odometry.
+2. Profile detection. FAST already replaced the dense Shi-Tomasi scan; the
+   Shi-Tomasi scoring of FAST corners and the NMS have not been profiled
+   separately.
+3. Drop to 640x480, which is 75% of the pixels and preprocessing is close to
+   pixel-bound.
+
+The recommended matcher config is off by default until this is settled.
