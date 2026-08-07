@@ -18,11 +18,17 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<EOF
-usage: tools/deploy.sh [--probe] [--capture ARGS...]
+usage: tools/deploy.sh [--probe] [--capture NAME [ARGS...]] [--pull NAME]
 
-  (no args)          sync sources, then build
-  --probe            sync, build, then run rs_probe
-  --capture ARGS...  sync, build, then run rs_ir_capture with ARGS
+  (no args)               sync sources, then build
+  --probe                 sync, build, then run rs_probe
+  --capture NAME [ARGS]   sync, build, then record to ~/bags/NAME on the Jetson
+  --pull NAME             copy ~/bags/NAME from the Jetson into ./bags/NAME
+
+NAME is a bare name, not a path. It always lands in ~/bags/NAME on the Jetson.
+That is deliberate: writing '~/bags/x' here would expand against the DESKTOP
+home before ssh ever sees it, and the Jetson would then fail to create
+/home/<desktop-user>/bags/x. Taking a name removes the whole class of mistake.
 
 Environment:
   DOUBLEEYE_HOST        ssh alias or host   (default: jetson)
@@ -31,8 +37,31 @@ Environment:
 EOF
 }
 
+# Reject anything that is a path rather than a name, so a stray ~/ or / cannot
+# silently resolve against the wrong machine's filesystem.
+check_name() {
+  case "$1" in
+    "" ) echo "error: missing NAME" >&2; exit 2 ;;
+    */*|~*) echo "error: '$1' looks like a path. Pass a bare name; it goes to" >&2
+            echo "       ~/bags/$(basename "$1") on the Jetson." >&2; exit 2 ;;
+  esac
+}
+
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
+  --pull)
+    check_name "${2:-}"
+    NAME="$2"
+    echo "==> pulling ~/bags/$NAME from ${HOST}"
+    mkdir -p "bags/$NAME"
+    ssh "$HOST" "test -d ~/bags/$NAME" || {
+      echo "error: ~/bags/$NAME does not exist on ${HOST}" >&2
+      echo "available:" >&2; ssh "$HOST" "ls ~/bags 2>/dev/null" >&2; exit 1; }
+    ssh "$HOST" "cd ~/bags/$NAME && tar czf - ." | tar xzf - -C "bags/$NAME"
+    echo "==> bags/$NAME"
+    du -sh "bags/$NAME"
+    exit 0
+    ;;
 esac
 
 echo "==> syncing jetson/ to ${HOST}:~/${REMOTE_DIR}/"
@@ -61,12 +90,14 @@ case "${1:-}" in
     ssh -t "$HOST" "cd ~/${REMOTE_DIR}/jetson/build && ./rs_probe ${*:2}"
     ;;
   --capture)
-    if [[ $# -lt 2 ]]; then
-      echo "--capture needs at least an output directory" >&2
-      exit 2
-    fi
-    echo "==> rs_ir_capture ${*:2}"
-    ssh -t "$HOST" "cd ~/${REMOTE_DIR}/jetson/build && ./rs_ir_capture ${*:2}"
+    check_name "${2:-}"
+    NAME="$2"
+    echo "==> rs_ir_capture -> ${HOST}:~/bags/$NAME ${*:3}"
+    # ~ is quoted so it expands on the REMOTE side, not here.
+    ssh -t "$HOST" "mkdir -p ~/bags && rm -rf ~/bags/$NAME && \
+      cd ~/${REMOTE_DIR}/jetson/build && ./rs_ir_capture ~/bags/$NAME ${*:3}"
+    echo
+    echo "==> pull it with:  ./tools/deploy.sh --pull $NAME"
     ;;
   "")
     ;;
