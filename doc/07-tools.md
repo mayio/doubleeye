@@ -336,3 +336,67 @@ Holding-and-moving technique is in
 [05-operations.md](05-operations.md#how-to-hold-and-move-the-board). The single
 most important point: **do not hold the board flat facing the camera**, because
 fronto-parallel views leave focal length and distortion poorly constrained.
+
+## Viewing results in rviz2
+
+Two paths. The offline one works today; the live one needs the bridge described
+below.
+
+### What you need on the laptop
+
+There is no ROS on this machine and there cannot be ROS 1: the desktop runs Ubuntu
+24.04, where ROS 1 does not exist. So rviz2, from ROS 2 Jazzy:
+
+    sudo apt install software-properties-common curl -y
+    sudo add-apt-repository universe -y
+    sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+      -o /usr/share/keyrings/ros-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+    http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+      | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+    sudo apt update
+    sudo apt install ros-jazzy-rviz2 ros-jazzy-ros2bag \
+                     ros-jazzy-rosbag2-storage-mcap -y
+
+Nothing is needed on the Jetson. That is deliberate: the capture path stays
+ROS-free because preprocessing is already the binding constraint on memory
+bandwidth, and JetPack 4.2 is Ubuntu 18.04, where the only ROS 2 releases are long
+past end of life.
+
+### Offline: a recorded bag
+
+    core/build/de_match bags/full_on --right-density 6 --min-margin 0.10
+    .venv/bin/python desktop/bag_to_ros2.py bags/full_on --dilate 3
+
+Then:
+
+    source /opt/ros/jazzy/setup.bash
+    ros2 bag play bags/full_on_ros2 --loop
+    rviz2
+
+In rviz2: set **Fixed Frame** to `map`, then Add →
+
+| display | topic | note |
+|---|---|---|
+| Image | `/doubleeye/image_raw` | the left IR frame |
+| Image | `/doubleeye/depth` | sparse, see below |
+| PointCloud2 | `/doubleeye/points` | set Color Transformer to `margin` |
+
+The bag carries a `/tf_static` identity `map` → `camera_link`. Without it rviz2
+refuses to draw anything and says so only obliquely, which is a long way to travel
+for a missing transform.
+
+**The depth image is sparse and that is correct.** This is a sparse matcher: it
+produces a few hundred correspondences at keypoints, not a disparity per pixel.
+Coverage is about 1.3% of pixels, so at `--dilate 1` it is nearly invisible on
+screen. `--dilate 3` draws each sample as a 3x3 block, which invents nothing and
+just makes it visible. If a dense depth image is wanted for its own sake, the D435
+computes one in the ASIC; it is not what this pipeline produces.
+
+**Colour by margin.** Points are coloured red below 0.10, amber to 0.30, green
+above, and the raw margin rides along as a float field. Over eight Middlebury
+scenes precision by margin quartile is 0.169 / 0.286 / 0.391 / 0.659, so the red
+points really are the ones to distrust. Expect outliers at both ends of the
+disparity gate: the Z range on `full_on` runs 0.10 m to 17.46 m, and both extremes
+sit exactly at the gate limits (220 px and ~1.2 px), which is what a wrong match
+at a gate boundary looks like. Filtering the cloud by margin removes most of them.
