@@ -101,6 +101,7 @@ python3 -m venv .venv && .venv/bin/pip install -r desktop/requirements.txt
 | `view_bag.py` | What did I record? |
 | `capture_report.py` | Was the recording timing-sound? |
 | `check_checkerboard.py` | Is this calibration set usable? |
+| `check_planarity.py` | Was the board actually flat? |
 | `view_keypoints.py` | Is the preprocessing output well distributed? |
 | `make_checkerboard.py` | Produce a printable target |
 | `mavlink_probe.py` | What is the Pixhawk actually saying? |
@@ -162,6 +163,24 @@ third of its frames.
 Detection **per channel** — a pair found in only one channel contributes nothing
 to stereo extrinsics — plus image coverage and pose spread. Its failure hints are
 ordered by likelihood, IR-transparent inkjet ink first.
+
+### `check_planarity.py`
+
+```sh
+.venv/bin/python desktop/check_planarity.py bags/NAME [--max-rms 0.40] [--cull NAME_flat]
+```
+
+Catches a non-flat board, which is an error nothing else reveals: detection still
+succeeds, the corner count is right, and reprojection error stays plausible
+because the distortion model absorbs part of the bend.
+
+Works by fitting a homography per detected board. Legitimate only because the IR
+pair has **exactly zero distortion**, so a flat board must fit a homography
+exactly and the residual is whatever is not planar.
+
+Reports three independent signals rather than one verdict — residual versus
+apparent board size, temporal clustering of failures, and residual smoothness —
+and says so when they disagree. `--cull` writes the passing poses to a new bag.
 
 ### `view_keypoints.py`
 
@@ -231,7 +250,13 @@ The whole recipe, from nothing:
 
 # 4. verify before trusting it
 .venv/bin/python desktop/check_checkerboard.py bags/calib02
+.venv/bin/python desktop/check_planarity.py bags/calib02 --cull calib02_flat
+#    then calibrate on bags/calib02_flat, not the raw set
 ```
+
+Step 4's second line matters: the first real session had 82/82 detection yet a
+third of its poses carried a non-flat board. Detection success says nothing about
+planarity.
 
 Holding-and-moving technique is in
 [05-operations.md](05-operations.md#how-to-hold-and-move-the-board). The single

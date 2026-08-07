@@ -229,6 +229,53 @@ answer; treat the resulting numbers as provisional until either a bigger target 
 a tighter working distance is used, and compare against the factory values above
 rather than assuming an improvement.
 
+## Board planarity — the sheet was not always flat
+
+Suspicion raised after the session that the paper had gone loose at times.
+Testable, and it turned out to be justified.
+
+The test exists because the D435 IR pair has **exactly zero distortion**. A flat
+board must therefore project to an exact projective image of a regular grid — a
+homography and nothing more — so the homography residual is dominated by whatever
+is not planar. `desktop/check_planarity.py`.
+
+| | `calib01` (all) | `calib01_flat` (culled) |
+|---|---|---|
+| poses | 82 | **49** |
+| RMS residual, p50 | 0.342 px | **0.234 px** |
+| p90 | 0.950 px | **0.346 px** |
+| max | 2.481 px | **0.399 px** |
+| mean | 0.469 px | **0.249 px** |
+| detected in both channels | 82/82 | 49/49 |
+
+**Evidence that the cause is physical, not detection noise.** No single statistic
+decides this, so three are used:
+
+| Signal | Value | Reading |
+|---|---|---|
+| residual vs apparent board size | corr **+0.27** | Points **physical**. Detection gets *better* as the board fills more frame, so noise would give a negative correlation. A fixed bend subtends more pixels up close. |
+| temporal clustering | **19** pass/fail runs vs **40.4** expected if random | Points **physical**. Failures arrive in episodes, not spread evenly. |
+| residual smoothness | 0.52 on failing poses | Ambiguous. This statistic rises with magnitude even for pure noise. |
+
+Two of three point at a physical cause, so the board was probably not perfectly
+flat for parts of the session. Implied magnitude at 25 mm pitch: **median 0.36 mm,
+p90 0.91 mm, max 3.10 mm** — small, which is why the typical pose is fine and only
+the tail is contaminated.
+
+A sharper test was inconclusive: if the cause were a *constant* physical bow, the
+residual expressed in board units would be more uniform than in pixels. It is not
+(coefficient of variation 0.83 versus 0.76). So it is not one fixed bend but
+something varying through the session — consistent with a sheet lifting and
+re-seating, or hand pressure, rather than a permanently warped board.
+
+**Remedy, which did not require resolving the question:** cull above 0.40 px RMS.
+That leaves 49 poses, comfortably inside the 20–40 that calibration wants, with
+the tail removed. Use `bags/calib01_flat`.
+
+**For next time:** glue the sheet down over its whole area rather than at the
+edges, onto something genuinely rigid, and grip it by the backing well away from
+the printed region.
+
 ## Development link throughput
 
 Desktop ↔ Jetson over WiFi: **22.4 MB/s** measured (10 MB via `dd` over ssh).

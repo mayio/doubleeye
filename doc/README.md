@@ -72,6 +72,7 @@ across them is the same: **on this platform the expensive failures are silent.**
 | The Pixhawk reports "PX4 FMU v2.x" over USB but **runs ArduPilot** — the descriptor is the bootloader identity | [01](01-hardware.md) |
 | `nvs_bmi160` and its device-tree node are **stock leftovers with no hardware behind them** — not the IMU | [01](01-hardware.md) |
 | A calibration set of 82 poses reached **100% detection in both channels**, so the print is IR-visible | [04](04-baseline-measurements.md) |
+| ...yet a third of those poses had a **non-flat board**. Detection success says nothing about planarity | [04](04-baseline-measurements.md) |
 | cmake 3.10 accepts neither `-S`/`-B` nor `--build -j`; given either it **prints usage and exits without building** | [03](03-obstacles.md) obstacle 13 |
 
 ## Conventions used throughout
