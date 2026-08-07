@@ -106,6 +106,7 @@ python3 -m venv .venv && .venv/bin/pip install -r desktop/requirements.txt
 | `make_checkerboard.py` | Produce a printable target |
 | `stereo_calibrate.py` | Calibrate the pair and compare to factory |
 | `bag_to_rosbag.py` | Produce a rosbag for Kalibr |
+| `allan_variance.py` | IMU noise parameters from a dataflash log |
 | `mavlink_probe.py` | What is the Pixhawk actually saying? |
 
 ### `live_view.py` — the interactive one
@@ -242,6 +243,23 @@ uniform grid — correct for `kalibr_calibrate_cameras`, which only needs a left
 right image of the same instant to share a stamp, but **not** valid for
 `kalibr_calibrate_imu_camera`, which estimates a time offset. The tool warns when
 it synthesises.
+
+### `allan_variance.py`
+
+```sh
+ssh jetson '~/venvs/mavlink/bin/python ~/doubleeye/pixhawk/ardupilot_config.py \
+  --download-log 3 --out /tmp/ap3.bin --max-mb 20'
+ssh jetson 'base64 /tmp/ap3.bin' | base64 -d > bags/imu/ap3.bin
+.venv/bin/python desktop/allan_variance.py bags/imu/ap3.bin
+```
+
+Reports the message inventory, which source it used, the sample rate measured from
+the log's own timestamps, the Allan deviation per axis, and a Kalibr `imu.yaml`.
+
+Three things it refuses to let you get wrong: it says when the data is **filtered**
+(understated noise density by ~40% here), it computes the **validity limit** imposed
+by the batch sampler's windowing and labels bias instability beyond it as an
+artefact, and it checks that **stationary gravity reads 9.807 m/s²**.
 
 ### `mavlink_probe.py`
 

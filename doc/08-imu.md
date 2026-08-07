@@ -185,11 +185,94 @@ two misleading measurements.
 Also avoid `dd bs=1`: one syscall per byte makes the reader the bottleneck and
 under-reports the rate.
 
+## Allan variance — tooling built and validated, three findings
+
+`desktop/allan_variance.py` parses a dataflash log, reports what is usable,
+computes the overlapping Allan deviation and emits a Kalibr `imu.yaml`.
+`ardupilot_config.py --download-log N` fetches logs over MAVLink at ~70–90 kB/s,
+re-requesting gaps rather than tolerating them.
+
+### The batch sampler needed a reboot
+
+Setting `INS_LOG_BAT_MASK = 1` on a running unit does **not** retrofit batch
+logging into the log already open. The first 20 MB downloaded afterwards contained
+no `ISBH`/`ISBD` at all. `--reboot` starts a fresh log with the sampler active and
+the data appears immediately.
+
+This is the failure the whole check existed to catch: a multi-hour recording left
+running after setting that parameter would have been **useless for noise density**
+and would have looked fine.
+
+### Raw sample rate: 999.6 Hz
+
+The open question about `INS_LOG_BAT_OPT` semantics is answered empirically —
+`smp_rate` reads **999.78 Hz** and the log's own timestamps confirm 999.6 Hz. Also
+note the schema: the field is `mul`, not `mult`, and it is a **divisor**
+(`real = raw / mul`). For the gyro `mul = 938`, so 32767/938 = 34.9 rad/s full
+scale, which is the MPU6000's 2000 °/s range — a useful check that the scaling
+sign is right.
+
+### Filtered data understates noise density by ~40%, measured
+
+Both sources in the same log:
+
+| | filtered `IMU` @ 49.9 Hz | raw batch @ 999.6 Hz | understated by |
+|---|---|---|---|
+| gyroscope noise density | 7.46e−5 | **1.28e−4** rad/s/√Hz | **41%** |
+| accelerometer noise density | 2.13e−3 | **3.85e−3** m/s²/√Hz | **45%** |
+
+So the warning was not theoretical. `INS_GYRO_FILTER` at 20 Hz removes exactly the
+high-frequency content the white-noise estimate is made of.
+
+### Valid results so far
+
+| Parameter | Value (worst axis) |
+|---|---|
+| `gyroscope_noise_density` | **1.28e−4 rad/s/√Hz** (0.0073 °/s/√Hz) |
+| `accelerometer_noise_density` | **3.85e−3 m/s²/√Hz** |
+
+These are trustworthy: noise density lives at short τ and needs only minutes.
+
+**Bias instability and random walk are not yet measured.** The batch sampler
+records **windows**, not a continuous stream — 38 blocks of ~1.02 s in this log.
+Concatenating them fabricates continuity across the gaps, which is harmless below
+one window but invalidates everything beyond, and the bias-instability minimum sits
+at τ ≈ 2.6–6 s, well outside. The tool now computes the validity limit
+(τ ≤ 0.51 s here), draws it on the plot, and states plainly that those two figures
+are artefacts of concatenation rather than measurements.
+
+Getting them needs continuously logged inertial data, not windowed batches — a
+different `INS_LOG_BAT_OPT` setting, or the standard `IMU` messages accepting that
+they are filtered, or a raw stream captured on the Jetson.
+
+### The accelerometer is out of calibration by 7.5%
+
+Free check, since the vehicle is stationary: gravity must read 9.80665 m/s². It
+reads **9.074 m/s², −7.47%**, consistent across two independent logs (9.02 and
+9.07).
+
+That is a scale/calibration fault, not noise. It matters directly: the plan uses
+the accelerometer for the gravity vector and hence for locating the ground plane.
+**Run ArduPilot's 6-position accelerometer calibration** before relying on it. The
+tool now checks this automatically.
+
+### The device node is not stable
+
+After a reboot the Pixhawk re-enumerated from `/dev/ttyACM0` to `/dev/ttyACM1`, and
+a hardcoded path simply hangs waiting for a heartbeat. Use the udev by-id link,
+which follows the device rather than enumeration order:
+
+```
+/dev/serial/by-id/usb-3D_Robotics_PX4_FMU_v2.x_0-if00
+```
+
+`ardupilot_config.py` now resolves this automatically.
+
 ## Still open
 
-- **Multi-hour static log** for Allan variance, then the analysis. Conditions are
-  right now; this is the natural thing to do while there is no battery.
-- **`INS_LOG_BAT_OPT`** semantics, to be confirmed from the log's real sample rate.
+- **Bias instability and random walk**, which need *continuous* inertial data
+  rather than the sampler's 1 s windows. Noise density is done.
+- **6-position accelerometer calibration** — gravity is 7.5% low.
 - **Reset `LOG_DISARMED` to 0** afterwards, or the card fills at ~3 GB/day.
 - **Time alignment.** `TIMESYNC` is present in the stream, which is ArduPilot's own
   mechanism for relating its clock to a companion's — relevant to step 3, and it

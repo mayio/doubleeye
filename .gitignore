@@ -5,3 +5,4 @@ __pycache__/
 *.raw
 bags/
 *.bag
+bags/imu/*.bin

@@ -1,4 +1,5 @@
 matplotlib>=3.8
 numpy>=1.26
 opencv-python>=4.10
+pymavlink>=2.4
 rosbags>=0.10

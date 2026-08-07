@@ -82,6 +82,11 @@ across them is the same: **on this platform the expensive failures are silent.**
 | **`INS_GYRO_FILTER` was 4 Hz**, stripping almost everything rotation compensation depends on; raised to 20 Hz | [08](08-imu.md) |
 | **`LOG_DISARMED = 0`** means a stationary bench setup logs *nothing* — a multi-hour recording would have produced an empty card | [08](08-imu.md) |
 | Reading a tty without `stty raw` returned 288 bytes where the real rate was 7.2 kB/s — indistinguishable from a dead link | [08](08-imu.md) |
+| `INS_LOG_BAT_MASK` does not retrofit batch logging into an already-open log — **a multi-hour recording would have been useless** until a reboot | [08](08-imu.md) |
+| Filtered IMU data **understates gyro noise density by 41%**, measured against raw 999.6 Hz batch samples from the same log | [08](08-imu.md) |
+| Gravity reads **9.074 m/s², −7.5%** — the accelerometer needs 6-position calibration | [08](08-imu.md) |
+| The batch sampler logs **1 s windows, not a stream**, so bias instability cannot be read from concatenated blocks | [08](08-imu.md) |
+| The Pixhawk **re-enumerates ACM0→ACM1** across a reboot; use the udev by-id link | [08](08-imu.md) |
 | A calibration set of 82 poses reached **100% detection in both channels**, so the print is IR-visible | [04](04-baseline-measurements.md) |
 | ...yet a third of those poses had a **non-flat board**. Detection success says nothing about planarity | [04](04-baseline-measurements.md) |
 | Calibration reproduces factory fx to **0.61%** and confirms zero distortion — freeing radtan made the fit *worse* | [04](04-baseline-measurements.md) |
