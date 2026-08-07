@@ -241,6 +241,21 @@ says "PX4 FMU v2.x" while the firmware is ArduPilot.
 Its "percent of dump framed" figure is what settled the TELEM2 baud rate: 100% at
 57600, 83.5% with nonsense system ids at 115200.
 
+## Pixhawk side — `pixhawk/`, Python 3.6 in the Jetson's venv
+
+```sh
+ssh jetson '~/venvs/mavlink/bin/python ~/doubleeye/pixhawk/ardupilot_config.py --report --check-sd'
+ssh jetson '~/venvs/mavlink/bin/python ~/doubleeye/pixhawk/ardupilot_config.py --set SR0_RAW_SENS=100'
+```
+
+Reads and sets the ArduPilot parameters that matter here, and infers SD-card
+presence from the logging health bits in `SYS_STATUS`. `--report` only reads;
+writes happen solely for parameters named with `--set`, each verified by read-back.
+
+Runs in `~/venvs/mavlink` on the Jetson — see [08-imu.md](08-imu.md) for how that
+venv is bootstrapped on a box with no pip and no `ensurepip`. Must stay Python
+3.6-compatible.
+
 ## Dependency notes
 
 **OpenCV is desktop-only, from pip, and the full (non-headless) build** — the

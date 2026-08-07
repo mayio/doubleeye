@@ -20,6 +20,7 @@ duplicates it; this is the engineering record that sits underneath it.
 | [05-operations.md](05-operations.md) | How to record, pull, view, analyse, and print a calibration target |
 | [06-preprocessing.md](06-preprocessing.md) | Census + keypoints: design, measured output, and the profiling result |
 | [07-tools.md](07-tools.md) | **Every tool, what it answers, how to run it** — start here when returning to the project |
+| [08-imu.md](08-imu.md) | Pixhawk/ArduPilot: links, isolated venv, parameters applied, and what is still open |
 
 ## Status at time of writing
 
@@ -29,12 +30,13 @@ unimodal frame-interval distribution. One item remains open: hardware sync
 cannot be verified in the current configuration — see
 [03-obstacles.md](03-obstacles.md), obstacle 7.
 
-Bring-up step 2 (IMU Allan variance) is **blocked on configuration, not
-hardware.** The Pixhawk 2.4.8 is powered and identified as running ArduPilot,
-reachable on `/dev/ttyACM0` and on `/dev/ttyTHS2` at 57600 baud, but it streams
-IMU at only 3.2 Hz and Allan variance needs the SD-card log rather than a stream
-— see
-[01-hardware.md](01-hardware.md#the-imu-is-a-pixhawk-248-running-ardupilot).
+Bring-up step 2 (IMU Allan variance) is **unblocked on the hardware side.** The
+Pixhawk runs ArduPilot, the IMU stream is up from 3.2 Hz to 53 Hz, the SD card is
+confirmed present and healthy, and raw pre-filter IMU logging is enabled. What
+remains is a multi-hour static log and the analysis. One thing needs a decision:
+`INS_GYRO_FILTER` is **4 Hz**, which removes most of what rotation compensation
+needs — flagged rather than changed, since it affects control loops. See
+[08-imu.md](08-imu.md).
 Separately, the `nvs_bmi160` module and its device-tree node are stock L4T
 leftovers with no hardware behind them, and are not the IMU.
 
@@ -71,6 +73,9 @@ across them is the same: **on this platform the expensive failures are silent.**
 | Computing Census densely wasted **99.7%** of the work; making it sparse cut 61 ms to 0.13 ms with identical output | [06](06-preprocessing.md) |
 | The Pixhawk reports "PX4 FMU v2.x" over USB but **runs ArduPilot** — the descriptor is the bootloader identity | [01](01-hardware.md) |
 | `nvs_bmi160` and its device-tree node are **stock leftovers with no hardware behind them** — not the IMU | [01](01-hardware.md) |
+| IMU stream was capped at 50 Hz not by baud or USB but by **`SCHED_LOOP_RATE`** — nothing streams faster than the loop emitting it | [08](08-imu.md) |
+| **`INS_GYRO_FILTER = 4 Hz`** strips almost everything rotation compensation depends on | [08](08-imu.md) |
+| Reading a tty without `stty raw` returned 288 bytes where the real rate was 7.2 kB/s — indistinguishable from a dead link | [08](08-imu.md) |
 | A calibration set of 82 poses reached **100% detection in both channels**, so the print is IR-visible | [04](04-baseline-measurements.md) |
 | ...yet a third of those poses had a **non-flat board**. Detection success says nothing about planarity | [04](04-baseline-measurements.md) |
 | cmake 3.10 accepts neither `-S`/`-B` nor `--build -j`; given either it **prints usage and exits without building** | [03](03-obstacles.md) obstacle 13 |
