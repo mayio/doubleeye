@@ -18,6 +18,14 @@ import matplotlib.pyplot as plt
 from scipy.optimize import linear_sum_assignment
 
 RNG = np.random.default_rng(20251126)
+
+
+def rng_for(name: str) -> np.random.Generator:
+    """A generator seeded per purpose, so a scene does not depend on how many
+    random draws happened before it. The module-level RNG is consumed in call
+    order, which made results differ between `main()` and a direct call -- fine
+    for a demo, not fine for numbers anyone might quote."""
+    return np.random.default_rng(abs(hash(("masda", name))) % (2 ** 32))
 W, H = 480, 320
 FIG = "figures"
 
@@ -61,10 +69,11 @@ def dot_texture(density=0.30, sigma=0.8) -> np.ndarray:
     every window and the ambiguity disappears, which would make the example easy
     in exactly the way real projected texture is not.
     """
+    rng = rng_for("dots")
     img = np.zeros((H, W), np.float32)
     n = int(H * W * density)
-    ys = RNG.integers(0, H, n)
-    xs = RNG.integers(0, W, n)
+    ys = rng.integers(0, H, n)
+    xs = rng.integers(0, W, n)
     img[ys, xs] = 1.0
     k = int(sigma * 4) | 1
     ax = np.arange(k) - k // 2
@@ -79,9 +88,10 @@ def dot_texture(density=0.30, sigma=0.8) -> np.ndarray:
 def broadband_texture() -> np.ndarray:
     """Contrasting control: rich, non-repeating texture where descriptors are
     individually discriminative and nearest-neighbour matching does fine."""
+    rng = rng_for("broadband")
     img = np.zeros((H, W), np.float32)
     for scale, amp in ((2, 1.0), (5, 0.7), (13, 0.5), (31, 0.35)):
-        coarse = RNG.normal(0, 1, (H // scale + 2, W // scale + 2))
+        coarse = rng.normal(0, 1, (H // scale + 2, W // scale + 2))
         ys = np.clip((np.arange(H) / scale).astype(int), 0, coarse.shape[0] - 1)
         xs = np.clip((np.arange(W) / scale).astype(int), 0, coarse.shape[1] - 1)
         img += amp * coarse[np.ix_(ys, xs)]
@@ -122,6 +132,37 @@ def score_margin(S):
     return np.array(out)
 
 
+def thin_bars_disparity(n_bars=9) -> np.ndarray:
+    """A scene built to give the ordering factor a fair hearing.
+
+    The lattice test was unfair to ordering: on periodic texture the wrong matches
+    are largely order-PRESERVING, since a region shifted by one period crosses
+    nothing. Ordering rejects crossings, so it can only help where the errors
+    actually cross.
+
+    Thin foreground bars at assorted depths produce exactly that. A keypoint on a
+    bar mis-associated to the background, or to a different bar, lands far from
+    where its neighbours went, which is a crossing. Thin structures are also the
+    case where ordering is genuinely VIOLATED by the true solution, so this tests
+    both halves of the claim at once: does the soft factor suppress spurious
+    crossings without deleting the real ones?
+    """
+    d = np.zeros((H, W), np.float32)
+    yy, xx = np.mgrid[0:H, 0:W]
+    d[:] = 6.0
+    floor = yy > H * 0.6
+    d[floor] = 6.0 + (yy[floor] - H * 0.6) * 0.22
+    rng = rng_for("bars")
+    for k in range(n_bars):
+        x0 = int(30 + k * (W - 70) / n_bars)
+        wd = int(rng.integers(5, 11))
+        y0 = int(rng.integers(10, 90))
+        y1 = int(rng.integers(H - 90, H - 10))
+        d[(xx > x0) & (xx < x0 + wd) & (yy > y0) & (yy < y1)] = float(
+            rng.integers(20, 46))
+    return d
+
+
 def render_pair(texture: np.ndarray, disp: np.ndarray, noise=1.5):
     """Warp the left image into the right by the disparity, with a z-buffer.
 
@@ -144,8 +185,9 @@ def render_pair(texture: np.ndarray, disp: np.ndarray, noise=1.5):
                 right[y, x2] = left[y, x]
     holes = zbuf < 0
     right[holes] = left[holes]              # fill disocclusions with background
-    left = left + RNG.normal(0, noise, left.shape)
-    right = right + RNG.normal(0, noise, right.shape)
+    nrng = rng_for("noise")
+    left = left + nrng.normal(0, noise, left.shape)
+    right = right + nrng.normal(0, noise, right.shape)
     return (np.clip(left, 0, 255).astype(np.uint8),
             np.clip(right, 0, 255).astype(np.uint8),
             ~holes)

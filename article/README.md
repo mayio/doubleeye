@@ -103,20 +103,57 @@ region shifted by one lattice period crosses nothing. Ordering rejects crossings
 and periodic texture produces ordered mistakes, so the constraint is nearly
 orthogonal to that failure mode.
 
-Ordering should pay against *disordered* errors — a thin foreground object, a
-depth discontinuity — which is what it is for. It is not a cure for descriptor
-degeneracy.
+### Given a fair hearing, on a scene built for it
+
+The lattice was an unfair test, so `thin_bars_disparity()` provides nine thin
+foreground bars at assorted depths over broadband texture. Errors there *do* cross,
+and the true solution genuinely violates ordering, so it tests both halves at once.
+
+| kappa | matches | correct | precision | recall | crossings |
+|---|---|---|---|---|---|
+| off | 711 | 502 | 0.706 | 0.781 | 71 / 2685 |
+| 0.1 | 711 | 506 | 0.712 | 0.787 | 59 |
+| **0.4** | 710 | **508** | **0.715** | **0.790** | **53** |
+| 0.8 | 710 | 507 | 0.714 | 0.788 | 53 |
+
+Crossings fall 25% and correct matches rise by **six, out of 711**. Still marginal.
+
+### Why — and it generalises
+
+Look at the baseline: **71 crossings out of 2685 same-band pairs, 2.6%.** Ordering
+was never a significant error mode, so there was little for it to correct.
+
+That is not an accident of this scene, and the reason is analytic. Matches $(i,j)$
+and $(i',j')$ with $x_i < x_{i'}$ cross iff $x_j > x_{j'}$, i.e.
+
+    d_i' - d_i  >  x_i' - x_i
+
+A crossing therefore requires the **disparity difference to exceed the horizontal
+separation**. With disparities confined to a range of width `dmax - dmin`, crossing
+is only *possible* for keypoint pairs closer together in x than that width — and
+rarer still as the range tightens.
+
+**So the disparity-range gate already does most of ordering's work.** Uniqueness
+plus a bounded disparity range yields largely ordered solutions for free, which is
+why an explicit ordering factor buys ~1% however favourable the scene.
+
+The honest conclusion: ordering is *expressible* (cleanly, as a clamp, inside the
+existing closed form) and *nearly redundant* in a geometrically gated sparse
+matcher. It would matter where the gating is weak — a wide disparity range, an
+uncalibrated pair, or 2-D temporal association where no ordering comes for free.
 
 Kept soft (finite kappa) deliberately: thin foreground objects genuinely violate
 ordering and a hard constraint would delete them. Damping defaults to 0.6, higher
 than the bipartite case, because these factors add loops the convergence result
 does not cover.
 
-## Reproducibility caveat
+## Reproducibility — fixed
 
-`RNG` is module-level and consumed in call order, so the scene depends on how many
-random draws preceded it. Numbers in the post came from `main()`'s specific
-sequence; calling `run_regime` directly in a different order gives a slightly
-different scene (e.g. 1163 vs 1109 matches on periodic). The qualitative results
-are unaffected, but each generator should take its own seeded `Generator` before
-these figures are treated as a benchmark.
+`RNG` used to be module-level and consumed in call order, so a scene depended on how
+many draws preceded it: `run_regime` called directly gave 1163 matches where
+`main()` gave 1109. Each generator now takes its own purpose-seeded `Generator` via
+`rng_for(name)`, verified stable across interleaved calls.
+
+Note this means figures regenerated now will differ slightly from the numbers in the
+current draft of the post, which were produced under the old call-order-dependent
+scheme. **Re-run `masda_stereo.py` and update the tables before publishing.**
