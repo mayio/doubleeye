@@ -3,3 +3,4 @@ bags/
 __pycache__/
 *.pyc
 *.raw
+bags/

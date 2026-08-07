@@ -10,7 +10,11 @@
 
 #include <librealsense2/rs.hpp>
 
+#include <cstdio>
+#include <cstdlib>
 #include <ctime>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -68,6 +72,96 @@ inline std::string device_info(const rs2::device& dev, rs2_camera_info info,
 // unexplained frame drops rather than as an error.
 inline bool usb3_link(const std::string& descriptor) {
   return !descriptor.empty() && descriptor[0] == '3';
+}
+
+// ---------------------------------------------------------------------------
+// Jetson power state.
+//
+// This exists because of a measured, expensive failure: in power mode 3 with
+// two Denver cores offline and jetson_clocks never applied, 848x480@30 on two
+// IR streams delivered 18.5 fps instead of 30 -- a 34% loss with no error
+// anywhere, on a USB3 link, with contiguous frame numbers. Setting MAXN and
+// locking clocks fixed it completely.
+//
+// jetson_clocks does NOT survive a reboot, so that regression can silently
+// return at any time and will look like a fresh bug. Every tool therefore
+// reads the state and says so, and it goes into run.txt so a recording can
+// never be misinterpreted later.
+
+struct PowerState {
+  int cpus_online = 0;
+  int cpus_present = 0;
+  long long scaling_min_khz = 0;  // min over online CPUs
+  long long cpuinfo_max_khz = 0;
+  bool clocks_locked = false;     // jetson_clocks raises scaling_min to max
+};
+
+inline std::string read_first_line(const std::string& path) {
+  std::ifstream fh(path.c_str());
+  std::string line;
+  if (fh) std::getline(fh, line);
+  return line;
+}
+
+// Parse a cpulist such as "0-5" or "0,3-5" into a count of entries.
+inline std::vector<int> parse_cpu_list(const std::string& spec) {
+  std::vector<int> out;
+  std::stringstream ss(spec);
+  std::string token;
+  while (std::getline(ss, token, ',')) {
+    const size_t dash = token.find('-');
+    if (dash == std::string::npos) {
+      if (!token.empty()) out.push_back(std::atoi(token.c_str()));
+    } else {
+      const int lo = std::atoi(token.substr(0, dash).c_str());
+      const int hi = std::atoi(token.substr(dash + 1).c_str());
+      for (int c = lo; c <= hi; ++c) out.push_back(c);
+    }
+  }
+  return out;
+}
+
+inline PowerState read_power_state() {
+  PowerState ps;
+  const std::string base = "/sys/devices/system/cpu";
+  const std::vector<int> online = parse_cpu_list(read_first_line(base + "/online"));
+  ps.cpus_online = static_cast<int>(online.size());
+  ps.cpus_present =
+      static_cast<int>(parse_cpu_list(read_first_line(base + "/present")).size());
+
+  bool all_locked = !online.empty();
+  for (int cpu : online) {
+    const std::string dir =
+        base + "/cpu" + std::to_string(cpu) + "/cpufreq/";
+    const long long smin = std::atoll(read_first_line(dir + "scaling_min_freq").c_str());
+    const long long cmax = std::atoll(read_first_line(dir + "cpuinfo_max_freq").c_str());
+    if (smin == 0 || cmax == 0) continue;
+    if (ps.scaling_min_khz == 0 || smin < ps.scaling_min_khz)
+      ps.scaling_min_khz = smin;
+    if (cmax > ps.cpuinfo_max_khz) ps.cpuinfo_max_khz = cmax;
+    if (smin < cmax) all_locked = false;
+  }
+  ps.clocks_locked = all_locked && ps.cpuinfo_max_khz > 0;
+  return ps;
+}
+
+// Returns true when the box looks ready for a trustworthy measurement.
+inline bool report_power_state(const PowerState& ps) {
+  const bool all_cores = ps.cpus_present > 0 && ps.cpus_online == ps.cpus_present;
+  std::printf("power state: %d/%d CPUs online, scaling_min %.2f GHz of "
+              "max %.2f GHz, clocks %s\n",
+              ps.cpus_online, ps.cpus_present, ps.scaling_min_khz / 1e6,
+              ps.cpuinfo_max_khz / 1e6,
+              ps.clocks_locked ? "LOCKED" : "not locked");
+  if (all_cores && ps.clocks_locked) return true;
+  std::printf(
+      "  !! Not at full performance. Measured consequence: 848x480@30 on two\n"
+      "     IR streams delivers ~18.5 fps instead of 30, silently, with no\n"
+      "     error and no frame-number gaps. Run:\n"
+      "         sudo nvpmodel -m 0 && sudo jetson_clocks\n"
+      "     jetson_clocks does not persist across reboot, so re-check after\n"
+      "     every boot.\n");
+  return false;
 }
 
 }  // namespace doubleeye

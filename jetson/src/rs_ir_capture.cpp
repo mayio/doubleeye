@@ -53,6 +53,10 @@ struct Options {
   int width = kWidth;
   int height = kHeight;
   int fps = kFps;
+  // "both" | "1" | "2". A single stream separates a per-frame cost ceiling
+  // from an aggregate-bandwidth ceiling: if one channel makes rate and two do
+  // not, the limit is shared, not per-frame.
+  std::string streams = "both";
 };
 
 struct FrameRec {
@@ -83,7 +87,8 @@ void usage(const char* argv0) {
       "                     Saving every frame will itself cause drops.\n"
       "  --width N          (default %d)\n"
       "  --height N         (default %d)\n"
-      "  --fps N            (default %d)\n",
+      "  --fps N            (default %d)\n"
+      "  --streams WHICH    both | 1 | 2 (default both)\n",
       argv0, kWidth, kHeight, kFps);
 }
 
@@ -115,6 +120,13 @@ bool parse_args(int argc, char** argv, Options* opt) {
       opt->height = std::atoi(argv[++i]);
     } else if (a == "--fps" && has_next) {
       opt->fps = std::atoi(argv[++i]);
+    } else if (a == "--streams" && has_next) {
+      opt->streams = argv[++i];
+      if (opt->streams != "both" && opt->streams != "1" &&
+          opt->streams != "2") {
+        std::fprintf(stderr, "bad --streams '%s'\n", opt->streams.c_str());
+        return false;
+      }
     } else {
       std::fprintf(stderr, "unknown argument '%s'\n", a.c_str());
       return false;
@@ -176,8 +188,10 @@ std::vector<rs2::stream_profile> select_profiles(const rs2::sensor& sensor,
     if (vp.width() != opt.width || vp.height() != opt.height ||
         vp.fps() != opt.fps)
       continue;
-    if (p.stream_index() == 1 || p.stream_index() == 2)
-      by_index[p.stream_index()] = p;
+    const int idx = p.stream_index();
+    if (idx != 1 && idx != 2) continue;
+    if (opt.streams != "both" && std::to_string(idx) != opt.streams) continue;
+    by_index[idx] = p;
   }
   std::vector<rs2::stream_profile> out;
   for (const auto& kv : by_index) out.push_back(kv.second);
@@ -215,7 +229,8 @@ void write_csv(const Options& opt, const std::vector<FrameRec>& rows) {
 
 void write_run_meta(const Options& opt, const rs2::device& dev,
                     const std::vector<rs2::stream_profile>& profiles,
-                    double duration, const std::string& usb) {
+                    double duration, const std::string& usb,
+                    const PowerState& power) {
   const std::string path = opt.outdir + "/run.txt";
   FILE* fh = std::fopen(path.c_str(), "w");
   if (!fh) return;
@@ -231,8 +246,14 @@ void write_run_meta(const Options& opt, const rs2::device& dev,
   std::fprintf(fh, "exposure_us %d\n", opt.exposure_us);
   std::fprintf(fh, "gain %d\n", opt.gain);
   std::fprintf(fh, "emitter %s\n", opt.emitter.c_str());
+  std::fprintf(fh, "streams %s\n", opt.streams.c_str());
   std::fprintf(fh, "duration_s %.3f\n", duration);
   std::fprintf(fh, "frame_bytes %d\n", opt.width * opt.height);
+  // Recorded so a bag can never be misread later: an un-locked-clocks
+  // recording is not comparable with a locked one.
+  std::fprintf(fh, "cpus_online %d/%d\n", power.cpus_online,
+               power.cpus_present);
+  std::fprintf(fh, "clocks_locked %s\n", power.clocks_locked ? "yes" : "no");
 
   if (profiles.size() == 2) {
     auto ir1 = profiles[0].as<rs2::video_stream_profile>();
@@ -322,9 +343,13 @@ int main(int argc, char** argv) {
       return 1;
     }
 
+    const PowerState power = read_power_state();
+    report_power_state(power);
+
     rs2::depth_sensor sensor = dev.first<rs2::depth_sensor>();
     std::vector<rs2::stream_profile> profiles = select_profiles(sensor, opt);
-    if (profiles.size() != 2) {
+    const size_t want_streams = (opt.streams == "both") ? 2u : 1u;
+    if (profiles.size() != want_streams) {
       std::fprintf(stderr,
                    "!! could not select both IR profiles at %dx%d@%d y8 "
                    "(found %zu). Run rs_probe.\n",
@@ -421,7 +446,7 @@ int main(int argc, char** argv) {
               });
 
     write_csv(opt, snapshot);
-    write_run_meta(opt, dev, profiles, duration, usb);
+    write_run_meta(opt, dev, profiles, duration, usb, power);
     std::printf("saved %zu raw frames", saved);
     if (callback_errors) std::printf(", %zu callback errors", callback_errors);
     std::printf("\n");

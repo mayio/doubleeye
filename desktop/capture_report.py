@@ -148,9 +148,11 @@ def report_rate(data, meta, synthetic: bool):
             print(f"        expected {expect:.0f} frames, "
                   f"shortfall {lost:.0f} ({100.0 * lost / expect:.1f}%)")
 
+    shortfall = np.nan
     if np.isfinite(duration) and duration > 0:
         n1 = int((data["stream"] == 1).sum())
         got = n1 / duration
+        shortfall = max(0.0, 1.0 - got / want) if want > 0 else np.nan
         if got < 0.9 * want:
             print(f"\n  !! delivering {got:.1f} of {want:.0f} fps. Frames are")
             print("     being lost below librealsense -- in the kernel UVC")
@@ -161,6 +163,7 @@ def report_rate(data, meta, synthetic: bool):
             print("          resolution or rate to see where it keeps up.")
             print("       3. Per-frame disk writes in the capture callback:")
             print("          retry with --save-every 0.")
+    return shortfall
 
 
 def report_drops(data, synthetic: bool):
@@ -333,7 +336,14 @@ def report_clock_skew(data, meta):
     return cam0, resid, slope
 
 
-def report_jitter(data, meta, synthetic: bool):
+# A host-side counter is a usable stand-in for the camera's own counter only
+# while essentially nothing is being lost -- then "nth delivered frame" and
+# "nth captured frame" coincide. Above this shortfall they diverge and the fit
+# measures the loss rather than the jitter.
+MAX_SHORTFALL_FOR_JITTER = 0.02
+
+
+def report_jitter(data, meta, synthetic: bool, shortfall: float):
     """Arrival jitter about the nominal frame grid, in ms and in pixels.
 
     This is the number that actually bounds the plan's gyro rotation
@@ -341,14 +351,20 @@ def report_jitter(data, meta, synthetic: bool):
     is warped by N ms too much rotation.
     """
     print("\n== arrival jitter about the nominal grid " + "=" * 28)
-    if synthetic:
+    if synthetic and not (np.isfinite(shortfall)
+                          and shortfall <= MAX_SHORTFALL_FOR_JITTER):
         print("  SKIPPED: this fits arrival time against frame number, which")
-        print("  requires a camera-assigned counter. The counter here is")
-        print("  host-side and counts only delivered frames, so every lost")
-        print("  frame shifts the fit and the residual measures the shortfall")
-        print("  rather than jitter. Fix the delivered-rate problem first, or")
-        print("  patch uvcvideo for a real counter.")
+        print("  needs a counter of *captured* frames. The counter here is")
+        print("  host-side and counts only delivered frames, and delivery is")
+        print(f"  short by {shortfall * 100:.1f}% (tolerance "
+              f"{MAX_SHORTFALL_FOR_JITTER * 100:.0f}%), so the residual would")
+        print("  measure the shortfall rather than the jitter. Fix the")
+        print("  delivered-rate problem first, or patch uvcvideo.")
         return None
+    if synthetic:
+        print(f"  note: counter is host-side, but delivery is short by only")
+        print(f"        {shortfall * 100:.2f}%, so it stands in for a captured-")
+        print("        frame counter here. Treat as indicative, not exact.")
     sel = data["stream"] == 1
     order = np.argsort(data["frame_number"][sel])
     numbers = data["frame_number"][sel][order].astype(float)
@@ -460,6 +476,47 @@ def make_plots(data, intervals, skew, jitter, dsync, outdir: Path):
     print(f"\nwrote {path}")
 
 
+def local_std(img: np.ndarray, w: int = 7) -> np.ndarray:
+    """Per-pixel standard deviation over a w x w window, via integral images.
+
+    This is the statistic that matters for the plan's Census decision. Global
+    mean intensity does not detect the IR projector at all -- a bright window
+    dominates the mean while the projector contributes only high-frequency
+    local structure. Census reads exactly that local structure, so local
+    contrast is the honest measure of whether the projector is buying
+    discriminability.
+    """
+    f = img.astype(np.float64)
+    s = np.zeros((f.shape[0] + 1, f.shape[1] + 1))
+    s2 = np.zeros_like(s)
+    s[1:, 1:] = f.cumsum(0).cumsum(1)
+    s2[1:, 1:] = (f * f).cumsum(0).cumsum(1)
+
+    def boxsum(integral):
+        return (integral[w:, w:] - integral[:-w, w:]
+                - integral[w:, :-w] + integral[:-w, :-w])
+
+    n = float(w * w)
+    mean = boxsum(s) / n
+    mean_sq = boxsum(s2) / n
+    return np.sqrt(np.maximum(mean_sq - mean * mean, 0.0))
+
+
+def texture_stats(buf: np.ndarray, w: int, h: int) -> dict:
+    img = buf.reshape(h, w)
+    lstd = local_std(img)
+    # Census on a 7x7 window needs enough local contrast to beat sensor noise.
+    # ~2 DN is roughly the read-noise floor here, so count below that as dead.
+    return {
+        "mean": float(img.mean()),
+        "sat_frac": float((img >= 250).mean()),
+        "dark_frac": float((img < 8).mean()),
+        "lstd_median": float(np.median(lstd)),
+        "lstd_p90": float(np.percentile(lstd, 90)),
+        "dead_frac": float((lstd < 2.0).mean()),
+    }
+
+
 def dump_frames(outdir: Path, meta, limit: int):
     """Convert raw Y8 pairs to PNG, and report exposure via intensity stats."""
     raws = sorted((outdir / "frames").glob("*.raw"))
@@ -481,30 +538,64 @@ def dump_frames(outdir: Path, meta, limit: int):
     complete = sorted(k for k, v in pairs.items() if len(v) == 2)
 
     print("\n== image statistics " + "=" * 49)
-    print(f"  {len(complete)} complete L/R pairs saved")
-    stats = []
+    print(f"  {len(complete)} complete L/R pairs saved, emitter "
+          f"{meta.get('emitter', '?')}")
+    per_channel: dict[str, list[dict]] = {"ir1": [], "ir2": []}
     for number in complete:
-        row = [number]
         for index in ("ir1", "ir2"):
             buf = np.fromfile(pairs[number][index], dtype=np.uint8)
             if buf.size != w * h:
-                row.append(None)
                 continue
-            row.append((buf.mean(), np.percentile(buf, 99), (buf < 8).mean()))
-        stats.append(row)
+            per_channel[index].append(texture_stats(buf, w, h))
 
-    means = [s[1][0] for s in stats if s[1]]
-    if means:
-        print(f"  ir1 mean intensity: min {min(means):.1f}  "
-              f"median {np.median(means):.1f}  max {max(means):.1f}")
-        dark = [s[1][2] for s in stats if s[1]]
-        print(f"  ir1 fraction below 8 DN: median {np.median(dark):.3f}")
-        if np.median(means) < 25:
-            print("  !! very dark. Raise --gain (range 16-248) or lengthen")
+    def med(rows, key):
+        return float(np.median([r[key] for r in rows])) if rows else float("nan")
+
+    print("\n  channel  mean   sat%   dark%  |  7x7 local std        dead%")
+    print("                                 |  median   p90    (lstd<2 DN)")
+    for index in ("ir1", "ir2"):
+        rows = per_channel[index]
+        if not rows:
+            continue
+        print(f"  {index}     {med(rows, 'mean'):6.1f} "
+              f"{100 * med(rows, 'sat_frac'):5.2f}  "
+              f"{100 * med(rows, 'dark_frac'):5.2f}  |  "
+              f"{med(rows, 'lstd_median'):6.2f} {med(rows, 'lstd_p90'):6.2f}   "
+              f"{100 * med(rows, 'dead_frac'):5.1f}")
+
+    r1 = per_channel["ir1"]
+    if r1:
+        mean1, dead1 = med(r1, "mean"), med(r1, "dead_frac")
+        if mean1 < 25:
+            print("\n  !! very dark. Raise --gain (range 16-248) or lengthen")
             print("     exposure. Census needs local contrast, not brightness,")
             print("     but not from sensor noise either.")
-        elif np.median(means) > 200:
-            print("  !! near saturation -- reduce gain.")
+        elif mean1 > 200:
+            print("\n  !! near saturation -- reduce gain.")
+        if med(r1, "sat_frac") > 0.02:
+            print(f"\n  note: {100 * med(r1, 'sat_frac'):.1f}% of pixels are "
+                  "saturated. Saturated regions carry no")
+            print("        Census information at all -- expect keypoint deserts "
+                  "there.")
+        if dead1 > 0.30:
+            print(f"\n  !! {100 * dead1:.0f}% of the image has 7x7 local std "
+                  "below 2 DN, i.e. is")
+            print("     textureless at the Census window scale. That is where "
+                  "sparse")
+            print("     matching fails, and what the IR projector is supposed "
+                  "to fix.")
+
+    if r1 and per_channel["ir2"]:
+        d = abs(med(r1, "mean") - med(per_channel["ir2"], "mean"))
+        print(f"\n  L/R mean intensity difference: {d:.1f} DN")
+        print("  (Census is invariant to any monotonic intensity mapping, so "
+              "this")
+        print("   is informational -- it would matter for SSD/NCC, not here.)")
+
+    print("\n  To A/B the projector, compare 'local std median' and 'dead%'")
+    print("  between an emitter-on and an emitter-off run. Mean intensity is")
+    print("  NOT a useful discriminator: ambient light dominates the mean while")
+    print("  the projector contributes only local high-frequency structure.")
 
     try:
         import matplotlib
@@ -556,13 +647,13 @@ def main():
 
     hw = hardware_clock(data)
     synthetic = synthetic_counter(data)
-    report_rate(data, meta, synthetic)
+    shortfall = report_rate(data, meta, synthetic)
     report_drops(data, synthetic)
     dsync = report_sync(data, hw, synthetic)
     intervals = report_intervals(data)
     report_metadata(data, meta)
     skew = report_clock_skew(data, meta)
-    jitter = None if hw else report_jitter(data, meta, synthetic)
+    jitter = None if hw else report_jitter(data, meta, synthetic, shortfall)
     make_plots(data, intervals, skew, jitter, dsync, args.outdir)
     dump_frames(args.outdir, meta, args.previews)
     return 0

@@ -60,8 +60,9 @@ depth-resolution table in the plan stands.
 Order is from the plan. Do not skip ahead — step 4 exists specifically because
 systematic and random error cannot be separated once the vehicle is moving.
 
-- [ ] **1. Capture pipeline and timestamp sanity** ← current
-- [ ] 2. IMU Allan variance (multi-hour static recording)
+- [~] **1. Capture pipeline and timestamp sanity** — substantially done; only
+      hardware-sync verification outstanding (needs a moving scene)
+- [ ] 2. IMU Allan variance (multi-hour static recording) ← next
 - [ ] 3. Calibration — intrinsics/extrinsics, then hand-eye + time offset (Kalibr)
 - [ ] 4. Static bags vs laser rangefinder — walls at 1, 2, 3 m
 - [ ] 5. Drive
@@ -96,31 +97,47 @@ rsync -a jetson:~/bags/<run>/ ./bags/<run>/
 python3 desktop/capture_report.py bags/<run>
 ```
 
-### Step 1 findings so far — two open problems
+### Step 1 finding 1 — frame-rate shortfall (RESOLVED: power mode)
 
-**1. The requested frame rate is not being delivered.** 848×480@30 yields
-~18.5–19.9 fps, a ~34% shortfall. A sweep (30 s each, `--save-every 0`, so no
-disk I/O in the callback) isolates it:
+Worth reading even though it is fixed, because of how it presented: a **34%
+frame loss with no error anywhere**, on a confirmed USB 3.2 link, with
+perfectly contiguous frame numbers.
 
-| requested | achieved | met? |
+The Jetson was in power mode 3 (`MAXP_CORE_ARM`) with both Denver cores offline
+(`cpu online = 0,3-5`) and `jetson_clocks` never applied. `sudo nvpmodel -m 0
+&& sudo jetson_clocks` fixed every configuration outright:
+
+| requested | mode 3 | MAXN + clocks locked |
 |---|---|---|
-| 848×480 @ 30 | 18.53 | no |
-| 640×480 @ 30 | 17.62 | no |
-| 848×480 @ 15 | 14.89 | **yes** |
-| 424×240 @ 30 | 29.83 | **yes** |
+| 848×480 @ 30 | 18.53 | **29.79** |
+| 848×480 @ 60 | 22.08 | **59.54** |
+| 848×480 @ 90 | 29.88 | **89.34** |
+| 640×480 @ 30 | 17.62 | **29.79** |
+| 1280×720 @ 30 | 10.64 | **29.79** |
 
-Not a simple bandwidth ceiling: 848×480@30 pushes *more* pixels/s than
-640×480@30 does, yet both land near 18 fps. It reads as a per-frame cost that
-480-line modes cannot sustain past ~18 fps while 240-line modes can hold 30.
+Diagnostics that pinned it down, all with `--save-every 0` so disk I/O was not
+a factor: a **single** IR stream made 29.80 fps at 848×480@30 even in mode 3,
+so the limit was shared rather than per-frame; and requesting **90** fps in
+mode 3 delivered ~30, proving the hardware could move 24 MB/s and that this was
+never a bandwidth wall. At MAXN, 848×480@90 on both streams sustains ~72 MB/s.
 
-Untested and the leading suspect: **the Jetson is in power mode 3
-(`MAXP_CORE_ARM`) with both Denver cores offline** (`cpu online = 0,3-5`) and
-`jetson_clocks` never applied. The plan already prescribes fixing this before
-any timing measurement; it needs a password we do not have in-session.
-`848×480@15` is a usable interim, at the cost of doubling inter-frame parallax
-for the IMU rotation-compensation work.
+So there is a lot of headroom. 60 or 90 Hz is worth considering later — a
+shorter inter-frame interval directly shrinks the parallax that the plan's IMU
+rotation compensation has to search over.
 
-**2. uvcvideo is unpatched, so there is no UVC metadata node.** Confirmed
+Two operational consequences, both now handled in code:
+
+- **`jetson_clocks` does not survive a reboot.** `nvpmodel -m 0` does. So this
+  regression can return silently at any boot and will look like a fresh bug.
+  Both tools now read the power state at startup and print a loud warning, and
+  `run.txt` records `cpus_online` and `clocks_locked` so a recording can never
+  be misread after the fact.
+- Max clocks means max power draw, which matters on a battery. Deliberately
+  *not* forced at boot — the tools warn instead, leaving the policy call open.
+
+### Step 1 finding 2 — no UVC metadata node (OPEN)
+
+uvcvideo is unpatched, so there is no metadata node. Confirmed
 empirically by `rs_probe`. Consequences, in descending order of damage:
 
 - `get_timestamp()` reports domain **System Time**, i.e. host arrival time, not
@@ -135,28 +152,110 @@ empirically by `rs_probe`. Consequences, in descending order of damage:
   true by construction. **Hardware sync is currently unverified**, despite
   looking perfect.
 - `FRAME_LASER_POWER_MODE` is absent, so under `EMITTER_ON_OFF` alternation
-  there is no per-frame label for which frames had the projector lit. The
-  plan's projector-on/off A/B split would have to be inferred from image
-  statistics.
+  there is no per-frame label for which frames had the projector lit.
 - `ACTUAL_EXPOSURE` is absent, so the fixed exposure can only be trusted from
   the option readback, not confirmed per frame.
 
 The fix for all five is the same: apply librealsense's L4T uvcvideo patch for
-kernel 4.9.140 and rebuild the module.
+kernel 4.9.140 and rebuild the module. Kernel headers for 4.9.140-tegra are
+already installed and `/lib/modules/4.9.140-tegra/build` exists; the librealsense
+source tree (which carries the patch script) is not present and would need
+cloning.
+
+Workaround already in use for the emitter A/B: run the projector **on** and
+**off** as two separate recordings rather than alternating within one. On a
+static scene that is equally valid and needs no per-frame label. It does not
+help for a moving scene, where alternation would be the only option.
+
+### Verdict on the patch: not worth it for timing
+
+Measured on a 120 s, 3600-frame recording at 848×480@30 with clocks locked:
+
+| | value | in px at 100 °/s |
+|---|---|---|
+| frame interval, median | 33.352 ms (p1 33.301, p99 33.407) | — |
+| arrival jitter, std | 0.062 ms | 0.05 px |
+| arrival jitter, p99 | 0.050 ms | **0.04 px** |
+| arrival jitter, max | 3.574 ms | 2.69 px |
+
+The plan's coarse-to-fine search radius is ±3–4 px. Arrival jitter costs
+**0.04 px at p99** — over an order of magnitude below the budget. Only a single
+worst-case outlier approaches it. So host arrival time is good enough, and the
+uvcvideo patch is **not** justified on timing grounds.
+
+**And the clock-skew risk is smaller than the plan feared.** Two reasons:
+
+1. The camera-vs-host rate *is* measurable after all — not from frame
+   timestamps, but from the frame **generation rate** fitted against host
+   arrival times. It comes out at **+568 ppm** (reproduced as +569 ppm on an
+   independent run), determined to well under 1 ppm by the fit. It does not
+   decompose into "camera crystal" versus "host clock" without an external
+   reference, but the combined figure is exactly what is needed to predict when
+   the next frame lands in host time.
+2. More importantly, the risk largely evaporates: frames are stamped on the host
+   clock and the IMU is *also* on the host clock, so cross-clock skew never
+   enters the alignment. What remains is a constant exposure→arrival latency,
+   which is precisely what Kalibr `--time-calibration` estimates, plus the
+   0.05 ms of jitter above.
+
+Caveat: these are **idle-machine** numbers. Arrival-time jitter is a function of
+system load, so it must be re-measured with the full pipeline running and the
+vehicle driving before being relied on.
+
+What the patch would still buy, in order of remaining value: verification that
+the hardware sync is real; a per-frame projector label for emitter alternation
+*in motion*; per-frame exposure confirmation. None is urgent.
+
+### Step 1 finding 3 — the projector premise, quantified
+
+The plan's Census-over-learned-descriptors decision rests on the IR projector
+being the dominant illumination indoors. Two 848×480@30 runs on the same static
+scene, one emitter-on and one emitter-off, using 7×7 local standard deviation —
+the same window Census would read:
+
+| metric | emitter ON | emitter OFF |
+|---|---|---|
+| mean intensity | 89.9 | 88.1 |
+| 7×7 local std, median | **3.91** | **1.65** |
+| textureless fraction (local std < 2 DN) | **24.5%** | **56.7%** |
+
+The projector **more than halves the textureless area, 57% → 25%**, and lifts
+median local contrast 2.4×. That is the plan's premise confirmed with numbers.
+
+Note the trap: **mean intensity moved only 1.8 DN** and is useless as a
+discriminator here, because a blown-out window dominates the mean while the
+projector contributes only local high-frequency structure. Any projector A/B
+must use a local-contrast statistic. `capture_report.py` reports local std for
+this reason.
+
+Also measured: **6.5% of pixels saturated** (a sunlit window). Saturated regions
+carry no Census information, so expect keypoint deserts there. And the two IR
+sensors differ by 2.6 DN in mean level — irrelevant for Census, which is
+invariant to monotonic intensity mappings, but it would matter for SSD/NCC.
 
 ### What step 1 has to establish
 
-1. Zero (or fully accounted-for) dropped frames on both channels.
-2. Matched frame numbers L/R, sub-millisecond timestamp agreement — i.e. the
-   hardware sync is real.
-3. A unimodal frame-interval histogram at 33.3 ms. Bimodal means USB or
-   scheduling trouble.
-4. Which domain `get_timestamp()` actually reports. `RS2_FRAME_METADATA_FRAME_TIMESTAMP`
-   and the backend timestamp are different clocks; the plan's IMU-skew risk
-   turns on knowing which one is in hand.
-5. Camera-vs-Jetson clock drift in ppm, plus the residual scatter after a linear
-   fit. The residual bounds how well any constant offset can ever align the two
-   clocks — which is the real input to step 3's time calibration.
+- [x] **Delivered rate matches requested** on both channels — 29.79 of 30 fps
+      once clocks are locked.
+- [x] **Which domain `get_timestamp()` reports.** System Time, i.e. host
+      arrival. Not the camera clock.
+- [x] **A unimodal frame-interval histogram at 33.3 ms.** Median 33.352 ms,
+      p1 33.301, p99 33.407 — tight and unimodal.
+- [x] **Both IR streams visually verified.** See `bags/*/preview/`. Projector
+      dots plainly visible on near surfaces.
+- [ ] **Hardware sync is real.** Currently *unverifiable*: with a host-side
+      counter and host-side stamps, both the L/R pairing and the L/R timestamp
+      difference come out perfect by construction. Needs either the uvcvideo
+      patch, or an external check — a moving scene, where a genuine
+      inter-channel exposure offset shows up as horizontal shear.
+- [ ] ~~Camera-vs-Jetson clock drift in ppm~~ — **not measurable** without the
+      patch. Substitute: arrival jitter about the fitted frame grid, converted
+      to pixels of misregistration at 100 °/s. That is the number that decides
+      whether the patch is worth doing.
+
+Note on item 1: "zero dropped frames" was deliberately dropped as a criterion.
+It cannot be established on this configuration, because the only frame counter
+available counts delivered frames. Achieved-vs-requested rate replaces it.
 
 Fixed exposure (1–2 ms) is the default, not auto. Auto-exposure hunts while
 driving and makes intervals unreproducible; at 2 m/s and 1 m range, 5 ms of

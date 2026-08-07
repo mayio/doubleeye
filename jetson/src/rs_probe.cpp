@@ -256,6 +256,8 @@ int main(int argc, char** argv) {
   try {
     std::printf("librealsense %d.%d.%d\n", RS2_API_MAJOR_VERSION,
                 RS2_API_MINOR_VERSION, RS2_API_PATCH_VERSION);
+    report_power_state(read_power_state());
+
     rs2::context ctx;
     rs2::device_list devices = ctx.query_devices();
     if (devices.size() == 0) {
