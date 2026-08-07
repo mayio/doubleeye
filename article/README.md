@@ -157,3 +157,15 @@ many draws preceded it: `run_regime` called directly gave 1163 matches where
 Note this means figures regenerated now will differ slightly from the numbers in the
 current draft of the post, which were produced under the old call-order-dependent
 scheme. **Re-run `masda_stereo.py` and update the tables before publishing.**
+
+## Table provenance
+
+Every number in the article is the output of `python3 masda_stereo.py` at the
+committed revision, with per-purpose seeded RNGs (`rng_for`) so results do not
+depend on call order. If you change the script, regenerate and re-check the tables:
+§3 margins, §5 the three result tables and the ratio table, §6 the two timing
+tables, §7.1 the ordering sweep.
+
+The ordering result is a negative one. The factor reduces crossings monotonically in
+kappa and slightly reduces correct matches, in both the thin-bar and the periodic
+scene. An earlier run suggested a small gain; that was noise from an unseeded RNG.
