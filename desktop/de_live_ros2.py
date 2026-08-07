@@ -43,7 +43,16 @@ FX = FY = 430.551
 CX, CY = 427.381, 243.158
 BASELINE_M = 0.049883
 FB = FX * BASELINE_M
-FRAME = "camera_link"
+# Points come out of the projection in the OPTICAL convention: X right, Y down,
+# Z forward. rviz's world is REP-103: X forward, Y left, Z up. Publishing optical
+# data in a body frame makes a correct cloud look wrong -- lying on its side, which
+# reads as "random points" as easily as real noise does. So the data is labelled
+# camera_optical_frame and a static transform carries the rotation, which is the
+# convention every camera driver follows.
+FRAME = "camera_optical_frame"
+BODY = "camera_link"
+# The standard camera_link -> camera_optical_frame quaternion.
+OPTICAL_Q = (-0.5, 0.5, -0.5, 0.5)   # x, y, z, w
 HDR = 16
 
 
@@ -78,6 +87,13 @@ def main() -> int:
                     help="frames/s per channel off the camera (default 10). "
                          "Each packet carries the left image, so 30 fps is "
                          "~12 MB/s over the ssh pipe")
+    ap.add_argument("--min-range", type=float, default=0.4,
+                    help="nearest depth to search, metres (default 0.4). f*B is "
+                         "21.48 px*m, so the matcher's default [1, 220] px gate "
+                         "spans 0.10-21.5 m and wrong matches pile up against "
+                         "both limits: a quarter come out nearer than 0.19 m")
+    ap.add_argument("--max-range", type=float, default=6.0,
+                    help="farthest depth to search, metres (default 6.0)")
     ap.add_argument("--best-effort", action="store_true",
                     help="publish BEST_EFFORT instead of RELIABLE. Only for a "
                          "lossy link, and rviz displays then need their "
@@ -112,6 +128,12 @@ def main() -> int:
         # which downstream looks exactly like a camera producing nothing. See
         # doc/03-obstacles.md obstacle 17 -- which this script was violating while
         # the obstacle was being written.
+        # Gate in metres, converted here, so the range is stated in the units the
+        # scene has rather than in pixels of disparity.
+        dmin = FB / max(a.max_range, 1e-3)
+        dmax = FB / max(a.min_range, 1e-3)
+        print(f"depth gate: {a.min_range:.2f}-{a.max_range:.2f} m "
+              f"= disparity {dmin:.1f}-{dmax:.1f} px")
         remote = (f"cd ~/{a.remote_dir}/jetson/build && ./rs_ir_stream"
                   + f" --out-fps {a.out_fps}"
                   + (f" --exposure-us {a.exposure_us}" if a.exposure_us else "")
@@ -119,7 +141,9 @@ def main() -> int:
                   + f" | ~/{a.remote_dir}/core/build/de_pipe"
                     f" --fast-threshold {a.fast_threshold}"
                     f" --right-density {a.right_density}"
-                    f" --min-margin {a.min_margin}")
+                    f" --min-margin {a.min_margin}"
+                    f" --min-disparity {dmin:.3f}"
+                    f" --max-disparity {dmax:.3f}")
         print(f"starting on {a.host}:\n  {remote}\n")
         proc = subprocess.Popen(["ssh", a.host, remote],
                                 stdout=subprocess.PIPE, stderr=None,
@@ -156,12 +180,19 @@ def main() -> int:
     pub_ci = node.create_publisher(CameraInfo, "/doubleeye/camera_info", qos)
 
     tf_bc = StaticTransformBroadcaster(node)
-    tfm = TransformStamped()
-    tfm.header.stamp = node.get_clock().now().to_msg()
-    tfm.header.frame_id = "map"
-    tfm.child_frame_id = FRAME
-    tfm.transform.rotation.w = 1.0
-    tf_bc.sendTransform(tfm)
+    now = node.get_clock().now().to_msg()
+    t_map = TransformStamped()
+    t_map.header.stamp = now
+    t_map.header.frame_id = "map"
+    t_map.child_frame_id = BODY
+    t_map.transform.rotation.w = 1.0
+    t_opt = TransformStamped()
+    t_opt.header.stamp = now
+    t_opt.header.frame_id = BODY
+    t_opt.child_frame_id = FRAME
+    (t_opt.transform.rotation.x, t_opt.transform.rotation.y,
+     t_opt.transform.rotation.z, t_opt.transform.rotation.w) = OPTICAL_Q
+    tf_bc.sendTransform([t_map, t_opt])
 
     fields = [
         PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
@@ -194,7 +225,13 @@ def main() -> int:
             stamp = node.get_clock().now().to_msg()
             rec = np.frombuffer(rec_bytes, dtype=np.float32).reshape(-1, 4)
             xl, yl, disp, margin = rec[:, 0], rec[:, 1], rec[:, 2], rec[:, 3]
-            ok = disp > 0.0
+            # Also filter here, not only in the matcher's gate. A disparity that
+            # survives the gate at its very edge is still almost certainly wrong,
+            # and one absurd point rescales rviz's whole view.
+            z_all = np.divide(FB, disp, out=np.zeros_like(disp),
+                              where=disp > 0.0)
+            ok = (disp > 0.0) & (z_all >= a.min_range) & (z_all <= a.max_range)
+            n_drop = int((~ok).sum())
             xl, yl, disp, margin = xl[ok], yl[ok], disp[ok], margin[ok]
 
             m = Image()
@@ -256,7 +293,8 @@ def main() -> int:
             if n_pub % 15 == 0:
                 weak = float((margin < 0.2).mean()) if len(margin) else 0.0
                 print(f"\rframe {num}  {len(z)} points  "
-                      f"margin<0.2 {100*weak:.0f}%  published {n_pub}/{n_seen}",
+                      f"margin<0.2 {100*weak:.0f}%  out-of-range dropped "
+                      f"{n_drop}  published {n_pub}/{n_seen}",
                       end="", flush=True)
             rclpy.spin_once(node, timeout_sec=0.0)
     except KeyboardInterrupt:

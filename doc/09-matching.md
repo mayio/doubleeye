@@ -620,3 +620,38 @@ differed in the useful direction.
 So: `fast_threshold 12`, `--right-density 6`, `--min-margin 0.10`, sub-pixel on.
 That is the configuration to run, and it now has a measured budget and a
 ground-truth accuracy number behind every part of it.
+
+## The disparity gate was the biggest quality problem, and it was untuned
+
+`MatchConfig` defaults to `min_disparity 1.0, max_disparity 220.0`. With
+f·B = 21.48 px·m that is a search range of **0.10 m to 21.5 m**. Every measurement
+on my own IR bags used it, and in a room it admits several times more depth than
+exists.
+
+The cost is not just outliers. Extra candidates per keypoint are extra competition,
+so the score margin falls, and the margin is what predicts precision. Measured live
+on the same scene, 10 fps, ~78 frames each:
+
+| | gate [1, 220] px = 0.10-21.5 m | gate [3.6, 53.7] px = 0.40-6.0 m |
+|---|---|---|
+| points per frame | 553 | **646** |
+| Z median | 0.58 m | 0.82 m |
+| Z p1 / p99 | 0.10 m / 5.74 m | 0.42 m / 4.49 m |
+| median margin | 0.388 | **0.657** |
+| margin < 0.2 | 31.5% | **11%** |
+
+So tightening the gate gives *more* matches, at nearly double the median margin,
+with a third as many doubtful ones, and a depth distribution that looks like a room
+instead of like noise. On the wide gate a quarter of all points came out nearer than
+0.19 m, piled against the limit, which is what a wrong match at a gate boundary
+looks like.
+
+This also qualifies an earlier number in this document. The 31.5% of matches below
+margin 0.2 reported for `full_on` was measured through the wide gate; with a
+plausible gate it is 11%. The Middlebury results are unaffected, since those set a
+per-scene range of 60 or 80 px, which is already tight.
+
+`de_pipe` takes `--min-disparity`/`--max-disparity` and prints the implied depth
+range in its banner, so a wrong gate is visible rather than silent.
+`desktop/de_live_ros2.py` takes `--min-range`/`--max-range` **in metres** and
+defaults to 0.4-6.0 m, because that is the unit the scene is in.

@@ -83,19 +83,29 @@ int main(int argc, char** argv) {
     else if (a == "--fast-threshold" && has) det.fast_threshold = std::atoi(argv[++i]);
     else if (a == "--no-subpixel") subpixel = false;
     else if (a == "--max-disparity" && has) cfg.max_disparity = float(std::atof(argv[++i]));
+    else if (a == "--min-disparity" && has) cfg.min_disparity = float(std::atof(argv[++i]));
     else {
       std::fprintf(stderr,
           "usage: %s [--right-density N] [--min-margin F] [--fast-threshold N]\n"
-          "          [--max-disparity F] [--no-subpixel]\n"
+          "          [--min-disparity F] [--max-disparity F] [--no-subpixel]\n"
+          "\n"
+          "The disparity gate matters more than it looks. f*B is 21.48 px*m, so\n"
+          "the default [1, 220] px spans 0.10 m to 21.5 m. In a room that admits\n"
+          "five times more range than exists, and wrong matches pile up against\n"
+          "both limits: a quarter of them come out nearer than 0.19 m. Gate to\n"
+          "the depth you actually have.\n"
           "reads DEIR frames on stdin, writes DEMR match packets on stdout\n",
           argv[0]);
       return 2;
     }
   }
+  const float kFB = 430.551f * 0.049883f;   // 21.48 px*m, factory calibration
   std::fprintf(stderr, "de_pipe: fast_threshold %d, right/cell %d, "
-               "min_margin %.2f, subpixel %s\n", det.fast_threshold,
+               "min_margin %.2f, subpixel %s, disparity [%.1f, %.1f] px "
+               "= depth [%.2f, %.2f] m\n", det.fast_threshold,
                right_density > 0 ? right_density : det.per_cell, min_margin,
-               subpixel ? "on" : "off");
+               subpixel ? "on" : "off", cfg.min_disparity, cfg.max_disparity,
+               kFB / cfg.max_disparity, kFB / cfg.min_disparity);
 
   CensusConfig ccfg;
   DetectorConfig det_r = det;

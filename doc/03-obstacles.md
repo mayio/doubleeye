@@ -554,3 +554,38 @@ like the quantity you meant to measure.
 - **Two Pythons.** `rclpy` comes from apt against the system Python 3.12; `rosbags`
   lives in the venv, which is built with `include-system-site-packages = false`. The
   live script cannot run in the venv and the converter needs it.
+
+## 21. `timeout` does not kill a pipeline's children, and `pkill -f` kills its own ssh
+
+`timeout 10 bash -lc 'rs_ir_stream | de_pipe'` terminates the shell and leaves both
+children running. The next run then fails with
+
+    librealsense error in rs2_pipeline_start_with_config:
+    xioctl(VIDIOC_S_FMT) failed Last Error: Device or resource busy
+
+which looks like a camera fault and is a stale process holding the device.
+
+The obvious cleanup is worse. `ssh jetson 'pkill -f rs_ir_stream'` matches the
+remote shell's **own** command line, because the pattern appears in it, so it kills
+itself and ssh returns 255. Use `pkill -x rs_ir_stream`, which matches the process
+name rather than the full command line.
+
+Put the `timeout` on the *last* stage of the pipeline instead, and follow with an
+explicit `pkill -x` for the producer:
+
+    ./rs_ir_stream ... | timeout 10 ./de_pipe ... ; pkill -x rs_ir_stream
+
+## 22. The disparity gate defaulted to five times the depth that existed
+
+`MatchConfig`'s `[1, 220]` px default spans 0.10-21.5 m at f·B = 21.48 px·m. Used
+indoors it admitted a quarter of all points nearer than 0.19 m, piled against the
+limit, and halved the score margin by crowding every keypoint with extra candidates.
+In rviz the result is indistinguishable from a broken matcher: it looks like random
+points, because most of them are.
+
+Tightening to 0.4-6.0 m produced *more* matches (646 against 553 per frame), a
+median margin of 0.657 against 0.388, and 11% doubtful against 31.5%. See
+[09-matching.md](09-matching.md).
+
+A search range is a physical claim about the scene. Leaving it at a library default
+is not a neutral choice.
