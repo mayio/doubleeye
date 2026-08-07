@@ -64,12 +64,22 @@ case "${1:-}" in
     ;;
 esac
 
-echo "==> syncing jetson/ to ${HOST}:~/${REMOTE_DIR}/"
+echo "==> syncing jetson/ and core/ to ${HOST}:~/${REMOTE_DIR}/"
 ssh "$HOST" "mkdir -p ~/${REMOTE_DIR}"
 # -m sets extracted mtimes to now. Without it tar preserves the DESKTOP mtimes,
 # which can be older than the Jetson's object files, so make decides there is
 # nothing to do and relinks a stale binary -- obstacle 10 in a new disguise.
-tar czf - jetson | ssh "$HOST" "tar xzf - -m -C ~/${REMOTE_DIR}"
+#
+# core/ is synced too. It was not, until 2026-08-07, which meant de_match had
+# never been built on the Jetson at all: only de_preprocess was there. Its
+# timing was being measured on the desktop and then compared against the
+# Jetson's 33.3 ms frame budget, which is not a comparison.
+#
+# Build directories are excluded. Shipping them sent the desktop's x86-64 object
+# files to an aarch64 machine, where ld reports "Relocations in generic ELF
+# (EM: 62)" and refuses to link. EM 62 is x86-64, which is the tell.
+tar czf - --exclude='*/build' --exclude='*.o' jetson core \
+  | ssh "$HOST" "tar xzf - -m -C ~/${REMOTE_DIR}"
 
 # cmake on the TX2 is 3.10.2, which supports NEITHER `-S`/`-B` (3.13+) NOR
 # `--build -j` (3.12+). Passing either makes cmake print its usage text and exit
@@ -84,6 +94,15 @@ if ! ssh "$HOST" "set -e
   cmake .. >cmake.log 2>&1 || { echo '--- cmake configure failed ---'; cat cmake.log; exit 1; }
   make -j${JOBS}"; then
   echo "==> BUILD FAILED" >&2
+  exit 1
+fi
+
+# core/ is a plain Makefile, so no cmake-version trap here.
+echo "==> building core/ on ${HOST}"
+if ! ssh "$HOST" "set -e
+  cd ~/${REMOTE_DIR}/core
+  make -j${JOBS}"; then
+  echo "==> CORE BUILD FAILED" >&2
   exit 1
 fi
 

@@ -53,8 +53,8 @@ MatchConfig plain() {
   c.w_y = 0.f;          // isolate the descriptor term unless a test wants otherwise
   c.iterations = 60;
   c.damping = 0.4f;
-  c.gamma = 0.0f;
   c.lambda = 0.0f;
+  c.gamma = 0.0f;
   return c;
 }
 
@@ -95,7 +95,7 @@ void test_geometry_gates() {
   c.w_y = 1.0f;
   c.sigma_y = 0.5f;    // 1.5 px residual is 3 sigma -> penalty 9, swamps desc
   check(match_masda(L, d1, R, d2, c).empty(),
-        "rejected: y-residual penalty drives the score below gamma");
+        "rejected: y-residual penalty drives the score below lambda");
 }
 
 void test_mutual_exclusivity() {
@@ -135,8 +135,8 @@ void test_against_brute_force() {
       dR.push_back(desc_with(ubits(rng), uoff(rng)));
     }
     MatchConfig c = plain();
-    c.gamma = 0.05f;   // a small cost to leaving things unmatched
-    c.lambda = 0.0f;
+    c.lambda = 0.05f;   // a small cost to leaving things unmatched
+    c.gamma = 0.0f;
 
     const auto a = match_masda(L, dL, R, dR, c);
     const auto b = match_brute_force(L, dL, R, dR, c);
@@ -227,7 +227,7 @@ void test_masda_beats_nn_on_ambiguity() {
       dR.push_back(desc_with(20, uoff(rng)));
     }
     MatchConfig c = plain();
-    c.gamma = 0.02f;
+    c.lambda = 0.02f;
     const auto a = match_masda(L, dL, R, dR, c);
     const auto b = match_mutual_nn(L, dL, R, dR, c, 0.85f);
     const float va = matching_objective(a, c, n, n);
@@ -337,7 +337,7 @@ void test_disparity_prior() {
   R[0] = kp(88.f - 20.f, 48.f);   // disparity 20 where 40 was predicted
   const auto disagree = match_masda(L, dL, R, dR, c);
   check(disagree.empty(),
-        "a candidate 10 sigma from the prediction is penalised below gamma");
+        "a candidate 10 sigma from the prediction is penalised below lambda");
   c.w_prior = 0.f;
   check(match_masda(L, dL, R, dR, c).size() == 1,
         "and it returns with w_prior = 0, so the prior penalised rather than "
@@ -357,6 +357,139 @@ void test_empty_inputs() {
 
 }  // namespace
 
+
+// The score margin exported on every Match: best-minus-second-best s(i,j) over
+// that left keypoint's candidates. It is the confidence the consumer should key
+// on, so it needs to actually track ambiguity.
+void test_margin() {
+  std::printf("score margin\n");
+  MatchConfig cfg = plain();
+  cfg.lambda = cfg.gamma = -0.1f;
+
+  // One clearly-best candidate and one poor one on the same row.
+  {
+    const std::vector<Keypoint> L = {kp(50.f, 20.f)};
+    const std::vector<Keypoint> R = {kp(30.f, 20.f), kp(20.f, 20.f)};
+    const std::vector<uint64_t> dl = {desc_with(24)};
+    const std::vector<uint64_t> dr = {desc_with(24), desc_with(24, 12)};
+    const std::vector<Match> m = match_masda(L, dl, R, dr, cfg, nullptr);
+    check(m.size() == 1, "unambiguous row matches");
+    if (m.size() == 1) {
+      check(m[0].margin > 0.3f,
+            "margin is large when one candidate is clearly better (" +
+                std::to_string(m[0].margin) + ")");
+    }
+  }
+
+  // Two identical candidates: the descriptor cannot separate them, so the
+  // margin must collapse even though a match is still made.
+  {
+    const std::vector<Keypoint> L = {kp(50.f, 20.f)};
+    const std::vector<Keypoint> R = {kp(30.f, 20.f), kp(20.f, 20.f)};
+    const std::vector<uint64_t> dl = {desc_with(24)};
+    const std::vector<uint64_t> dr = {desc_with(24), desc_with(24)};
+    const std::vector<Match> m = match_masda(L, dl, R, dr, cfg, nullptr);
+    check(m.size() == 1, "tied row still matches");
+    if (m.size() == 1) {
+      check(m[0].margin < 1e-5f,
+            "margin collapses to zero on exactly tied candidates (" +
+                std::to_string(m[0].margin) + ")");
+    }
+  }
+
+  // A row with a single candidate has no runner-up, so the alternative is
+  // lambda and the margin is measured against that rather than left at zero.
+  {
+    const std::vector<Keypoint> L = {kp(50.f, 20.f)};
+    const std::vector<Keypoint> R = {kp(30.f, 20.f)};
+    const std::vector<uint64_t> dl = {desc_with(24)};
+    const std::vector<uint64_t> dr = {desc_with(24)};
+    const std::vector<Match> m = match_masda(L, dl, R, dr, cfg, nullptr);
+    check(m.size() == 1, "single-candidate row matches");
+    if (m.size() == 1) {
+      check(std::fabs(m[0].margin - (m[0].score - cfg.lambda)) < 1e-5f,
+            "sole candidate's margin is measured against lambda");
+    }
+  }
+}
+
+// lambda and gamma are NOT interchangeable, and this is the test that would have
+// caught them being transposed. lambda is clutter: the cost of leaving a LEFT
+// (measurement) keypoint unmatched. gamma is misdetection: the cost of leaving a
+// RIGHT (object) keypoint unmatched. With unequal counts the two have visibly
+// different jobs, so driving one to -inf and the other to 0 must not be
+// symmetric.
+void test_lambda_gamma_are_distinct() {
+  std::printf("lambda vs gamma are not interchangeable\n");
+
+  // Two left keypoints, one right keypoint. At most one pair can be matched, so
+  // exactly one left keypoint must go unmatched and pay lambda. No right
+  // keypoint need go unmatched, so gamma is never charged.
+  const std::vector<Keypoint> L = {kp(50.f, 20.f), kp(51.f, 20.f)};
+  const std::vector<Keypoint> R = {kp(30.f, 20.f)};
+  const std::vector<uint64_t> dl = {desc_with(24), desc_with(24)};
+  const std::vector<uint64_t> dr = {desc_with(24)};
+
+  MatchConfig cfg = plain();
+  const int n_left = int(L.size()), n_right = int(R.size());
+
+  // Descriptors that agree at exactly chance, so s == 0 and the accept rule's
+  // "s > lambda" test is the only thing separating the two configurations.
+  // desc_with(24) sets bits 0-23 and desc_with(24, 12) sets bits 12-35, so they
+  // differ in 24 of 48 bits: Hamming == bits/2, which is s == 0 by construction.
+  const std::vector<uint64_t> chance_l = {desc_with(24), desc_with(24)};
+  const std::vector<uint64_t> chance_r = {desc_with(24, 12)};
+
+  // lambda > 0 pays MORE for leaving a left keypoint unmatched than for a
+  // worthless match, so the matcher should still match one pair.
+  cfg.lambda = -1.0f;
+  cfg.gamma = 0.0f;
+  const std::vector<Match> a =
+      match_masda(L, chance_l, R, chance_r, cfg, nullptr);
+
+  // Swapping the two must not produce the same answer, because only lambda is
+  // actually charged on this problem shape.
+  cfg.lambda = 0.0f;
+  cfg.gamma = -1.0f;
+  const std::vector<Match> b =
+      match_masda(L, chance_l, R, chance_r, cfg, nullptr);
+
+  // Stated as exact counts rather than an inequality. An inequality between two
+  // zeros passes without testing anything, which is what the first version of
+  // this check did.
+  check(a.size() == 1,
+        "lambda = -1 accepts the chance-scoring pair, since leaving the left "
+        "keypoint unmatched costs more (" + std::to_string(a.size()) + ")");
+  check(b.size() == 0,
+        "lambda = 0 rejects it, since s == 0 is no better than not matching (" +
+            std::to_string(b.size()) + ")");
+  check(a.size() != b.size(),
+        "so lambda and gamma are not interchangeable on a problem where only "
+        "left keypoints can go unmatched");
+
+  // The objective bookkeeping must charge lambda per unmatched LEFT keypoint.
+  // One left keypoint is unmatched here, so with lambda = -1 the objective is
+  // one lambda lower than with lambda = 0, holding the matching fixed.
+  MatchConfig c0 = plain();
+  c0.lambda = 0.0f;
+  c0.gamma = 0.0f;
+  MatchConfig cl = plain();
+  cl.lambda = -1.0f;
+  cl.gamma = 0.0f;
+  MatchConfig cg = plain();
+  cg.lambda = 0.0f;
+  cg.gamma = -1.0f;
+
+  const std::vector<Match> one = {Match{0, 0, 0.5f, 0.5f, 20.f, 0.f, 1.f}};
+  const float o0 = matching_objective(one, c0, n_left, n_right);
+  const float ol = matching_objective(one, cl, n_left, n_right);
+  const float og = matching_objective(one, cg, n_left, n_right);
+  check(std::fabs(ol - (o0 - 1.0f)) < 1e-5f,
+        "lambda is charged once for the one unmatched LEFT keypoint");
+  check(std::fabs(og - o0) < 1e-5f,
+        "gamma is not charged when no RIGHT keypoint is unmatched");
+}
+
 int main() {
   std::printf("MASDA matcher tests\n\n");
   test_single_pair();
@@ -367,6 +500,8 @@ int main() {
   test_masda_beats_nn_on_ambiguity();
   test_convergence_reporting();
   test_disparity_prior();
+  test_margin();
+  test_lambda_gamma_are_distinct();
   test_empty_inputs();
   std::printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "ALL PASSED",
               g_failures, g_failures == 1 ? "" : "s");

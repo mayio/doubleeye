@@ -9,11 +9,12 @@
 //     beta_ij  = s(i,j) - max_{k != i} rho_kj
 //     rho_ij   = s(i,j) - max_{k != j} beta_ik
 //
-// with the misdetection and clutter options folded into those maxima, since
-// "leave i unmatched" and "j is clutter" are competing explanations:
+// with the clutter and misdetection options folded into those maxima, since
+// "i is clutter" and "j is a misdetection" are the competing explanations for a
+// keypoint that ends up unmatched:
 //
-//     rho_ij   = s(i,j) - max( gamma, max_{k != j} beta_ik )
-//     beta_ij  = s(i,j) - max( lambda, max_{k != i} rho_kj )
+//     rho_ij   = s(i,j) - max( lambda, max_{k != j} beta_ik )
+//     beta_ij  = s(i,j) - max( gamma, max_{k != i} rho_kj )
 //
 // Both maxima exclude one element, which is why each iteration is two
 // top-2 reductions -- one over rows, one over columns -- rather than a
@@ -47,6 +48,21 @@ struct Match {
   float belief = 0.f;     // max-sum belief at the accepted edge
   float disparity = 0.f;  // xL - xR, sub-pixel
   float dy = 0.f;         // yL - yR, the free rectification health metric
+
+  // Best-minus-second-best s(i,j) over this left keypoint's candidates, against
+  // lambda when there is no second candidate. This is the most useful confidence
+  // available and it costs almost nothing: the candidates are already sorted by
+  // score when the edge list is built.
+  //
+  // Measured over eight Middlebury scenes with ground truth, precision by margin
+  // quartile runs 0.169 / 0.286 / 0.391 / 0.659 -- a 3.9x spread. Local contrast,
+  // the other obvious candidate for a confidence, is *negatively* predictive
+  // (rho = -0.12 against margin's +0.39), because high contrast means fine detail
+  // means more candidates crowded into the epipolar band.
+  //
+  // The matcher cannot avoid being wrong on ambiguous texture. It can tell the
+  // consumer which matches to distrust, and this is that number.
+  float margin = 0.f;
 };
 
 // A soft, spatially varying expectation of disparity, built from a coarse pass.
@@ -146,8 +162,16 @@ struct MatchConfig {
 
   int iterations = 20;
   float damping = 0.4f;           // plan expects 0.3-0.5 for stereo
-  float gamma = 0.0f;             // misdetection: score of leaving a left kp unmatched
-  float lambda = 0.0f;            // clutter: score of leaving a right kp unmatched
+  // Naming follows the article: lambda is clutter, the cost of leaving a
+  // MEASUREMENT (left keypoint) unmatched; gamma is misdetection, the cost of
+  // leaving an OBJECT (right keypoint) unmatched. These two were transposed
+  // until 2026-08-07. The maths was self-consistent, so no result was affected
+  // while they were held equal, which is how every experiment so far has been
+  // run. They stop being interchangeable the moment they are set apart, and
+  // stereo wants exactly that: a left keypoint occluded in the right view is a
+  // different rate from a right keypoint the left detector never proposed.
+  float lambda = 0.0f;            // clutter: leaving a left (measurement) kp unmatched
+  float gamma = 0.0f;             // misdetection: leaving a right (object) kp unmatched
   float converge_eps = 1e-4f;     // stop when the largest message change is below
 };
 
@@ -162,7 +186,7 @@ struct MatchStats {
 };
 
 // s(i,j) for one candidate pair. Exposed so tests and tools can reason about the
-// scale that gamma and lambda are compared against.
+// scale that lambda and gamma are compared against.
 // left_index is needed only for the per-keypoint smoothness prior; -1 disables it.
 float pair_score(const Keypoint& l, const Keypoint& r, uint64_t dl, uint64_t dr,
                  int census_bits, const MatchConfig& cfg, int left_index = -1);
@@ -247,7 +271,7 @@ std::vector<Match> match_brute_force(const std::vector<Keypoint>& left,
                                      const MatchConfig& cfg);
 
 // Sum of s(i,j) over a matching, the quantity all three methods are trying to
-// maximise (subject to gamma/lambda for leaving nodes unmatched).
+// maximise (subject to lambda/gamma for leaving nodes unmatched).
 float matching_objective(const std::vector<Match>& matches,
                          const MatchConfig& cfg, int n_left, int n_right);
 

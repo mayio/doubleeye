@@ -74,7 +74,7 @@ double median(std::vector<double> v) {
 }
 
 struct Agg {
-  std::vector<double> count, objective, abs_dy, ms, disp;
+  std::vector<double> count, objective, abs_dy, ms, disp, margin;
   void add(const std::vector<Match>& m, double t, int nl, int nr,
            const MatchConfig& c) {
     count.push_back(double(m.size()));
@@ -83,6 +83,7 @@ struct Agg {
     for (const Match& x : m) {
       abs_dy.push_back(std::fabs(double(x.dy)));
       disp.push_back(double(x.disparity));
+      margin.push_back(double(x.margin));
     }
   }
   void report(const char* name) const {
@@ -91,10 +92,21 @@ struct Agg {
     for (double x : count) c += x;
     for (double x : objective) o += x;
     for (double x : ms) t += x;
+    // Median margin and the low-margin share are reported because the margin is
+    // the per-match confidence the consumer should weight by: over eight
+    // Middlebury scenes, precision by margin quartile runs 0.169 to 0.659. On
+    // real data there is no ground truth here, so this is the closest thing to a
+    // quality signal the tool can print.
+    std::vector<double> mg = margin;
+    double weak = 0;
+    for (double x : mg) if (x < 0.2) weak += 1;
     std::printf("  %-10s %7.1f matches  objective %8.2f  median|dy| %6.3f px  "
-                "median d %6.2f px  %6.2f ms\n",
+                "median d %6.2f px  median margin %6.3f  margin<0.2 %4.1f%%  "
+                "%6.2f ms\n",
                 name, c / count.size(), o / objective.size(), median(abs_dy),
-                median(disp), t / ms.size());
+                median(disp), median(mg),
+                mg.empty() ? 0.0 : 100.0 * weak / double(mg.size()),
+                t / ms.size());
   }
 };
 
@@ -104,7 +116,7 @@ int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr,
         "usage: %s BAG_DIR [--limit N] [--damping F] [--iterations N]\n"
-        "       [--gamma F] [--lambda F] [--max-dy F] [--max-candidates N]\n"
+        "       [--lambda F] [--gamma F] [--max-dy F] [--max-candidates N]\n"
         "       [--sigma-y F] [--w-y F] [--nn-ratio F]\n", argv[0]);
     return 2;
   }
@@ -124,8 +136,8 @@ int main(int argc, char** argv) {
     if (a == "--limit" && has) limit = std::atoi(argv[++i]);
     else if (a == "--damping" && has) cfg.damping = float(std::atof(argv[++i]));
     else if (a == "--iterations" && has) cfg.iterations = std::atoi(argv[++i]);
-    else if (a == "--gamma" && has) cfg.gamma = float(std::atof(argv[++i]));
     else if (a == "--lambda" && has) cfg.lambda = float(std::atof(argv[++i]));
+    else if (a == "--gamma" && has) cfg.gamma = float(std::atof(argv[++i]));
     else if (a == "--max-dy" && has) cfg.max_dy = float(std::atof(argv[++i]));
     else if (a == "--max-candidates" && has) cfg.max_candidates = std::atoi(argv[++i]);
     else if (a == "--sigma-y" && has) cfg.sigma_y = float(std::atof(argv[++i]));
@@ -156,8 +168,8 @@ int main(int argc, char** argv) {
               meta.count("emitter") ? meta.at("emitter").c_str() : "?");
   std::printf("pairs          %zu%s\n", nums.size(),
               limit ? "  (limited)" : "");
-  std::printf("MASDA          %d iterations, damping %.2f, gamma %.3f, "
-              "lambda %.3f\n", cfg.iterations, cfg.damping, cfg.gamma, cfg.lambda);
+  std::printf("MASDA          %d iterations, damping %.2f, lambda %.3f, "
+              "gamma %.3f\n", cfg.iterations, cfg.damping, cfg.lambda, cfg.gamma);
   std::printf("candidates     epipolar band +-%.1f px, disparity [%.0f, %.0f], "
               "<=%d per keypoint\n\n", cfg.max_dy, cfg.min_disparity,
               cfg.max_disparity, cfg.max_candidates);
@@ -165,7 +177,7 @@ int main(int argc, char** argv) {
   FILE* out = std::fopen((bag + "/matches.csv").c_str(), "w");
   if (out)
     std::fprintf(out, "frame,method,left,right,xl,yl,xr,yr,disparity,dy,score,"
-                      "belief\n");
+                      "belief,margin\n");
 
   Agg masda, nn, c2f;
   std::vector<double> cand, iters, conv, osc, left_counts;
@@ -233,10 +245,11 @@ int main(int argc, char** argv) {
         const auto& mm = pass ? m2 : m1;
         const char* name = pass ? "nn" : "masda";
         for (const Match& x : mm)
-          std::fprintf(out, "%s,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f\n",
+          std::fprintf(out,
+                       "%s,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
                        num.c_str(), name, x.left, x.right,
                        kl[x.left].x, kl[x.left].y, kr[x.right].x, kr[x.right].y,
-                       x.disparity, x.dy, x.score, x.belief);
+                       x.disparity, x.dy, x.score, x.belief, x.margin);
       }
     }
     ++done;

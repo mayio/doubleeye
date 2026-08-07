@@ -89,8 +89,64 @@ free rectification-health metric. Note MASDA's |dy| is *slightly worse* than
 nearest-neighbour's — expected, since it accepts ~46% more and the additional ones
 are the harder cases.
 
-**MASDA is not the bottleneck, as the plan predicted.** 1.67 ms against a 33.3 ms
-budget is 5%, versus 26 ms for preprocessing.
+**MASDA is not the bottleneck, as the plan predicted** -- but the margin is
+narrower than this table first suggested, because the table was measured on the
+desktop.
+
+The timings above are desktop timings. `de_match` had never been built on the
+Jetson at all: `tools/deploy.sh` synced only `jetson/`, and the `core/build`
+directory that was sitting on the Jetson held x86-64 objects copied from the
+desktop. The first native build there was 2026-08-07. Measured on the same
+`full_on` bag:
+
+| | desktop | Jetson (MAXN, 6 cores) |
+|---|---|---|
+| MASDA | 1.38 ms | **5.04 ms** |
+| mutual-NN + ratio | 0.34 ms | 0.82 ms |
+| matches / objective | 615 / 410.9 | 620 / 412.7 |
+
+So the correct statement is 5.04 ms against a 33.3 ms budget, which is 15%, not
+5%. Still not the bottleneck against 26 ms of preprocessing, but a 3.7x factor
+that should not have been reported as if the two numbers came from the same
+machine. The match counts and objectives agree across the two (615 vs 620), so
+this is the same work on slower cores rather than a different problem.
+
+## Score margin, exported per match
+
+Every `Match` now carries `margin`: best-minus-second-best s(i,j) over that left
+keypoint's candidates, measured against lambda where there is no runner-up. It is
+close to free -- one pass over the edge list -- and it is the most useful
+confidence available. Over eight Middlebury scenes with ground truth, precision by
+margin quartile runs 0.169 / 0.286 / 0.391 / 0.659.
+
+On `full_on` the margin immediately explains what MASDA is doing:
+
+| | matches | median margin | margin < 0.2 |
+|---|---|---|---|
+| MASDA | 620 | 0.388 | **31.5%** |
+| mutual-NN + ratio | 422 | 0.535 | 14.3% |
+
+MASDA accepts 47% more matches, and the extra ones are concentrated in the
+low-margin band -- which is exactly what a ratio test exists to remove. Neither
+number is better on its own; the point is that the consumer can now see which
+matches are the doubtful ones and weight or drop them, rather than receiving 620
+matches with no way to tell them apart.
+
+## lambda and gamma were transposed
+
+`MatchConfig::lambda` and `MatchConfig::gamma` were named the wrong way round
+relative to the article's convention: lambda is clutter, the cost of leaving a
+LEFT (measurement) keypoint unmatched, and gamma is misdetection, the cost of
+leaving a RIGHT (object) keypoint unmatched. The code used one field consistently
+for the left side throughout, so the mathematics was self-consistent and no
+measured result was ever wrong -- but only because every experiment so far has
+been run with lambda == gamma. They stop being interchangeable the moment they
+are set apart, which is what stereo wants: a left keypoint occluded in the right
+view is a different rate from a right keypoint the detector never proposed.
+
+`test_lambda_gamma_are_distinct` in `core/tests/test_match.cpp` is the regression
+guard. Its first version compared two match counts that were both zero, which
+passed without testing anything; it now asserts the exact counts (1 and 0).
 
 ## Convergence: the messages oscillate, the decision does not
 
