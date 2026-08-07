@@ -26,7 +26,10 @@ unimodal frame-interval distribution. One item remains open: hardware sync
 cannot be verified in the current configuration — see
 [03-obstacles.md](03-obstacles.md), obstacle 7.
 
-Next is bring-up step 2, IMU Allan variance. The IMU has not been examined yet.
+Bring-up step 2 (IMU Allan variance) is **blocked**: there is no IMU on the
+system. The `nvs_bmi160` module and device-tree node are stock L4T leftovers with
+no hardware behind them — verified in
+[01-hardware.md](01-hardware.md#there-is-currently-no-imu-on-the-system--verified).
 
 ## Conventions used throughout
 
