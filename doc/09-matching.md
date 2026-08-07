@@ -362,8 +362,47 @@ visible at matched precision anywhere on it:
 | ~0.785 | 1471 (gate 0.40) | 1506 (gate 0.45) |
 
 Recommended configuration: 2x right-image density, margin gate at 0.10, left
-detector unchanged. Estimated Jetson cost 5.04 ms x 1.27 = about 6.4 ms, still
-under a fifth of the 33.3 ms frame budget.
+detector unchanged. Both are now `de_match` flags, `--right-density` and
+`--min-margin`.
+
+The gate is applied AFTER matching, not before. Dropping low-margin candidates
+before the solver would remove the competition that gives the surviving margins
+their meaning; the gate is a decision about what to hand the consumer.
+
+### Measured on the Jetson, not extrapolated
+
+I estimated 6.4 ms from the Python edge-count ratio of 1.27x. Measured on
+`full_on`, 120 pairs, MAXN:
+
+| config | matches | median \|dy\| | margin < 0.2 | Jetson time |
+|---|---|---|---|---|
+| baseline | 620.1 | 0.365 px | 31.5% | 5.14 ms |
+| 2x right + margin 0.10 | 603.8 | 0.364 px | 22.2% | **8.84 ms** |
+
+The real factor is 1.72x, not 1.27x, so the cost is 8.84 ms: 27% of the frame
+budget rather than a fifth. The estimate was wrong because the C++ detector is
+`detect_keypoints_fast` at cell 32, and doubling per_cell there does not add
+candidate edges in the same proportion as the Python sweep's cell-12 dense
+Shi-Tomasi. Extrapolating a Jetson cost from a desktop ratio is the same mistake
+as the 1.67 ms figure, one step removed.
+
+### What is NOT yet verified
+
+`full_on` has no ground truth, so the accuracy claim does not transfer to it. What
+the numbers above show is the gate working mechanically: the low-margin share
+falls from 31.5% to 22.2%, and median |dy| is unchanged at 0.364 px. Fewer
+doubtful matches is not the same statement as more correct ones.
+
+The +161 correct / +0.016 precision result is validated on Middlebury, in Python,
+with a dense Shi-Tomasi detector at cell 12. The C++ path uses FAST candidates
+with Shi-Tomasi scoring at cell 32. Those are different detectors in a different
+density regime, so the transfer is plausible and unproven.
+
+Closing that gap means running the C++ matcher on Middlebury directly, against
+ground truth, which needs the pairs converted to the raw Y8 layout the bag loader
+expects. That is the next piece of work, and until it is done the recommended
+configuration is a recommendation from the Python experiment, not from the C++
+one.
 
 ### One thing that did not work
 
