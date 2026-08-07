@@ -69,32 +69,38 @@ systematic and random error cannot be separated once the vehicle is moving.
 
 ## Step 1
 
-On the Jetson:
+Build on the Jetson (seconds — two files against a prebuilt `.so`):
 
 ```sh
-# Reproducible latency requires fixed clocks. Do this before measuring anything.
-sudo nvpmodel -m 0
-sudo jetson_clocks
-
-python3 jetson/rs_probe.py --save-prefix /tmp/probe
-python3 jetson/rs_ir_capture.py ~/bags/$(date +%Y%m%d_%H%M%S)_static --seconds 120
+cd ~/doubleeye/jetson && cmake -S . -B build && cmake --build build -j6
 ```
 
-`rs_probe.py` is the gate. It fails loudly on the two things that quietly
-invalidate everything downstream:
+Then, **before measuring anything** — this is not optional, see finding 1:
 
+```sh
+sudo nvpmodel -m 0 && sudo jetson_clocks
+
+./build/rs_probe --save-prefix /tmp/probe
+./build/rs_ir_capture ~/bags/$(date +%Y%m%d_%H%M%S)_static --seconds 120
+```
+
+`rs_probe` is the gate. It fails loudly on the things that quietly invalidate
+everything downstream:
+
+- **Power mode / unlocked clocks** — measured at a 34% frame loss with no error.
 - **USB2 fallback.** 848×480@30 on two IR streams does not fit in USB2
   bandwidth. Presents as mysterious frame drops, not as an error.
 - **Missing 848×480 Y8 profile** on either stream index.
 
 It also prints factory intrinsics and the IR baseline, so `f·B` can be checked
-against the plan's ~21 px·m before any depth number is believed.
+against the plan's ~21 px·m before any depth number is believed, and reports
+exactly which frame metadata this kernel exposes.
 
-Then on the desktop:
+Note `rsync` is **not** installed on the TX2, so pull bags with tar over ssh:
 
 ```sh
-rsync -a jetson:~/bags/<run>/ ./bags/<run>/
-python3 desktop/capture_report.py bags/<run>
+ssh jetson "cd ~/bags/<run> && tar czf - ." | tar xzf - -C bags/<run>/
+.venv/bin/python desktop/capture_report.py bags/<run>
 ```
 
 ### Step 1 finding 1 — frame-rate shortfall (RESOLVED: power mode)
@@ -141,8 +147,9 @@ uvcvideo is unpatched, so there is no metadata node. Confirmed
 empirically by `rs_probe`. Consequences, in descending order of damage:
 
 - `get_timestamp()` reports domain **System Time**, i.e. host arrival time, not
-  the camera clock. Camera-vs-Jetson clock skew — a top risk in the plan — is
-  **not measurable** in this state.
+  the camera clock. So clock skew cannot be read off the timestamps directly.
+  (It turns out to be recoverable another way, and to matter less than feared —
+  see the verdict below.)
 - `RS2_FRAME_METADATA_FRAME_COUNTER` is absent, so `get_frame_number()` is a
   *host-side counter of delivered frames*. It is contiguous by construction,
   which makes frame-number gap analysis worthless — it reports a flawless run
