@@ -320,3 +320,61 @@ matcher's development too.
 - **Ground-truth validation** against a laser rangefinder — bring-up step 4. Until
   then, median |dy| and the objective are the only quality measures, and neither
   proves the disparities are *correct*, only that they are consistent.
+
+## Detector repeatability: over-propose on the right, then gate on margin
+
+Repeatability, not the matcher, is the ceiling. Pooled over eight Middlebury
+scenes only 44.6% of left keypoints have any right keypoint within 1 px of their
+true correspondence. Shi-Tomasi picks its maxima independently per image, and a
+maximum in one view is often not a maximum in the other. No matcher can recover a
+correspondence that was never proposed.
+
+Over-proposing on the right lifts it, with diminishing returns past 2x:
+
+| right density | repeatability | right kp | edges | correct | precision |
+|---|---|---|---|---|---|
+| baseline | 44.6% | 5688 | 13873 | 1796 | 0.616 |
+| 2x | 52.5% | 10305 | 20873 | **2057** | 0.573 |
+| 3x | 53.8% | 14245 | 24192 | 2089 | 0.555 |
+| 4x | 54.0% | 17497 | 26057 | 2091 | 0.541 |
+
++261 correct matches at 2x, which is +14.5%, for 1.5x the edges and 1.27x the
+time. Precision falls though, 0.616 to 0.573, because the extra right keypoints
+are also extra distractors.
+
+That is where the exported margin pays for itself. Gating the 2x run on margin
+recovers the precision and keeps most of the gain:
+
+| | correct | precision |
+|---|---|---|
+| baseline, no gate | 1796 | 0.616 |
+| 2x, margin >= 0.05 | 1989 | 0.610 |
+| **2x, margin >= 0.10** | **1957** | **0.632** |
+
+At a margin threshold of 0.10 the over-proposed run is better on *both* axes than
+the baseline: +161 correct matches and +0.016 precision. The whole
+precision/recall curve moves outward rather than trading along it, which is
+visible at matched precision anywhere on it:
+
+| precision | baseline correct | 2x + margin gate correct |
+|---|---|---|
+| ~0.705 | 1644 (gate 0.20) | 1782 (gate 0.25) |
+| ~0.785 | 1471 (gate 0.40) | 1506 (gate 0.45) |
+
+Recommended configuration: 2x right-image density, margin gate at 0.10, left
+detector unchanged. Estimated Jetson cost 5.04 ms x 1.27 = about 6.4 ms, still
+under a fifth of the 33.3 ms frame budget.
+
+### One thing that did not work
+
+Making misdetection cheaper, so the surplus right keypoints are discarded more
+readily, does nothing. Sweeping gamma from -0.1 to 0.0 at every density moves
+correct matches by at most 5 out of ~2000, which is noise.
+
+The reasoning was that over-proposing means many right keypoints legitimately go
+unmatched, so leaving one unmatched ought to be cheap. It was the first intended
+use of lambda and gamma being separable at all. But a surplus right keypoint is
+usually nobody's best candidate, so it goes unmatched whatever gamma says: gamma
+only bites when a right keypoint is genuinely contested, and the extra ones mostly
+are not. The lambda/gamma fix was still worth making, since the naming was wrong
+and the fields are not interchangeable, but this particular payoff is not there.

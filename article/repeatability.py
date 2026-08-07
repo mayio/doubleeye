@@ -50,8 +50,9 @@ COSTS = [(-0.1, -0.1), (-0.1, -0.02), (-0.1, 0.0)]
 def detect_at(img, per_cell, pct, cell=12):
     """ms.detect with an explicit response percentile."""
     r = ms.shi_tomasi(img)
-    return ms.detect(img, cell=cell, per_cell=per_cell,
-                     min_resp=float(np.percentile(r, pct)))
+    pts, _ = ms.detect(img, cell=cell, per_cell=per_cell,
+                       min_resp=float(np.percentile(r, pct)))
+    return pts
 
 
 def repeatability(pl, pr, gt, known, tol=TOL):
