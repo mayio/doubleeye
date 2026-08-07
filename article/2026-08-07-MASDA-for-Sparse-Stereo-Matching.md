@@ -43,16 +43,16 @@ license, and the disparity is known exactly.
 
 ## 1. Stereo as a data association problem
 
-In tracking, measurements $i \in \{1 \dots m\}$ are associated with objects
-$j \in \{1 \dots n\}$, at most one each way, with the option of calling a
+In tracking, measurements $$i \in \{1 \dots m\}$$ are associated with objects
+$$j \in \{1 \dots n\}$$, at most one each way, with the option of calling a
 measurement clutter or an object misdetected.
 
 For stereo, substitute the nouns. Keypoints in the left image are measurements,
 keypoints in the right image are objects. At most one association each way, because
 one surface point produces one projection per image. A left keypoint whose surface
-is occluded in the right view has no partner at all, which is clutter ($\lambda$).
+is occluded in the right view has no partner at all, which is clutter ($$\lambda$$).
 A right keypoint whose partner the left detector missed is a misdetection
-($\gamma$).
+($$\gamma$$).
 
 Occlusion is not a small correction here. In the scene below, 30% of left keypoints
 have no attainable match, either because the surface is hidden or because the
@@ -60,17 +60,17 @@ corresponding right keypoint was never detected. A formulation that assumes ever
 keypoint is matchable is wrong a third of the time.
 
 What stereo adds is geometry. The pair is rectified, so correspondences lie on the
-same image row and disparity $d = x_L - x_R$ is positive and bounded. That makes the
+same image row and disparity $$d = x_L - x_R$$ is positive and bounded. That makes the
 association graph very sparse, which turns out to matter a lot (§6).
 
 ### 1.1 Factor graph
 
-Same as the tracking case: binary association variables $c_{ij}$, clutter
-indicators $e_i$, misdetection indicators $\delta_j$, similarity factors $S_{ij}$,
-clutter factors $\Lambda_i$, misdetection factors $\Gamma_j$, and the exclusivity
-constraints $I_i$ and $E_j$.
+Same as the tracking case: binary association variables $$c_{ij}$$, clutter
+indicators $$e_i$$, misdetection indicators $$\delta_j$$, similarity factors $$S_{ij}$$,
+clutter factors $$\Lambda_i$$, misdetection factors $$\Gamma_j$$, and the exclusivity
+constraints $$I_i$$ and $$E_j$$.
 
-The graph is loopy. Every $c_{ij}$ sits in both an $I_i$ and an $E_j$ constraint, so
+The graph is loopy. Every $$c_{ij}$$ sits in both an $$I_i$$ and an $$E_j$$ constraint, so
 there are four-cycles everywhere. Hence loopy belief propagation, and hence no
 convergence guarantee.
 
@@ -94,9 +94,9 @@ $$
 \end{aligned}
 $$
 
-$\rho_{ij}$ reads as: how good is associating $i$ with $j$, after subtracting the
-best thing $i$ could do instead, where "instead" includes being called clutter.
-$\beta_{ij}$ is the same from the object side.
+$$\rho_{ij}$$ reads as: how good is associating $$i$$ with $$j$$, after subtracting the
+best thing $$i$$ could do instead, where "instead" includes being called clutter.
+$$\beta_{ij}$$ is the same from the object side.
 
 Damping on both:
 
@@ -110,7 +110,7 @@ $$
 b_{ij} = \alpha_{ij} + \eta_{ij} + s_{ij}
 $$
 
-and since $\beta_{ij} = s_{ij} + \alpha_{ij}$ and $\rho_{ij} = s_{ij} + \eta_{ij}$,
+and since $$\beta_{ij} = s_{ij} + \alpha_{ij}$$ and $$\rho_{ij} = s_{ij} + \eta_{ij}$$,
 in code this is
 
 $$
@@ -118,37 +118,37 @@ b_{ij} = \beta_{ij} + \rho_{ij} - s_{ij}
 $$
 
 Both maxima exclude one element, so caching the largest and second-largest per row
-and column makes "max excluding $j$" constant time. An iteration is then two linear
+and column makes "max excluding $$j$$" constant time. An iteration is then two linear
 passes over the *edges*:
 
 $$
 O(T \cdot E), \qquad E = |\{(i,j) : \text{candidate}\}|
 $$
 
-In stereo $E \approx 2.3\,m$, so this is far smaller than $O(T \cdot m \cdot n)$.
+In stereo $$E \approx 2.3\,m$$, so this is far smaller than $$O(T \cdot m \cdot n)$$.
 
-### 1.3 Score, and the scale of $\lambda$ and $\gamma$
+### 1.3 Score, and the scale of $$\lambda$$ and $$\gamma$$
 
-Descriptors are the Census transform over a $7 \times 7$ window: one bit per
+Descriptors are the Census transform over a $$7 \times 7$$ window: one bit per
 neighbour, set when the neighbour is darker than the centre. That gives 48 bits,
 which fit a `uint64`, so the distance is a single `popcount`. Census is invariant to
 monotonic intensity mappings, which absorbs gain and offset differences between the
 two sensors. Those differences are always present in practice.
 
 Two unrelated Census descriptors agree on half their bits by chance, so scaling the
-Hamming distance $h$ around that point gives a score with a usable zero:
+Hamming distance $$h$$ around that point gives a score with a usable zero:
 
 $$
 s(i,j) = \underbrace{\frac{B/2 - h(i,j)}{B/2}}_{\text{+1 perfect, 0 chance}}
        \;-\; w_y \left(\frac{y_i - y_j}{\sigma_y}\right)^{2}
 $$
 
-with $B = 48$. The second term penalises vertical residual: on a rectified pair a
-true match has $y_i = y_j$. I keep it even though it is usually small, because the
-median $|\Delta y|$ over accepted matches then doubles as a cheap online check on
+with $$B = 48$$. The second term penalises vertical residual: on a rectified pair a
+true match has $$y_i = y_j$$. I keep it even though it is usually small, because the
+median $$|\Delta y|$$ over accepted matches then doubles as a cheap online check on
 calibration drift.
 
-On this scale $\lambda = \gamma = -0.1$ means "reject anything worse than a tenth of
+On this scale $$\lambda = \gamma = -0.1$$ means "reject anything worse than a tenth of
 the way from chance to perfect", which is easier to reason about than a tuned
 constant.
 
@@ -261,11 +261,11 @@ def masda(S, lam=-0.1, gam=-0.1, iters=30, damping=0.4, eps=1e-5):
 I got this wrong on the first attempt, and the mistake follows directly from the
 theory, so it is worth walking through.
 
-I gated acceptance on $b_{ij} > 0$. On problems with exactly tied candidates that
+I gated acceptance on $$b_{ij} > 0$$. On problems with exactly tied candidates that
 returned zero matches, on problems whose optimum matched everything.
 
 The belief measures an edge's advantage *over its competitors*. When nothing has an
-advantage, every belief is $\le 0$. That is also the condition under which the LP
+advantage, every belief is $$\le 0$$. That is also the condition under which the LP
 relaxation has no unique optimum, and uniqueness is exactly what Bayati, Shah and
 Sharma require for max-product to be correct on bipartite matching. So the
 degenerate case is not an edge case to patch around; it is where the guarantee
@@ -280,10 +280,10 @@ Two questions were tangled together:
 
 | question | answered by |
 |---|---|
-| which candidate? | the belief $b_{ij}$, as an ordering. Its sign means nothing. |
-| associate at all? | $s(i,j)$ against $\lambda$, which is what $\lambda$ is for. |
+| which candidate? | the belief $$b_{ij}$$, as an ordering. Its sign means nothing. |
+| associate at all? | $$s(i,j)$$ against $$\lambda$$, which is what $$\lambda$$ is for. |
 
-So: order by belief, decide by $\lambda$, require row and column to agree, then fill
+So: order by belief, decide by $$\lambda$$, require row and column to agree, then fill
 in greedily by belief over what is left.
 
 ```python
@@ -303,7 +303,7 @@ def decide(S, belief, lam):
 
 The greedy fill is not cosmetic. Under near-ties every row's best belief points at
 the same column, so requiring mutual agreement commits exactly one pair. Every
-greedily accepted edge has $s > \lambda$ and two free endpoints, so it raises the
+greedily accepted edge has $$s > \lambda$$ and two free endpoints, so it raises the
 objective. Adding it moved agreement with exhaustive search from 56/60 to 58/60 on
 problems small enough to enumerate.
 
@@ -311,7 +311,7 @@ problems small enough to enumerate.
 
 ## 5. Results against ground truth
 
-$\lambda = \gamma = -0.1$, 30 iterations, damping 0.4. Recall is measured against
+$$\lambda = \gamma = -0.1$$, 30 iterations, damping 0.4. Recall is measured against
 attainable matches only: a left keypoint counts in the denominator only if its true
 correspondence is unoccluded *and* was itself detected in the right image. Counting
 the rest would charge the matcher for the detector's misses.
@@ -404,11 +404,11 @@ property you actually need.
 
 ## 6. Speed: the representation decides it
 
-The complexity argument is $O(T \cdot E)$ against Jonker-Volgenant's $O(N^3)$. My
+The complexity argument is $$O(T \cdot E)$$ against Jonker-Volgenant's $$O(N^3)$$. My
 first implementation did not benefit from it at all.
 
-Written the obvious way, with messages in an $m \times n$ array padded with
-$-\infty$, MASDA is slower than scipy's compiled Jonker-Volgenant:
+Written the obvious way, with messages in an $$m \times n$$ array padded with
+$$-\infty$$, MASDA is slower than scipy's compiled Jonker-Volgenant:
 
 | texture | nodes | edges | dense MASDA | JV (scipy) | ratio |
 |---|---|---|---|---|---|
@@ -416,16 +416,16 @@ $-\infty$, MASDA is slower than scipy's compiled Jonker-Volgenant:
 | dots | 1601 | 3769 | 3267 ms | 2007 ms | 0.6× |
 | periodic | 2019 | 4507 | 7403 ms | 3388 ms | 0.5× |
 
-With $m \approx n \approx 1400$ the matrix holds about two million cells and 3263
-real edges, so roughly 600× of the arithmetic goes into entries that are $-\infty$.
-The $O(T \cdot E)$ bound assumes an edge list. A dense array gives
-$O(T \cdot m \cdot n)$ and vectorisation does not recover the difference.
+With $$m \approx n \approx 1400$$ the matrix holds about two million cells and 3263
+real edges, so roughly 600× of the arithmetic goes into entries that are $$-\infty$$.
+The $$O(T \cdot E)$$ bound assumes an edge list. A dense array gives
+$$O(T \cdot m \cdot n)$$ and vectorisation does not recover the difference.
 
 ### 6.1 Edge-list formulation
 
 Put the messages on the edges. The only awkward part is that both updates need
-$\max_{k \neq j}$ over a row or column, which is quadratic in row length if done
-directly. Three segment reductions answer it exactly in $O(E)$:
+$$\max_{k \neq j}$$ over a row or column, which is quadratic in row length if done
+directly. Three segment reductions answer it exactly in $$O(E)$$:
 
 ```python
 def _seg_max_excluding(vals, idx, n):
@@ -489,7 +489,7 @@ detector, at 21 ms, costs more than ten times as much.
 ### 6.3 The actual claim
 
 MASDA's cost is linear in the number of *plausible* associations, and in a
-geometrically constrained problem that is a small fraction of $m \times n$. Here the
+geometrically constrained problem that is a small fraction of $$m \times n$$. Here the
 epipolar band and disparity range cut roughly two million possible pairings down to
 3300 candidates. Only a representation that exploits that sees any benefit.
 
@@ -509,14 +509,14 @@ not cross. Plain MASDA cannot express it, which is a standing objection to using
 for stereo. It can be added as a factor, the derivation is tidier than I expected, and it
 turns out not to be worth using.
 
-Two associations $(i,j)$ and $(i',j')$ cross iff $(x_i - x_{i'})(x_j - x_{j'}) < 0$.
+Two associations $$(i,j)$$ and $$(i',j')$$ cross iff $$(x_i - x_{i'})(x_j - x_{j'}) < 0$$.
 A matching is order-preserving exactly when no two of its pairs cross, so ordering
 decomposes into *pairwise* factors with no higher-order term. That is what makes it
 tractable.
 
-Take $\psi(c_e, c_f) = -\kappa$ when both edges are on and crossing, else 0. For a
+Take $$\psi(c_e, c_f) = -\kappa$$ when both edges are on and crossing, else 0. For a
 pairwise factor between binary variables only the difference of the outgoing message
-matters, and with $\mu_f = m_f(1) - m_f(0)$:
+matters, and with $$\mu_f = m_f(1) - m_f(0)$$:
 
 $$
 \Delta_{\psi \to e} = \max(0, \mu_f - \kappa) - \max(0, \mu_f)
@@ -528,13 +528,13 @@ One scalar, constant time. I checked it against brute-force max-sum over 20000
 random cases; agreement is 4×10⁻¹⁶.
 
 Because these messages are additive on the edge they fold into the score. Writing
-$o_e = -\sum_{f \in X(e)} \operatorname{clamp}(b_f, 0, \kappa)$ for the summed
-ordering pressure, the updates are the same two reductions with $s + o$ substituted
-for $s$. Nothing new has to be maintained. Crossing pairs depend only on geometry,
-so they are computed once; $O(E_r^2)$ per scanline band here, and a Fenwick tree
-over the sorted $j$ order would make it $O(E_r \log E_r)$ if bands got dense.
+$$o_e = -\sum_{f \in X(e)} \operatorname{clamp}(b_f, 0, \kappa)$$ for the summed
+ordering pressure, the updates are the same two reductions with $$s + o$$ substituted
+for $$s$$. Nothing new has to be maintained. Crossing pairs depend only on geometry,
+so they are computed once; $$O(E_r^2)$$ per scanline band here, and a Fenwick tree
+over the sorted $$j$$ order would make it $$O(E_r \log E_r)$$ if bands got dense.
 
-$\kappa$ stays finite. Thin foreground objects genuinely violate ordering, and a
+$$\kappa$$ stays finite. Thin foreground objects genuinely violate ordering, and a
 hard constraint would delete them. Damping goes up to 0.6, because these factors add
 loops that the bipartite convergence result does not cover.
 
@@ -545,7 +545,7 @@ order-preserving: a region shifted by one period crosses nothing. So I built a s
 for it instead, with nine thin bars at assorted depths over broadband texture, where
 errors do cross.
 
-| $\kappa$ | matches | correct | precision | crossings |
+| $$\kappa$$ | matches | correct | precision | crossings |
 |---|---|---|---|---|
 | off | 711 | 506 | 0.712 | 67 / 2790 |
 | 0.1 | 712 | 505 | 0.709 | 64 |
@@ -553,8 +553,8 @@ errors do cross.
 | 0.8 | 711 | 503 | 0.707 | 58 |
 
 The factor does what it is supposed to do: crossings fall by 13%, monotonically in
-$\kappa$. Correct matches fall by three. On the lattice the effect is much larger in
-the same direction, crossings 229 → 112 at $\kappa = 0.3$, and accuracy again drops
+$$\kappa$$. Correct matches fall by three. On the lattice the effect is much larger in
+the same direction, crossings 229 → 112 at $$\kappa = 0.3$$, and accuracy again drops
 slightly, 226 → 216 correct.
 
 So the constraint is enforced and the answer gets marginally worse. Both scenes
@@ -566,16 +566,16 @@ The baseline has 67 crossings out of 2790 same-band pairs, 2.4%. There was very
 little for the constraint to fix, and the crossings it does remove are apparently
 not the wrong matches.
 
-That is not a property of the scene. Matches $(i,j)$ and $(i',j')$ with
-$x_i < x_{i'}$ cross iff $x_j > x_{j'}$, that is
+That is not a property of the scene. Matches $$(i,j)$$ and $$(i',j')$$ with
+$$x_i < x_{i'}$$ cross iff $$x_j > x_{j'}$$, that is
 
 $$
 d_{i'} - d_i \;>\; x_{i'} - x_i
 $$
 
 A crossing requires the disparity difference to exceed the horizontal separation.
-With disparities confined to a range of width $d_{\max} - d_{\min}$, crossings are only
-possible between keypoints closer together in $x$ than that width, and get rarer as
+With disparities confined to a range of width $$d_{\max} - d_{\min}$$, crossings are only
+possible between keypoints closer together in $$x$$ than that width, and get rarer as
 the range tightens.
 
 So the disparity-range gate already does most of ordering's work. Uniqueness plus a
@@ -594,7 +594,7 @@ Here it costs accuracy to buy a statistic nobody consumes.
 
 ## 8. Comparison with existing work
 
-**Jonker-Volgenant / Hungarian.** Exact, $O(N^3)$, and here at least as good as
+**Jonker-Volgenant / Hungarian.** Exact, $$O(N^3)$$, and here at least as good as
 MASDA everywhere. For a pure assignment problem of moderate size, use it. MASDA
 earns its place when you intend to add factors that stop the problem being a LAP.
 
@@ -608,10 +608,10 @@ soft weights, for a PDA-style tracker or a differentiable pipeline, that is the
 right choice. Stereo wants a decision per keypoint, so MAP is what is needed.
 
 **Sinkhorn and optimal transport, as in SuperGlue.** Structurally very close: soft
-one-to-one assignment with dustbins, which are $\lambda$ and $\gamma$ under another
+one-to-one assignment with dustbins, which are $$\lambda$$ and $$\gamma$$ under another
 name. Sinkhorn is the entropy-regularised relaxation and max-sum is its
 zero-temperature limit. SuperGlue's real advantage is that its scores come from a
-learned attention network instead of a hand-designed $s(i,j)$, and its dustbin costs
+learned attention network instead of a hand-designed $$s(i,j)$$, and its dustbin costs
 are learned rather than set. That points straight at the weakest part of what I have
 here.
 
@@ -622,7 +622,7 @@ here.
 **Semi-global matching and dense stereo.** A different problem, and worth saying why
 sparse matching is not simply the worse option. Dense stereo assigns a disparity to
 every pixel with a smoothness prior on the pixel grid; per scanline, one-to-one with
-occlusion is solved exactly by dynamic programming in $O(W \cdot D)$, and DP also
+occlusion is solved exactly by dynamic programming in $$O(W \cdot D)$$, and DP also
 encodes the ordering constraint that MASDA needs a factor for. If you want a dense
 disparity map, MASDA is the wrong tool. Sparse matching is the right tool when you
 want a few hundred well-localised sub-pixel correspondences to feed geometry, such
@@ -645,7 +645,7 @@ arrangement a MASDA front end would naturally feed.
 
 Where MASDA is the right choice:
 
-- Cost is linear in plausible associations rather than in $m \times n$. With
+- Cost is linear in plausible associations rather than in $$m \times n$$. With
   geometric constraints cutting candidates to about 2.3 per keypoint, the sparse
   form runs 208-285× faster than an exact LAP solver at the same quality.
 - It is optimal, or indistinguishable from optimal, on these problems without
@@ -666,7 +666,7 @@ Where it is not:
 - It cannot create information. On degenerate texture it produces confident wrong
   answers where a ratio test produces none, and which of those is preferable is a
   property of the consumer.
-- $\lambda$ and $\gamma$ are hand-set. The scale here is interpretable, which helps,
+- $$\lambda$$ and $$\gamma$$ are hand-set. The scale here is interpretable, which helps,
   but that is not the same as calibrated.
 
 ---
@@ -675,7 +675,7 @@ Where it is not:
 
 Ranked by how much I expect them to matter.
 
-**Better scores.** $s(i,j)$, $\lambda$ and $\gamma$ are the weakest part of this by
+**Better scores.** $$s(i,j)$$, $$\lambda$$ and $$\gamma$$ are the weakest part of this by
 a wide margin. Everything in §5 says the constraint machinery is already extracting
 what it can, and the shortfall is in the evidence being fed to it. A small model
 over descriptor distance, vertical residual, response ratio and local texture energy,
@@ -697,14 +697,14 @@ Keypoint positions are refined sub-pixel, but disparity is currently just the
 difference of two independently refined positions rather than a fit to the
 correlation surface between them.
 
-**Unrolled training.** Whether $T$ max-sum iterations can be unrolled with a
+**Unrolled training.** Whether $$T$$ max-sum iterations can be unrolled with a
 soft-max relaxation and trained end to end. Structurally that is what SuperGlue does
 with Sinkhorn in the zero-entropy limit, so the interesting question is whether the
 max-sum version is competitive with fewer parameters.
 
 **Temporal association.** The same machinery for frame-to-frame matching, for
 ego-motion. Two things that failed for stereo should pay there: the search is
-two-dimensional so ordering does not come free from a disparity range, and $k$ is
+two-dimensional so ordering does not come free from a disparity range, and $$k$$ is
 genuinely large so a motion prior from IMU-derived rotation compensation has
 something to prune.
 
