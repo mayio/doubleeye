@@ -38,8 +38,15 @@ The capture tools print the power state at startup regardless, and every
 From the desktop, which syncs and builds first so you cannot run a stale binary:
 
 ```sh
-./tools/deploy.sh --capture ~/bags/myrun --seconds 120
+./tools/deploy.sh --capture myrun --seconds 120
+./tools/deploy.sh --pull myrun
 ```
+
+`--capture` takes a **bare name**, not a path, and always records to
+`~/bags/NAME` on the Jetson. That is deliberate: `--capture ~/bags/myrun` would
+expand against the *desktop* home before ssh ever saw it, and the Jetson would
+then fail with `cannot create /home/<desktop-user>/bags/myrun`. The script now
+rejects anything containing a slash or tilde.
 
 Or on the Jetson directly: `~/doubleeye/jetson/build/rs_ir_capture ~/bags/myrun ...`
 
@@ -64,7 +71,7 @@ saving every frame is 24 MB/s against ~13 GB of free eMMC.
 |---|---|---|
 | Timing / rate measurement | `--save-every 0` | No disk I/O to perturb the measurement |
 | Normal recording | `--save-every 30` | One pair per second; enough to check exposure and scene |
-| **Something you want to watch** | `--save-every 2` and `--seconds 10` | ~150 pairs, ~120 MB, smooth enough to animate |
+| **Something you want to watch** | `--save-every 4` and `--seconds 8` | ~60 pairs, ~47 MB — enough for the GIF and quick to pull over WiFi |
 | Algorithm input | `--save-every 1`, short | Every frame, but keep it brief and watch disk space |
 
 `--emitter alternate` is supported by the firmware but **currently not usable**:
@@ -75,7 +82,11 @@ separate runs with `on` and `off` instead — that is what the projector A/B in
 
 ## 2. Pull the bag
 
-`rsync` is not installed on the TX2, so use `tar` over `ssh`:
+```sh
+./tools/deploy.sh --pull myrun
+```
+
+`rsync` is not installed on the TX2, so underneath that is `tar` over `ssh`:
 
 ```sh
 mkdir -p bags/myrun && ssh jetson "cd ~/bags/myrun && tar czf - ." \
@@ -185,3 +196,68 @@ of the working range. It is fine for a first pass and for verifying the
 toolchain end to end, but for the calibration you actually trust, print larger —
 A3, or tile A4 sheets onto a rigid board (`--paper a3`, or raise `--pitch` and
 accept fewer corners).
+
+## 6. Stereo calibration
+
+The camera half of bring-up step 3 needs **no IMU**, so it is unblocked as soon
+as a board is printed.
+
+### First: verify the board is detectable at all
+
+Do this before a full session. It costs ten seconds and catches the failure modes
+that would otherwise waste the whole sitting — above all IR-transparent ink.
+
+```sh
+./tools/deploy.sh --capture cbtest --seconds 10 --save-every 4 --emitter off --gain 96
+./tools/deploy.sh --pull cbtest
+.venv/bin/python desktop/view_bag.py bags/cbtest           # can you see it?
+.venv/bin/python desktop/check_checkerboard.py bags/cbtest  # can OpenCV see it?
+```
+
+Hold the board reasonably close, filling a good part of the frame. `--emitter off`
+matters: projector dots interfere with corner detection. `--gain 96` because with
+the emitter off the scene is darker — the last recording came out at mean 54 DN.
+
+`check_checkerboard.py` reports detection in **both** channels separately, since a
+pair where only one channel found the board contributes nothing to stereo
+extrinsics. It also reports image coverage and pose spread, and orders its failure
+hints by likelihood.
+
+### Then: the real session
+
+```sh
+./tools/deploy.sh --capture calib01 --seconds 90 --save-every 3 --emitter off --gain 96
+```
+
+While it records, move the board through **varied poses**, not merely varied
+frames. Aim for 20–40 usable pairs covering:
+
+- a range of distances, from as close as focus allows out to roughly 1.5 m
+- tilts of roughly ±30° about both axes — purely fronto-parallel views leave focal
+  length and distortion poorly constrained
+- all parts of the image including the corners, not just the centre
+- the board fully inside **both** frames. The right camera sees a shifted view, so
+  a board near the left edge of ir1 can be clipped in ir2.
+
+Move slowly. At 1500 µs blur is not the issue, but a board moving during a frame
+still degrades corner localisation.
+
+Then check before calibrating:
+
+```sh
+./tools/deploy.sh --pull calib01
+.venv/bin/python desktop/check_checkerboard.py bags/calib01
+```
+
+### Then Kalibr
+
+ROS Melodic is already on the Jetson with `rosbag` and `camera_calibration`. The
+piece that does not exist yet is a `bags/<run>` → rosbag converter, which is what
+Kalibr consumes — see [02-software-environment.md](02-software-environment.md)
+for why the capture path stays ROS-free and conversion happens offline.
+
+`camera_calibration` is also already installed and gives a quicker, rougher
+answer if you want a cross-check first.
+
+**Use the measured pitch, not the nominal 25 mm.** Span all 10 columns of the
+default board and divide by 10.
