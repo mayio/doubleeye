@@ -41,6 +41,20 @@ first-class output with one producer.
 
 ---
 
+## 0.5 Quick wins now that the live view works
+
+- **Measure denser detection against ground truth.** `--cell 12 --per-cell 2` gives
+  ~3x the matches and looks clearly better live, but "reads better" is not
+  "more correct". `de_bench --sweep` over the cell/per-cell grid would settle it,
+  and if denser is also more accurate the matcher defaults should change.
+- **Temporal stability.** Keypoints are re-detected every frame, so the cloud
+  flickers on a static scene. Accumulating over frames, or tracking instead of
+  re-detecting, fixes both this and the 44-51% stereo repeatability ceiling in
+  [09-matching.md](09-matching.md). Same root cause seen along two different axes,
+  which makes it the highest-value single change to the front end.
+
+---
+
 ## 1. Needs you, physically — nothing else can proceed past these
 
 ### 1.1 Get a laser rangefinder — **the binding constraint**
