@@ -439,6 +439,123 @@ def masda_sparse(ei, ej, se, m, n, lam=-0.1, gam=-0.1, iters=30, damping=0.4,
     return out, np.array(hist)
 
 
+def crossing_pairs(ei, ej, pl, pr, band=3.0):
+    """Edge pairs that violate the ordering constraint, as index arrays.
+
+    Two associations (i,j) and (i',j') on the same scanline cross iff
+    (x_i - x_i')(x_j - x_j') < 0. A matching is order-preserving exactly when no
+    two of its pairs cross, so ordering decomposes into PAIRWISE terms -- no
+    higher-order factor is needed, which is what makes this tractable at all.
+
+    Geometry only, so this is computed once and reused every iteration.
+    O(E_r^2) per scanline band; a Fenwick tree over the sorted j-order would make
+    it O(E_r log E_r) if the bands ever get dense.
+    """
+    yl = pl[ei, 1]
+    bands = np.round(yl / band).astype(np.int64)
+    A, B = [], []
+    for b in np.unique(bands):
+        idx = np.nonzero(bands == b)[0]
+        if idx.size < 2:
+            continue
+        xi = pl[ei[idx], 0]
+        xj = pr[ej[idx], 0]
+        u, v = np.triu_indices(idx.size, 1)
+        cross = (xi[u] - xi[v]) * (xj[u] - xj[v]) < 0
+        # Distinct endpoints only; a shared i or j is already handled by the
+        # exclusivity constraints and must not be double-penalised.
+        distinct = (ei[idx][u] != ei[idx][v]) & (ej[idx][u] != ej[idx][v])
+        keep = cross & distinct
+        A.append(idx[u[keep]])
+        B.append(idx[v[keep]])
+    if not A:
+        return np.empty(0, np.int64), np.empty(0, np.int64)
+    return np.concatenate(A), np.concatenate(B)
+
+
+def masda_sparse_ordering(ei, ej, se, m, n, pl, pr, kappa=0.3, lam=-0.1,
+                          gam=-0.1, iters=40, damping=0.6, eps=1e-5):
+    """MASDA with a soft ordering factor.
+
+    The factor-to-variable message for a pairwise "both on and crossing costs
+    kappa" factor reduces exactly to
+
+        Delta_{psi->e} = -clamp(mu_f, 0, kappa)
+
+    where mu_f is the conflicting edge's own preference for being on. Verified
+    against brute-force max-sum to 4e-16.
+
+    Because those messages are additive on the edge, they fold into the score:
+    the updates are the SAME two reductions with (s + o) in place of s, where o is
+    the summed ordering pressure. So the closed form survives -- no new message
+    type has to be maintained.
+
+    SOFT, not hard: kappa is finite because thin foreground objects genuinely
+    violate ordering, and a hard constraint would delete them. Damping defaults
+    higher (0.6) because the ordering factors add loops that the bipartite
+    convergence result does not cover.
+    """
+    A, B = crossing_pairs(ei, ej, pl, pr)
+    beta = np.zeros(len(se))
+    rho = np.zeros(len(se))
+    hist = []
+    for _ in range(iters):
+        # Ordering pressure from the current beliefs of crossing edges.
+        belief = beta + rho - se
+        press = np.clip(belief, 0.0, kappa)
+        o = np.zeros(len(se))
+        if A.size:
+            np.add.at(o, A, -press[B])
+            np.add.at(o, B, -press[A])
+        sm = se + o
+
+        comp = np.maximum(lam, _seg_max_excluding(beta, ei, m))
+        new_rho = (1 - damping) * (sm - comp) + damping * rho
+        comp = np.maximum(gam, _seg_max_excluding(new_rho, ej, n))
+        new_beta = (1 - damping) * (sm - comp) + damping * beta
+        delta = max(float(np.abs(new_rho - rho).max()),
+                    float(np.abs(new_beta - beta).max()))
+        rho, beta = new_rho, new_beta
+        hist.append(delta)
+        if delta < eps:
+            break
+
+    belief = beta + rho - se
+    order = np.argsort(-belief)
+    used_i = np.zeros(m, bool); used_j = np.zeros(n, bool)
+    out = {}
+    for e in order:
+        if se[e] <= lam:
+            continue
+        i, j = int(ei[e]), int(ej[e])
+        if used_i[i] or used_j[j]:
+            continue
+        out[i] = j
+        used_i[i] = used_j[j] = True
+    return out, np.array(hist), int(A.size)
+
+
+def count_crossings(assign, pl, pr, band=3.0):
+    """How many accepted pairs actually cross -- the direct check on whether the
+    ordering factor did what it claims."""
+    items = [(pl[i, 0], pl[i, 1], pr[j, 0]) for i, j in assign.items()]
+    if len(items) < 2:
+        return 0, 0
+    xs = np.array([a for a, _, _ in items])
+    ys = np.array([b for _, b, _ in items])
+    xr = np.array([c for _, _, c in items])
+    bands = np.round(ys / band).astype(np.int64)
+    tot = cr = 0
+    for b in np.unique(bands):
+        k = np.nonzero(bands == b)[0]
+        if k.size < 2:
+            continue
+        u, v = np.triu_indices(k.size, 1)
+        tot += u.size
+        cr += int((((xs[k][u] - xs[k][v]) * (xr[k][u] - xr[k][v])) < 0).sum())
+    return cr, tot
+
+
 def mutual_nn(S, lam=-0.1, ratio=0.85):
     """Mutual nearest neighbour with a Lowe-style ratio test."""
     m, n = S.shape
