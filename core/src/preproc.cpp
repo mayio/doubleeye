@@ -1,6 +1,8 @@
 #include "doubleeye/preproc.hpp"
 
 #include <algorithm>
+#include <time.h>
+
 #include <cmath>
 #include <cstdio>
 
@@ -429,10 +431,20 @@ float shi_tomasi_at(const Image8& img, int x, int y, int grad_window) {
   return half_tr - disc;
 }
 
+namespace {
+double prof_now_ms() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return double(ts.tv_sec) * 1e3 + double(ts.tv_nsec) / 1e6;
+}
+}  // namespace
+
 std::vector<Keypoint> detect_keypoints_fast(const Image8& img,
-                                            const DetectorConfig& cfg) {
+                                            const DetectorConfig& cfg,
+                                            DetectProfile* prof) {
   std::vector<Keypoint> result;
   if (img.empty()) return result;
+  const double t_start = prof ? prof_now_ms() : 0.0;
   const int w = img.width, h = img.height;
   const int border = std::max(cfg.border, 5);  // FAST needs 3, Sobel one more
 
@@ -451,6 +463,9 @@ std::vector<Keypoint> detect_keypoints_fast(const Image8& img,
     }
   }
   if (cand.empty()) return result;
+
+  const double t_fast = prof ? prof_now_ms() : 0.0;
+  if (prof) { prof->fast_ms = t_fast - t_start; prof->candidates = int(cand.size()); }
 
   // 2. Suppress within nms_radius, strongest first. Sparse candidates make this
   // a sort plus an occupancy stamp rather than a neighbourhood scan per pixel.
@@ -478,6 +493,9 @@ std::vector<Keypoint> detect_keypoints_fast(const Image8& img,
     taken[size_t(yi) * w + xi] = 1;
     kept.push_back(kp);
   }
+
+  const double t_nms = prof ? prof_now_ms() : 0.0;
+  if (prof) { prof->nms_ms = t_nms - t_fast; prof->suppressed = int(kept.size()); }
 
   // 3. Texture floor, then sub-pixel, then grid bucketing -- all sparse.
   const int cell = std::max(4, cfg.cell);
@@ -521,6 +539,8 @@ std::vector<Keypoint> detect_keypoints_fast(const Image8& img,
     }
     result.insert(result.end(), bucket.begin(), bucket.end());
   }
+  if (prof) prof->refine_ms = prof_now_ms() - t_start - prof->fast_ms
+                             - prof->nms_ms;
   return result;
 }
 

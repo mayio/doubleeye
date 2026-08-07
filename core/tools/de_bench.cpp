@@ -224,6 +224,8 @@ int main(int argc, char** argv) {
   bool sweep = false;
   bool subpixel = false;
   bool both = false;      // run with refinement off and on, for the comparison
+  int fast_thresh = 0;    // 0 = DetectorConfig default
+  bool thresh_sweep = false;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has = i + 1 < argc;
@@ -232,6 +234,8 @@ int main(int argc, char** argv) {
     else if (a == "--sweep") sweep = true;
     else if (a == "--subpixel") subpixel = true;
     else if (a == "--both") both = true;
+    else if (a == "--fast-threshold" && has) fast_thresh = std::atoi(argv[++i]);
+    else if (a == "--thresh-sweep") thresh_sweep = true;
     else { std::fprintf(stderr, "unknown argument '%s'\n", a.c_str()); return 2; }
   }
 
@@ -265,6 +269,7 @@ int main(int argc, char** argv) {
   std::printf("%zu scenes from %s\n", scenes.size(), dir.c_str());
 
   DetectorConfig det;
+  if (fast_thresh > 0) det.fast_threshold = fast_thresh;
   MatchConfig cfg;
   cfg.lambda = cfg.gamma = -0.1f;
   cfg.iterations = 20;
@@ -276,26 +281,36 @@ int main(int argc, char** argv) {
       sweep ? std::vector<float>{0.f, 0.05f, 0.10f, 0.20f, 0.30f}
             : std::vector<float>{min_margin};
 
+  // Raising the FAST threshold is the cheapest budget lever there is: 8 -> 12
+  // saves 30% of preprocessing time for 12% of the keypoints on the Jetson. That
+  // trade is only acceptable if the keypoints it discards were not the ones
+  // carrying correct matches, which needs ground truth to say.
+  const std::vector<int> threshes =
+      thresh_sweep ? std::vector<int>{8, 12, 16, 20, 30}
+                   : std::vector<int>{det.fast_threshold};
+
   std::vector<bool> refine_modes;
   if (both) { refine_modes.push_back(false); refine_modes.push_back(true); }
   else refine_modes.push_back(subpixel);
 
-  std::printf("\n%-9s %-7s %-8s %8s %8s %9s %8s %9s %9s %9s %9s\n",
-              "right/c", "margin", "subpix", "kp_r", "edges", "correct",
-              "prec", "recall", "medErr", "|e|<=.5", "ms/scene");
-  for (int rd : densities) {
-    for (float mm : margins) {
-      for (bool sp : refine_modes) {
-        std::vector<Row> rows;
-        for (const Scene& s : scenes)
-          rows.push_back(run_one(s, det, rd, mm, cfg, sp));
-        Row t = total(rows);
-        std::printf("%-9d %-7.2f %-8s %8d %8d %9d %8.3f %9.3f %9.3f %8.1f%% "
-                    "%9.2f\n",
-                    rd > 0 ? rd : det.per_cell, mm, sp ? "on" : "off",
-                    t.kp_r, t.edges, t.e.tp, t.e.prec(), t.e.recall(),
-                    t.e.median_inlier_err(), 100.0 * t.e.frac_half(),
-                    (t.ms + t.refine_ms) / double(scenes.size()));
+  std::printf("\n%-7s %-9s %-7s %-8s %8s %9s %8s %9s %9s %9s\n",
+              "fastTh", "right/c", "margin", "subpix", "kp_r", "correct",
+              "prec", "recall", "medErr", "|e|<=.5");
+  for (int th : threshes) {
+    DetectorConfig d2 = det;
+    d2.fast_threshold = th;
+    for (int rd : densities) {
+      for (float mm : margins) {
+        for (bool sp : refine_modes) {
+          std::vector<Row> rows;
+          for (const Scene& s : scenes)
+            rows.push_back(run_one(s, d2, rd, mm, cfg, sp));
+          Row t = total(rows);
+          std::printf("%-7d %-9d %-7.2f %-8s %8d %9d %8.3f %9.3f %9.3f %8.1f%%\n",
+                      th, rd > 0 ? rd : d2.per_cell, mm, sp ? "on" : "off",
+                      t.kp_r, t.e.tp, t.e.prec(), t.e.recall(),
+                      t.e.median_inlier_err(), 100.0 * t.e.frac_half());
+        }
       }
     }
   }

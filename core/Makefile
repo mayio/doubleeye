@@ -27,11 +27,12 @@ OBJS    := $(BUILD)/preproc.o $(BUILD)/match.o
 TOOL    := $(BUILD)/de_preprocess
 MATCHER := $(BUILD)/de_match
 BENCH   := $(BUILD)/de_bench
+PROF    := $(BUILD)/de_profile
 TESTBIN := $(BUILD)/test_preproc
 TESTMAT := $(BUILD)/test_match
 
 .PHONY: all clean test
-all: $(TOOL) $(MATCHER) $(BENCH)
+all: $(TOOL) $(MATCHER) $(BENCH) $(PROF)
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -46,6 +47,9 @@ $(MATCHER): tools/de_match.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
 
 $(BENCH): tools/de_bench.cpp $(OBJS)
+	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
+
+$(PROF): tools/de_profile.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
 
 $(TESTBIN): tests/test_preproc.cpp $(OBJS)

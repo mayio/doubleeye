@@ -531,3 +531,78 @@ order I would try them:
 What should not happen is quietly shipping the recommended configuration and
 discovering the frame drops on the vehicle. It is off by default and the flags are
 opt-in.
+
+## Where the 21 ms goes, and what the two levers actually buy
+
+`de_profile` times the three detector stages and sweeps resolution. Jetson, MAXN,
+`full_on`, 40 frames, medians, per image for the detector stages:
+
+| resolution | kp/img | FAST cand | stage 1 FAST | stage 2 NMS | stage 3 refine | census | match | pair | %budget |
+|---|---|---|---|---|---|---|---|---|---|
+| 848x480 | 1075 | 22200 | 11.34 | 4.93 | 4.28 | 0.22 | 5.11 | 25.89 | 77.7% |
+| 424x240 | 278 | 6946 | 3.36 | 1.46 | 1.95 | 0.05 | 0.98 | 7.81 | 23.4% |
+| 282x160 | 118 | 2638 | 1.39 | 0.51 | 0.58 | 0.02 | 0.34 | 2.85 | 8.6% |
+
+Stage 1 is 55% of detection, not the overwhelming majority I assumed from "it
+touches every pixel while the rest is sparse". NMS and refinement are 45% between
+them, because FAST nominates 22200 candidates per image to produce 1075 keypoints:
+95% of them are discarded only after both sparse stages have paid for them.
+
+Throughput is 26-31 Mpx/s across the three resolutions, so preprocessing is
+essentially pixel-bound and resolution scales as expected.
+
+### The FAST threshold is the better lever
+
+Nobody had tried it. The threshold of 8 was chosen against the DENSE detector, on
+the grounds that it keeps 96% of its keypoints at 1.45x the speed. That is a
+quality comparison, not a budget one.
+
+Jetson preprocessing, concurrent, 40 pairs:
+
+| fast_threshold | keypoints/img | preprocessing ms/pair | %budget |
+|---|---|---|---|
+| 8 (current) | 1074 | 26.75 | 80.3% |
+| **12** | 947 | **18.84** | **56.5%** |
+| 16 | 761 | 14.58 | 43.7% |
+| 20 | 611 | 11.39 | 34.2% |
+| 30 | 375 | 7.91 | 23.7% |
+
+And against ground truth, at the recommended matcher configuration, raising it
+costs correct matches roughly in proportion while leaving quality alone:
+
+| fast_threshold | correct | precision | median inlier err | within 0.5 px |
+|---|---|---|---|---|
+| 8 | 1601 | 0.725 | 0.167 px | 94.5% |
+| 12 | 1441 | 0.724 | 0.167 px | 94.7% |
+| 16 | 1344 | 0.725 | 0.167 px | 94.2% |
+| 20 | 1211 | 0.717 | 0.167 px | 94.0% |
+| 30 | 932 | 0.721 | 0.167 px | 95.5% |
+
+Precision is flat to within 0.008 and sub-pixel accuracy does not move at all.
+The threshold buys time by discarding keypoints, not by discarding *good* ones,
+and there is no cliff anywhere in the range.
+
+### Threshold beats resolution, clearly
+
+Normalising both levers against what they cost:
+
+| change | time saved | cost |
+|---|---|---|
+| fast_threshold 8 -> 12 | 30% | 10% of correct matches |
+| fast_threshold 8 -> 20 | 57% | 24% of correct matches |
+| 848x480 -> 424x240 | 70% | 74% of keypoints |
+
+Raising the threshold is a much better trade at every point, and it has a second
+advantage the table does not show: median inlier disparity error stays at 0.167 px
+across the whole threshold sweep, whereas halving resolution halves the pixels a
+disparity is measured in and so costs depth precision directly.
+
+So resolution is the lever of last resort, not the second option. Recommendation:
+`fast_threshold = 12`, which puts preprocessing at 56.5% of budget and should
+leave the recommended matcher configuration fitting inside 30 Hz.
+
+**One measurement still missing.** "Should leave it fitting" is arithmetic, not a
+measurement: 18.84 ms preprocessing plus something under the 8.84 ms the matcher
+costs at threshold 8, since fewer keypoints means fewer edges. Given that the last
+two budget estimates in this document were both wrong, that total needs measuring
+end to end with `--fast-threshold 12` before anything is switched on.

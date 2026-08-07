@@ -182,10 +182,26 @@ bool is_fast_corner(const Image8& img, int x, int y, int threshold);
 // over the window. The sparse counterpart of shi_tomasi_response().
 float shi_tomasi_at(const Image8& img, int x, int y, int grad_window);
 
+// Per-stage timing for the FAST detector, filled only when a pointer is passed.
+//
+// Detection is 21 ms of a 33.3 ms stereo frame budget on the TX2, so which of the
+// three stages that is matters more than the total. Guessing is not useful here:
+// the dense FAST scan touches every pixel while everything after it is sparse, so
+// the intuition is that stage 1 dominates, and the intuition should be checked.
+struct DetectProfile {
+  double fast_ms = 0;      // stage 1: dense FAST scan + Shi-Tomasi at candidates
+  double nms_ms = 0;       // stage 2: sort and occupancy suppression
+  double refine_ms = 0;    // stage 3: texture floor, sub-pixel, grid bucketing
+  int candidates = 0;      // FAST corners before suppression
+  int suppressed = 0;      // survivors of NMS
+  double total_ms() const { return fast_ms + nms_ms + refine_ms; }
+};
+
 // FAST for candidates, Shi-Tomasi at candidates only. Same output contract as
 // detect_keypoints(): thresholded, suppressed, grid-bucketed, sub-pixel refined.
 std::vector<Keypoint> detect_keypoints_fast(const Image8& img,
-                                            const DetectorConfig& cfg);
+                                            const DetectorConfig& cfg,
+                                            DetectProfile* prof = nullptr);
 
 // Fraction of grid cells that ended up with at least one keypoint. A single
 // number for "is the coverage actually spread out", which is the property the
