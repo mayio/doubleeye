@@ -68,7 +68,10 @@ systematic and random error cannot be separated once the vehicle is moving.
 
 - [~] **1. Capture pipeline and timestamp sanity** — substantially done; only
       hardware-sync verification outstanding (needs a moving scene)
-- [ ] 2. IMU Allan variance (multi-hour static recording) ← next
+- [!] 2. IMU Allan variance — **BLOCKED: no IMU on the system.** `nvs_bmi160` and
+      its device-tree node are stock L4T leftovers with nothing behind them;
+      verified by bus scan and CHIP_ID read. See
+      [doc/01-hardware.md](doc/01-hardware.md).
 - [ ] 3. Calibration — intrinsics/extrinsics, then hand-eye + time offset (Kalibr)
 - [ ] 4. Static bags vs laser rangefinder — walls at 1, 2, 3 m
 - [ ] 5. Drive
