@@ -345,18 +345,43 @@ below.
 ### What you need on the laptop
 
 There is no ROS on this machine and there cannot be ROS 1: the desktop runs Ubuntu
-24.04, where ROS 1 does not exist. So rviz2, from ROS 2 Jazzy:
+24.04 (noble), where ROS 1 does not exist. So rviz2, from ROS 2 Jazzy, which is the
+distribution for noble.
 
-    sudo apt install software-properties-common curl -y
-    sudo add-apt-repository universe -y
-    sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-      -o /usr/share/keyrings/ros-archive-keyring.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-    http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
-      | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+`curl` is not installed here and `wget` is, so this uses wget. The `ros2-apt-source`
+package is the current way in and it carries the signing key itself, which avoids
+hand-placing a keyring:
+
+    sudo apt update && sudo apt install -y software-properties-common
+    sudo add-apt-repository -y universe
+
+    wget -O /tmp/ros2-apt-source.deb \
+      "https://github.com/ros-infrastructure/ros-apt-source/releases/download/1.2.0/ros2-apt-source_1.2.0.noble_all.deb"
+    sudo apt install -y /tmp/ros2-apt-source.deb
     sudo apt update
-    sudo apt install ros-jazzy-rviz2 ros-jazzy-ros2bag \
-                     ros-jazzy-rosbag2-storage-mcap -y
+
+    sudo apt install -y ros-jazzy-desktop python3-numpy
+
+`ros-jazzy-desktop` is about 2 GB and is deliberately the recommendation over a
+hand-picked set: it contains rviz2, rclpy, tf2_ros's Python bindings, rosbag2 and
+the message packages all at once. Assembling a minimal list means discovering the
+missing one at the point where a topic silently fails to appear.
+
+`python3-numpy` is not optional and is easy to miss. `de_live_ros2.py` imports both
+rclpy and numpy, rclpy comes from apt against the system Python 3.12, and the
+system Python here has no numpy.
+
+### Which Python runs which script
+
+They are not interchangeable, and getting it wrong produces a bare ImportError:
+
+| script | interpreter | why |
+|---|---|---|
+| `desktop/bag_to_ros2.py` | `.venv/bin/python` | needs `rosbags`, which is in the venv. Needs no ROS at all. |
+| `desktop/de_live_ros2.py` | system `python3`, after sourcing ROS 2 | needs `rclpy`, which apt installs against the system Python |
+
+The venv is built with `include-system-site-packages = false`, so it cannot see
+rclpy, and the live script cannot run inside it.
 
 Nothing is needed on the Jetson. That is deliberate: the capture path stays
 ROS-free because preprocessing is already the binding constraint on memory
