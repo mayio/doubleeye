@@ -81,7 +81,19 @@ across them is the same: **on this platform the expensive failures are silent.**
 | **Mean intensity cannot see the projector** — it moved 1.8 DN across the same A/B. Local contrast is the only valid metric | [03](03-obstacles.md) obstacle 12 |
 | Census descriptors are **3.3× degenerate** under the projector (338 distinct for 1115 keypoints) — exactly the ambiguity MASDA's uniqueness constraint is for | [06](06-preprocessing.md) |
 | MASDA finds **+46% matches over nearest-neighbour with the projector on, +13% with it off** — the advantage scales with ambiguity, as argued | [09](09-matching.md) |
-| MASDA costs **1.67 ms**, 5% of the frame budget against 26 ms for preprocessing — "MASDA is not the bottleneck" confirmed | [09](09-matching.md) |
+| MASDA costs **5.04 ms on the Jetson**, 15% of the budget. The 1.67 ms previously quoted was a **desktop** number compared against the Jetson's budget, because `core/` had never been built on the Jetson at all | [03](03-obstacles.md) obstacle 15 |
+| The whole pipeline **does not fit 30 Hz untuned**: preprocessing 26.54 ms + matching 5.14 ms = 95% of budget, and the recommended matcher config alone pushes it to 106% | [09](09-matching.md) |
+| **Raising `fast_threshold` 8 → 12 saves 30% of preprocessing for 10% of matches**, at flat precision and unchanged sub-pixel error. Nobody had tried it: 8 was chosen against the *dense* detector, a quality argument, never a budget one | [09](09-matching.md) |
+| Threshold beats resolution decisively: 8→20 costs 24% of matches for 57% of the time, where halving resolution costs **74%** of keypoints for 70%. Resolution also costs depth precision directly | [09](09-matching.md) |
+| Tuned, everything on, the pipeline is **23.07 ms — 69% of budget** with *more* keypoints than the untuned baseline | [09](09-matching.md) |
+| **Detector repeatability, not the matcher, is the ceiling on real data**: only 44–51% of left keypoints have any right keypoint within 1 px of their true correspondence, which accounts for 102 of Teddy's 132 errors | [09](09-matching.md) |
+| Over-proposing on the right + gating on score margin is better than baseline on **both** axes: +183 correct *and* +0.012 precision | [09](09-matching.md) |
+| The **score margin is the confidence worth exporting** — precision by quartile 0.169 / 0.286 / 0.391 / 0.659 — and it is nearly free, since the solver already computes a top-2 reduction | [09](09-matching.md) |
+| **Local contrast is not useful and the intuition is backwards**: it predicts correctness *negatively* (bottom quartile 0.669, top 0.506), because high contrast means crowded candidates. Do not raise `min_local_std` | `article/contrast_study.py` |
+| `lambda` and `gamma` were **transposed** relative to the article. Harmless only because every run held them equal, which stereo has good reason not to | [09](09-matching.md) |
+| Seeded synthetic scenes were **not reproducible at all** — `hash()` is salted per process — and it cost a published conclusion that flipped sign between runs | [03](03-obstacles.md) obstacle 16 |
+| **Sub-pixel disparity by parabola fit on the inter-window cost** more than halves the tail outside half a pixel, 12.7% → 5.5% | [09](09-matching.md) |
+| 2 of 6 CPU cores are used and the **GPU has never been touched** (load 0). Four cores and the whole GPU are idle | [10](10-architecture.md) |
 | The messages **never formally converge** yet the decision is stable from 20 iterations; oscillation is real but currently benign | [09](09-matching.md) |
 | Belief **sign is not a match/no-match decision** — gating on it returned zero matches on tied problems whose optimum matched everything | [09](09-matching.md) |
 | **Coarse-to-fine does not help here**: k is already 2.7 not 100–200, and inflating it 5× leaves the answer *identical*, so there are no false candidates to remove | [09](09-matching.md) |

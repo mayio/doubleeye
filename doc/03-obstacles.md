@@ -446,3 +446,96 @@ working session. A narrower alternative, sufficient for the power-mode work
 alone, is `NOPASSWD: /usr/sbin/nvpmodel, /usr/bin/jetson_clocks`.
 
 Revoke with `sudo rm /etc/sudoers.d/99-nvidia-nopasswd`.
+
+## 15. The Jetson was running x86-64 object files, and `core/` had never been built there
+
+`tools/deploy.sh` synced only `jetson/`. `core/` had reached the Jetson at some
+point by hand, along with its `build/` directory full of **desktop** object files.
+The first native build there failed with
+
+    /usr/bin/ld: build/preproc.o: Relocations in generic ELF (EM: 62)
+
+EM 62 is x86-64. That is the tell, and it is not obvious from the message.
+
+The consequence was worse than the build failure: `de_match` had never been built
+on the Jetson at all, so its timing had only ever been measured on the desktop and
+then quoted against the Jetson's 33.3 ms frame budget. The real figure is **5.04 ms,
+not 1.67 ms** — 15% of the budget rather than 5%. Match counts agree across the two
+machines (620 against 615), so it was the same work on slower cores.
+
+Fixed: `deploy.sh` syncs and builds `core/` too, and excludes `*/build` and `*.o`
+from the tarball so host objects can never cross again.
+
+**Generalisation.** A number measured on one machine and compared against another
+machine's budget is not a measurement. Two later estimates in this project failed
+the same way: 6.4 ms predicted against 8.84 ms measured, and 27 ms predicted against
+23.07 ms measured. Every ratio scaled from the desktop was wrong.
+
+## 16. Python's `hash()` is salted per process, so seeded scenes were not reproducible
+
+`rng_for(name)` seeded a generator from `abs(hash(("masda", name)))`. String hashing
+is salted per process (PEP 456), so every run drew a **different** scene:
+deterministic within one process, irreproducible across two.
+
+Nothing about it looked wrong. It cost a published conclusion. The ordering-factor
+experiment was reported from a single scene as "+6, it helps", then re-measured as
+"−3, it hurts" — and those two runs were not comparing the same geometry. The real
+answer over five seeds is +1.0 ± 2.1, i.e. no effect, against a scene-to-scene spread
+of ±31.
+
+Fixed: seed from `zlib.crc32`, which is stable across processes, versions and
+machines. And report a spread over seeds whenever the effect might be smaller than
+the variance, which is most of the time.
+
+## 17. `rs_ir_stream` prints usage and exits 0 on an unknown flag
+
+Obstacle 13 again, in a new place. `rs_ir_stream --streams both` is not a valid
+invocation — it emits both channels by default and `--single` restricts to ir1 — so
+it printed usage to stderr and exited **0**. Downstream, `de_pipe` reported
+`0 pairs`, which is indistinguishable from a camera that produced nothing.
+
+If a consumer reports no frames, read the producer's stderr before suspecting
+hardware.
+
+## 18. A pipe hides the exit status, including in one-liners written to check builds
+
+    make -s 2>&1 | tail -8 && echo BUILD_OK
+
+printed `BUILD_OK` over a compile error, because `&&` tests `tail`'s status, not
+`make`'s. This is obstacle 13's shape in a command typed to *guard against*
+obstacle 13.
+
+Use `set -o pipefail`, or read `${PIPESTATUS[0]}`.
+
+## 19. Assertions that pass without testing anything
+
+Two instances, years apart in spirit and hours apart in fact:
+
+- The frame-gap analysis reported `0 missing (0.000%)` while 34% of frames were
+  lost, because it compared a host-side counter against itself (obstacle 7).
+- A regression test written *today* to catch transposed `lambda`/`gamma` asserted
+  `a.size() >= b.size()` where both were 0. It passed. The descriptors intended to
+  score at chance actually differed in 48 of 48 bits, so both configurations
+  rejected everything.
+
+A test whose assertion holds trivially is worse than no test, because it is
+evidence. Assert exact values, and check the numbers in the failure message look
+like the quantity you meant to measure.
+
+## 20. Smaller traps, recorded so they are not rediscovered
+
+- **Most vexing parse.** `Image8 img(int(w), int(h));` declares a *function*. Braces
+  fix it: `Image8 img{int(w), int(h)};`
+- **rviz2 needs a transform for its fixed frame.** With none it draws nothing and
+  says so only obliquely. Both viewer paths publish an identity `map` →
+  `camera_link`.
+- **Depth must be NaN where absent, not 0.** Zero reads as a measurement of zero
+  range.
+- **rosbag2 writer version.** `VERSION_LATEST` is 9; a bag written newer than the
+  installed ROS 2 understands fails on the version rather than on anything useful.
+  Pinned to 8.
+- **`curl` is not installed on the desktop.** `wget` is. Install recipes copied from
+  the web assume curl.
+- **Two Pythons.** `rclpy` comes from apt against the system Python 3.12; `rosbags`
+  lives in the venv, which is built with `include-system-site-packages = false`. The
+  live script cannot run in the venv and the converter needs it.
