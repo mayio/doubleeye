@@ -196,6 +196,48 @@ the firmware — but it cannot currently be demultiplexed, because the per-frame
 laser label is unavailable. Settings used for the recordings above: auto-exposure
 off, exposure 1500 µs, gain 64.
 
+## Calibration set, collected 2026-08-07
+
+First real session, collected with `live_view.py --collect calib01`: a 9×6
+interior-corner board at 25 mm on A4, glued to rigid backing, emitter **off**,
+exposure 1500 µs, gain 96.
+
+| | `calib01` | `cbtest` |
+|---|---|---|
+| pairs collected | 82 | 74 |
+| **detected in BOTH channels** | **82 / 82 (100%)** | **74 / 74 (100%)** |
+| ir1 only / ir2 only / neither | 0 / 0 / 0 | 0 / 0 / 0 |
+| board image area, median | 5.7% of frame | 7.1% |
+| board image area, min–max | 1.0% – 29.0% | 6.2% – 17.6% |
+| board width, median | 186 px of 848 | 215 px |
+| centre spread | x 154 px, y 93 px | — |
+
+**100% detection in both channels settles the printing question.** The IR-ink
+concern from [05-operations.md](05-operations.md) does not apply to this print —
+the board is fully visible at 850 nm. Worth knowing for reprints: whatever printer
+produced this one is fine.
+
+The auto-collect duplicate rejection did its job: 82 accepted poses out of a
+several-minute session, rather than hundreds of near-identical frames.
+
+**The honest caveat is scale.** Median board area is 5.7% of the frame and median
+width 186 px of 848 — small, and exactly the A4 limitation predicted in
+[05-operations.md](05-operations.md#a4-is-honestly-marginal--know-why-before-relying-on-it).
+A larger board would constrain focal length and distortion better. This set is
+good enough to run the calibration toolchain end to end and to get a usable first
+answer; treat the resulting numbers as provisional until either a bigger target or
+a tighter working distance is used, and compare against the factory values above
+rather than assuming an improvement.
+
+## Development link throughput
+
+Desktop ↔ Jetson over WiFi: **22.4 MB/s** measured (10 MB via `dd` over ssh).
+
+Better than assumed, and it changed a design decision: full 848×480 Y8 on both IR
+channels at 10 Hz is 8 MB/s, so `rs_ir_stream` sends raw uncompressed frames. No
+encoding, no downscaling, nothing to go wrong — and no cycles spent on the TX2,
+which has none to spare.
+
 ## Not yet measured
 
 - Anything involving the IMU. Bring-up step 2.

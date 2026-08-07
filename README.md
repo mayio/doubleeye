@@ -6,6 +6,9 @@ correspondence, on a D435 IR pair + Jetson TX2 indoor RC platform.
 Design context, decisions and rejected options: `~/Documents/doubleeye/doubleeye_plan.md`.
 That document is the spec. This README tracks state only.
 
+**Start with [doc/07-tools.md](doc/07-tools.md)** for what every tool does and how
+to run it, and [doc/README.md](doc/README.md) for a findings-at-a-glance table.
+
 **Detailed engineering record in [doc/](doc/)** — components, exact software
 versions, build and deploy procedure, every obstacle hit with its diagnosis, and
 the measured baselines. Start with [doc/03-obstacles.md](doc/03-obstacles.md) if

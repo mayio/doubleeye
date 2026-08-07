@@ -31,6 +31,7 @@ Deliberately minimal — **nothing was installed via `apt`**.
 | Change | Detail | Reversible by |
 |---|---|---|
 | SSH public key | ed25519 from the desktop added to `~/.ssh/authorized_keys` | removing the key line |
+| `dialout` group | `nvidia` added, so `/dev/ttyACM0` and `/dev/ttyTHS2` are openable without sudo | `sudo gpasswd -d nvidia dialout` |
 | Passwordless sudo | `/etc/sudoers.d/99-nvidia-nopasswd`, mode 0440 | `sudo rm /etc/sudoers.d/99-nvidia-nopasswd` |
 | Power mode | `sudo nvpmodel -m 0` (MAXN) — **does NOT persist**, see below | `sudo nvpmodel -m 3` |
 | Clocks | `sudo jetson_clocks` — **does NOT persist**, by design | reboot |
@@ -75,6 +76,11 @@ online, all at 2.04 GHz minimum. See [05-operations.md](05-operations.md).
 | Python | 3.12.3 |
 | numpy | 2.5.1 |
 | matplotlib | 3.11.1 |
+| opencv-python | 5.0.0 — the **full** build, not headless |
+
+OpenCV is the full wheel deliberately: `opencv-python-headless` has no `imshow`,
+and `live_view.py` needs a window. It is desktop-only, from pip inside the venv,
+so it never touches the Jetson's skewed OpenCV.
 
 Installed by us: a virtualenv at `.venv` with `desktop/requirements.txt`, and an
 ed25519 SSH keypair plus `~/.ssh/config`.
@@ -225,7 +231,8 @@ doubleeye/
 │   └── src/
 │       ├── rs_common.hpp      # metadata table, clocks, power-state check
 │       ├── rs_probe.cpp       # device health gate — run this first
-│       └── rs_ir_capture.cpp  # instrumented IR capture
+│       ├── rs_ir_capture.cpp  # instrumented IR capture
+│       └── rs_ir_stream.cpp   # raw frames to stdout, feeds the live view
 ├── desktop/           # Python 3.12, numpy + matplotlib. Runs on the dev box.
 │   ├── capture_report.py
 │   └── requirements.txt
