@@ -42,8 +42,10 @@ leftovers with no hardware behind them, and are not the IMU.
 
 The **camera half of step 3 is under way**: it needs no IMU. A calibration set
 exists — `bags/calib01`, 82 poses, **100% detected in both channels** — collected
-with the live view. The rosbag converter now exists and its output is
-validated against real ROS Melodic, so what remains is running Kalibr itself. See
+with the live view. A stereo calibration has been run
+(OpenCV, not Kalibr, which is only needed for camera-IMU): fx reproduces factory
+to 0.61% and zero distortion is confirmed. One action outstanding — measure the
+printed square pitch, since the numbers indicate a 95.9% print scale. See
 [04-baseline-measurements.md](04-baseline-measurements.md#calibration-set-collected-2026-08-07)
 for the set's properties and its one real caveat, which is board size.
 
@@ -81,6 +83,8 @@ across them is the same: **on this platform the expensive failures are silent.**
 | Reading a tty without `stty raw` returned 288 bytes where the real rate was 7.2 kB/s — indistinguishable from a dead link | [08](08-imu.md) |
 | A calibration set of 82 poses reached **100% detection in both channels**, so the print is IR-visible | [04](04-baseline-measurements.md) |
 | ...yet a third of those poses had a **non-flat board**. Detection success says nothing about planarity | [04](04-baseline-measurements.md) |
+| Calibration reproduces factory fx to **0.61%** and confirms zero distortion — freeing radtan made the fit *worse* | [04](04-baseline-measurements.md) |
+| The baseline is off by **+4.3%** while fx is off by 0.61%. Only the baseline scales with square size, so the **print is ~95.9% scale**, not the camera | [04](04-baseline-measurements.md) |
 | cmake 3.10 accepts neither `-S`/`-B` nor `--build -j`; given either it **prints usage and exits without building** | [03](03-obstacles.md) obstacle 13 |
 
 ## Conventions used throughout

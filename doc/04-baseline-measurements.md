@@ -276,6 +276,48 @@ the tail removed. Use `bags/calib01_flat`.
 edges, onto something genuinely rigid, and grip it by the backing well away from
 the printed region.
 
+## Stereo calibration from `calib01_flat`
+
+Run with `desktop/stereo_calibrate.py`, 49 poses, OpenCV `stereoCalibrate`. Not
+Kalibr: Kalibr's irreplaceable capability is *camera-IMU* calibration, and for
+intrinsics, distortion and the stereo extrinsic OpenCV solves the same problem in
+seconds with no ROS.
+
+| | factory (ASIC) | pinhole fit | radtan fit |
+|---|---|---|---|
+| reprojection RMS | — | **0.269 px** | 0.271 px |
+| fx | 430.551 | 427.937 (**−0.61%**) | 432.855 |
+| cx | 427.381 | 427.035 (−0.35 px) | 424.373 |
+| cy | 243.158 | 243.397 (+0.24 px) | 239.745 |
+| baseline | 49.883 mm | 52.030 mm (**+4.30%**) | 51.969 mm |
+
+Three conclusions.
+
+**Distortion really is zero.** Freeing the radtan coefficients made the
+reprojection error *worse* (0.271 vs 0.269 px). Extra parameters that fail to
+improve the fit are absorbing noise, so the ASIC's claim of zero distortion is
+confirmed rather than merely trusted. Use the pinhole numbers.
+
+**Rectification confirmed independently.** The fitted R is **0.034° from
+identity** and the off-axis translation is 0.069 / 0.168 mm against a 52 mm
+baseline. That is what a rectified pair looks like, arrived at from images rather
+than read out of the device.
+
+**The baseline disagreement is almost certainly the ruler, not the camera.** This
+follows from which quantity depends on what: `fx` is an angle ratio in pixels and
+is *independent* of the assumed square size, while the recovered translation
+scales with it exactly. fx agrees to −0.61% while the baseline is off by +4.30% —
+seven times as much — so the scale input is the suspect.
+
+If the factory baseline is right, the true pitch is **23.97 mm, not 25.0**, a print
+scale of **95.9%**. That is very much what a printer does with "fit to page" left
+on. **Measure the board across all ten columns and re-run with the measured
+pitch**; if it reads ~240 mm rather than 250, both numbers reconcile at once and
+nothing is wrong with the camera.
+
+The remaining −0.61% on fx is consistent with the small-target caveat: median
+board coverage was ~5% of frame, which under-constrains focal length.
+
 ## Development link throughput
 
 Desktop ↔ Jetson over WiFi: **22.4 MB/s** measured (10 MB via `dd` over ssh).

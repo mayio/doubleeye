@@ -104,6 +104,7 @@ python3 -m venv .venv && .venv/bin/pip install -r desktop/requirements.txt
 | `check_planarity.py` | Was the board actually flat? |
 | `view_keypoints.py` | Is the preprocessing output well distributed? |
 | `make_checkerboard.py` | Produce a printable target |
+| `stereo_calibrate.py` | Calibrate the pair and compare to factory |
 | `bag_to_rosbag.py` | Produce a rosbag for Kalibr |
 | `mavlink_probe.py` | What is the Pixhawk actually saying? |
 
@@ -202,6 +203,23 @@ the 3.3× degeneracy under the projector was found.
 Scale-exact PDF. Prints the matching Kalibr yaml and OpenCV `Size`. Printing
 cautions — laser not inkjet, 100% scale, measure the result, mount rigid — are in
 [05-operations.md](05-operations.md).
+
+### `stereo_calibrate.py`
+
+```sh
+.venv/bin/python desktop/stereo_calibrate.py bags/calib01_flat --pitch-mm 24.0
+```
+
+Fits both a pinhole model (distortion fixed at zero, matching what the ASIC
+claims) and a radtan model, and compares both against the factory values. If
+radtan fails to improve the reprojection error, its coefficients are fitting
+noise and the pinhole numbers are the ones to use.
+
+It also separates a scale error from an optics error, which is the useful part:
+`fx` does not depend on the assumed square size while the recovered baseline
+scales with it exactly, so a baseline that disagrees far more than fx implicates
+the ruler. It reports the pitch implied by the factory baseline so the print scale
+can be checked directly.
 
 ### `bag_to_rosbag.py`
 
