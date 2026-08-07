@@ -487,3 +487,47 @@ true of the *Python* experiment, whose detector returns integer positions. The C
 detector already has `subpixel = true`, so its error was 0.196 px before any of
 this, and the headroom was a third of what I claimed. The gain is real but it is
 in the tail, not the median.
+
+## The frame budget does not close at 30 Hz
+
+Measured end to end on the Jetson at MAXN, 848x480, `full_on`, 120 pairs:
+
+| stage | ms per stereo pair | share of 33.3 ms |
+|---|---|---|
+| preprocessing, L and R concurrent (`--parallel`) | 26.54 | 79.6% |
+| MASDA, baseline config | 5.14 | 15.4% |
+| **total, baseline** | **31.68** | **95.1%** |
+| MASDA, `--right-density 6 --min-margin 0.10` | 8.84 | 26.5% |
+| **total, recommended config** | **35.38** | **106.2%** |
+
+So the accuracy work does not fit at 30 Hz. The recommended configuration is over
+budget, and the baseline leaves 1.6 ms of headroom on the mean while the worst
+observed preprocessing pair alone is 33.2 ms, which is the whole budget before a
+single message is passed.
+
+Two things this settles.
+
+**The matcher is not the problem and optimising it further is not the answer.**
+Detection is 20.98 ms of the 21.24 ms per frame; Census is 0.25 ms. Even reducing
+MASDA to zero leaves preprocessing at 80% of the budget. The `_seg_max_excluding`
+port that was on the backlog would have been busywork twice over: the C++ already
+does an O(1) `max excluding one element` through `Top2`, since that trick is a
+NumPy workaround for something a plain loop does naturally, and the matcher is not
+where the time goes.
+
+**The choice is a real engineering trade, not a tuning question.** Options, in the
+order I would try them:
+
+1. Run the matcher at a lower rate than the camera. Correspondence at 15 Hz with a
+   66.7 ms budget is comfortable (53% with the recommended config) and for
+   odometry on an indoor vehicle 15 Hz is likely adequate. This costs nothing but
+   latency.
+2. Attack detection, which is 63% of the budget on its own. FAST already replaced
+   the dense Shi-Tomasi scan; the remaining candidates are the Shi-Tomasi scoring
+   of FAST corners and the NMS. Neither has been profiled at that level.
+3. Drop resolution. 640x480 is 75% of the pixels of 848x480 and preprocessing is
+   close to pixel-bound.
+
+What should not happen is quietly shipping the recommended configuration and
+discovering the frame drops on the vehicle. It is off by default and the flags are
+opt-in.
