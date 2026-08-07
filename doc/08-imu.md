@@ -15,6 +15,28 @@ Two links, both verified at ~100% clean MAVLink framing:
 115200 on TELEM2 framed only 83.5% with nonsense system ids, so 57600 is right.
 The `nvidia` user needed adding to `dialout` to open either.
 
+## Role of the autopilot — narrow, on purpose
+
+ArduPilot is **not** the controller for this project. Its jobs are:
+
+1. **IMU** — the sensor the plan's gyro rotation compensation and gravity/ground-plane
+   work depend on.
+2. **Motor-controller interface** and **SBUS** — the actuator bridge.
+
+Control commands will come from the **Jetson**, later. In the interim the vehicle
+is driven by RC.
+
+This matters for parameter decisions: ArduPilot is not running loops whose tuning
+we care about, so filter and rate settings can be chosen for *measurement quality*
+rather than control quality. `INS_GYRO_FILTER` below is exactly that call.
+
+**Current state: completely stationary — there is no battery yet.** Which is the
+ideal condition for bring-up step 2 rather than an obstacle: Allan variance
+requires a long *static* recording, and a bench-powered vehicle that cannot move
+and has no motor vibration is precisely the environment it wants. The vibration
+concerns in the plan, and the untested-under-vibration caveat on arrival jitter,
+all wait for the battery.
+
 ## Toolchain — isolated venv, nothing system-wide
 
 Pip installs on the Jetson go into a dedicated virtualenv. Never `--user`, never
@@ -81,32 +103,66 @@ With `INS_LOG_BAT_MASK = 1` now set, the SD log carries **raw, unfiltered IMU at
 the sensor rate**, which is what Allan variance needs and which no MAVLink stream
 can provide. `INS_LOG_BAT_LGIN = 20` (ms).
 
-Bring-up step 2 is therefore unblocked on the hardware side. What remains is a
-multi-hour static recording and the Allan-variance analysis itself.
+### Logging verified live, not just enabled
 
-## Flagged, deliberately not changed: `INS_GYRO_FILTER = 4 Hz`
+`LOG_DISARMED` was **0**, meaning ArduPilot logs only while armed. On a stationary
+bench setup that produces **no log at all** — a failure that only shows up after
+leaving it running for hours. Set to **1**, and it took effect without a reboot.
 
-Found while reading parameters, and it matters more than anything else here.
+Confirmed empirically rather than assumed: log 1 grew from 3.49 MB to 5.11 MB over
+45 s.
 
-A **4 Hz low-pass on the gyro** removes almost all of the high-frequency content
-the plan relies on. Rotation compensation over a 33 ms interval is concerned with
-motion up to tens of Hz; filtering at 4 Hz smears exactly that. `INS_ACCEL_FILTER`
-is 10 Hz, less critical since the plan uses the accelerometer only for
-gravity/attitude.
+| | |
+|---|---|
+| write rate | **36 kB/s** |
+| per hour | **~130 MB** |
+| a 4-hour static log | ~520 MB |
 
-Not changed, because unlike the parameters above it **affects the vehicle's
-control loops** rather than only what gets reported. That is a decision to take
-deliberately, not a side effect of instrumenting the IMU.
+`ardupilot_config.py --watch-log 45` performs that check.
 
-Two things soften it:
+**Operational caveat.** `LOG_DISARMED=1` means it logs *continuously*, ~3 GB/day.
+Fine for a bench session, but it will fill the card if left indefinitely. Set it
+back to 0 once the Allan-variance recording is done.
 
-- `INS_LOG_BAT_MASK` logging is taken **pre-filter**, so the SD log for Allan
-  variance is unaffected by this setting. The noise parameters will be right.
-- It only degrades the *streamed* gyro used at runtime.
+### Recording for Allan variance
 
-If the streamed gyro is going to drive rotation compensation, this needs raising
-(20–50 Hz is typical) — and if ArduPilot is only ever an IMU here rather than a
-controller, there is little reason not to.
+The conditions are already right — stationary, bench-powered, no motor vibration.
+Leave the Pixhawk powered and undisturbed for several hours, then pull the newest
+`.bin` from the card and analyse it.
+
+One thing to verify from the log itself rather than trust from parameters:
+`INS_LOG_BAT_OPT` semantics (sensor-rate versus pre/post-filter) differ between
+firmware versions, so **read the achieved sample rate out of the log's own
+timestamps** before believing any noise figure derived from it. Allan variance is
+meaningless if the true rate is not what was assumed.
+
+Bring-up step 2 is otherwise unblocked.
+
+## Filters raised: `INS_GYRO_FILTER` 4 → 20 Hz
+
+Found at **4 Hz**, which removes almost all of the content the plan depends on:
+rotation compensation over a 33 ms interval concerns motion up to tens of Hz, and
+a 4 Hz low-pass smears exactly that. `INS_ACCEL_FILTER` was 10 Hz.
+
+Initially flagged rather than changed, because filter settings affect control
+loops. That concern dissolves given the autopilot's actual role above — it is not
+running loops whose tuning matters here — so both were raised:
+
+| Parameter | Before | After |
+|---|---|---|
+| `INS_GYRO_FILTER` | 4 Hz | **20 Hz** |
+| `INS_ACCEL_FILTER` | 10 Hz | **20 Hz** |
+
+**20 Hz, not higher,** for a specific reason: the MAVLink stream is capped at
+~50 Hz by `SCHED_LOOP_RATE`, so Nyquist is 25 Hz. Filtering above that would alias
+into the streamed samples. 20 Hz sits just under it and is also ArduPilot's own
+Copter default, so it is well-trodden.
+
+Reversible in one command if the vehicle ever does need tighter filtering:
+`--set INS_GYRO_FILTER=4 INS_ACCEL_FILTER=10`.
+
+Note this affects only the *streamed and standard-logged* gyro. `INS_LOG_BAT`
+batch logging is taken pre-filter, so Allan variance is unaffected either way.
 
 ## Reading the stream by hand
 
@@ -131,8 +187,10 @@ under-reports the rate.
 
 ## Still open
 
-- **Multi-hour static log** for Allan variance, then the analysis.
-- **`INS_GYRO_FILTER`** decision, above.
+- **Multi-hour static log** for Allan variance, then the analysis. Conditions are
+  right now; this is the natural thing to do while there is no battery.
+- **`INS_LOG_BAT_OPT`** semantics, to be confirmed from the log's real sample rate.
+- **Reset `LOG_DISARMED` to 0** afterwards, or the card fills at ~3 GB/day.
 - **Time alignment.** `TIMESYNC` is present in the stream, which is ArduPilot's own
   mechanism for relating its clock to a companion's — relevant to step 3, and it
   interacts with the finding that camera frames are stamped on the Jetson clock

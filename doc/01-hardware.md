@@ -11,7 +11,7 @@
 | — Storage | 28 GB eMMC root | ~13 GB free. A 120 s recording saving every 30th frame is ~63 MB. |
 | USB 3 link | `/sys/devices/3530000.xhci/usb2/2-1`, `speed=5000`, descriptor `3.2` | Camera connection |
 | IMU | **Pixhawk 2.4.8** running **ArduPilot**, powered and reachable | `/dev/ttyACM0` (USB) and `/dev/ttyTHS2` @ 57600 (TELEM2). Streams IMU at only 3.2 Hz as configured. |
-| RC car | — | Indoor platform, apartment scale (0.3–3 m) |
+| RC car | **no battery yet — stationary** | Indoor platform, apartment scale (0.3–3 m). Driven by RC initially; control from the Jetson later. |
 | WiFi | TX2 at `192.168.2.114`, ~100 ms RTT | Development link only, not used in the data path |
 
 ### Why the IR streams and not RGB

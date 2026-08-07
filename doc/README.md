@@ -33,10 +33,10 @@ cannot be verified in the current configuration — see
 Bring-up step 2 (IMU Allan variance) is **unblocked on the hardware side.** The
 Pixhawk runs ArduPilot, the IMU stream is up from 3.2 Hz to 53 Hz, the SD card is
 confirmed present and healthy, and raw pre-filter IMU logging is enabled. What
-remains is a multi-hour static log and the analysis. One thing needs a decision:
-`INS_GYRO_FILTER` is **4 Hz**, which removes most of what rotation compensation
-needs — flagged rather than changed, since it affects control loops. See
-[08-imu.md](08-imu.md).
+remains is a multi-hour static log and the analysis. Gyro and accel filters were raised from
+4/10 Hz to 20 Hz, and logging is verified live at ~130 MB/hour. Since the vehicle
+has no battery and cannot move, the conditions for a static Allan-variance
+recording are already ideal. See [08-imu.md](08-imu.md).
 Separately, the `nvs_bmi160` module and its device-tree node are stock L4T
 leftovers with no hardware behind them, and are not the IMU.
 
@@ -74,7 +74,8 @@ across them is the same: **on this platform the expensive failures are silent.**
 | The Pixhawk reports "PX4 FMU v2.x" over USB but **runs ArduPilot** — the descriptor is the bootloader identity | [01](01-hardware.md) |
 | `nvs_bmi160` and its device-tree node are **stock leftovers with no hardware behind them** — not the IMU | [01](01-hardware.md) |
 | IMU stream was capped at 50 Hz not by baud or USB but by **`SCHED_LOOP_RATE`** — nothing streams faster than the loop emitting it | [08](08-imu.md) |
-| **`INS_GYRO_FILTER = 4 Hz`** strips almost everything rotation compensation depends on | [08](08-imu.md) |
+| **`INS_GYRO_FILTER` was 4 Hz**, stripping almost everything rotation compensation depends on; raised to 20 Hz | [08](08-imu.md) |
+| **`LOG_DISARMED = 0`** means a stationary bench setup logs *nothing* — a multi-hour recording would have produced an empty card | [08](08-imu.md) |
 | Reading a tty without `stty raw` returned 288 bytes where the real rate was 7.2 kB/s — indistinguishable from a dead link | [08](08-imu.md) |
 | A calibration set of 82 poses reached **100% detection in both channels**, so the print is IR-visible | [04](04-baseline-measurements.md) |
 | ...yet a third of those poses had a **non-flat board**. Detection success says nothing about planarity | [04](04-baseline-measurements.md) |

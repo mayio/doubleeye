@@ -152,6 +152,52 @@ def check_sd(master, timeout=6.0):
     print("  no SYS_STATUS received within the timeout")
 
 
+def list_logs(master, timeout=8.0):
+    """List the SD-card logs.
+
+    This is the empirical check that logging actually happens. On a stationary
+    bench setup it is easy to set every parameter correctly and still produce no
+    log at all, because ArduPilot only logs while armed unless LOG_DISARMED=1.
+    Discovering that after leaving it running for hours is the failure worth
+    avoiding.
+    """
+    print("\n--- SD-card logs ---")
+    # Drain anything queued, then request. The log protocol is a session: without
+    # a closing LOG_REQUEST_END the autopilot ignores the next LOG_REQUEST_LIST,
+    # so a second listing silently returns nothing and looks like "no logs".
+    while master.recv_match(type="LOG_ENTRY", blocking=False) is not None:
+        pass
+    master.mav.log_request_list_send(
+        master.target_system, master.target_component, 0, 0xFFFF)
+    entries = {}
+    deadline = time.time() + timeout
+    total = None
+    while time.time() < deadline:
+        msg = master.recv_match(type="LOG_ENTRY", blocking=True, timeout=1.0)
+        if msg is None:
+            continue
+        total = msg.num_logs
+        if msg.num_logs == 0:
+            break
+        entries[msg.id] = (msg.size, msg.time_utc)
+        if len(entries) >= msg.num_logs:
+            break
+    master.mav.log_request_end_send(
+        master.target_system, master.target_component)
+    if total == 0 or not entries:
+        print("  no logs on the card yet.")
+        print("  With LOG_DISARMED=1 a log should start within seconds of boot.")
+        print("  If none appears, power-cycle the Pixhawk so the parameter takes")
+        print("  effect, then re-check.")
+        return None
+    print(f"  {total} log(s) on the card; newest few:")  # session already ended
+    for log_id in sorted(entries)[-4:]:
+        size, _ = entries[log_id]
+        print(f"    log {log_id:<4d} {size / 1e6:8.2f} MB")
+    newest = max(entries)
+    return newest, entries[newest][0]
+
+
 def apply(master, assignments):
     print("\n--- setting parameters ---")
     for item in assignments:
@@ -194,6 +240,10 @@ def main():
                     help="ignored for USB CDC; 57600 for TELEM2")
     ap.add_argument("--report", action="store_true", help="read and assess")
     ap.add_argument("--check-sd", action="store_true")
+    ap.add_argument("--logs", action="store_true",
+                    help="list SD-card logs; proves logging is really happening")
+    ap.add_argument("--watch-log", type=float, default=0.0, metavar="SECONDS",
+                    help="list logs, wait, list again — confirms one is GROWING")
     ap.add_argument("--set", dest="assignments", nargs="+", metavar="NAME=VALUE",
                     default=None)
     args = ap.parse_args()
@@ -208,6 +258,26 @@ def main():
         check_sd(master)
     if args.assignments:
         apply(master, args.assignments)
+    if args.logs or args.watch_log:
+        first = list_logs(master)
+        if args.watch_log and first:
+            print(f"\n  waiting {args.watch_log:.0f} s to see whether it grows...")
+            time.sleep(args.watch_log)
+            second = list_logs(master)
+            if second and second[0] == first[0]:
+                delta = second[1] - first[1]
+                rate = delta / args.watch_log
+                print(f"\n  log {second[0]} grew {delta / 1e3:.1f} kB in "
+                      f"{args.watch_log:.0f} s -> {rate / 1e3:.1f} kB/s")
+                if delta <= 0:
+                    print("  NOT growing. Logging is not actually running.")
+                else:
+                    print("  Logging is live. A multi-hour static recording for")
+                    print(f"  Allan variance would be roughly "
+                          f"{rate * 3600 / 1e6:.0f} MB/hour.")
+            elif second:
+                print(f"\n  a NEW log appeared ({second[0]}), so logging is live")
+                print("  but rotating. Check LOG_FILE_DSRMROT.")
     return 0
 
 
