@@ -13,6 +13,7 @@ duplicates it; this is the engineering record that sits underneath it.
 
 | Document | Contents |
 |---|---|
+| [TODO.md](TODO.md) | **What to do next**, ordered by what unblocks the most |
 | [01-hardware.md](01-hardware.md) | Components in the system, what each is for, what is still missing |
 | [02-software-environment.md](02-software-environment.md) | Exact versions on both machines, what was installed vs. pre-existing, how to build and deploy |
 | [03-obstacles.md](03-obstacles.md) | Every problem hit, with symptom → diagnosis → resolution. The most useful document here. |
