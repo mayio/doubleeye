@@ -79,19 +79,19 @@ convergence guarantee.
 Unchanged:
 
 $$
-\begin{align}
+\begin{aligned}
 \beta_{ij} &= s(i,j) - \max_{k \neq i} \rho_{kj} \\
 \rho_{ij}  &= s(i,j) - \max_{k \neq j} \beta_{ik}
-\end{align}
+\end{aligned}
 $$
 
 with the non-association options competing inside those maxima:
 
 $$
-\begin{align}
+\begin{aligned}
 \rho_{ij}  &= s(i,j) - \max\!\left(\lambda,\; \max_{k \neq j} \beta_{ik}\right) \\
 \beta_{ij} &= s(i,j) - \max\!\left(\gamma,\; \max_{k \neq i} \rho_{kj}\right)
-\end{align}
+\end{aligned}
 $$
 
 $\rho_{ij}$ reads as: how good is associating $i$ with $j$, after subtracting the
@@ -574,7 +574,7 @@ d_{i'} - d_i \;>\; x_{i'} - x_i
 $$
 
 A crossing requires the disparity difference to exceed the horizontal separation.
-With disparities confined to a range of width $d_\max - d_\min$, crossings are only
+With disparities confined to a range of width $d_{\max} - d_{\min}$, crossings are only
 possible between keypoints closer together in $x$ than that width, and get rarer as
 the range tightens.
 
