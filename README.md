@@ -6,6 +6,12 @@ correspondence, on a D435 IR pair + Jetson TX2 indoor RC platform.
 Design context, decisions and rejected options: `~/Documents/doubleeye/doubleeye_plan.md`.
 That document is the spec. This README tracks state only.
 
+**Detailed engineering record in [doc/](doc/)** — components, exact software
+versions, build and deploy procedure, every obstacle hit with its diagnosis, and
+the measured baselines. Start with [doc/03-obstacles.md](doc/03-obstacles.md) if
+something is behaving strangely; on this platform the expensive failures are all
+silent.
+
 ## Layout
 
 The plan's portability rule is load-bearing, so it is encoded in the directory
@@ -69,10 +75,20 @@ systematic and random error cannot be separated once the vehicle is moving.
 
 ## Step 1
 
-Build on the Jetson (seconds — two files against a prebuilt `.so`):
+Build and deploy from the desktop in one step (seconds — two translation units
+against a prebuilt `.so`):
 
 ```sh
-cd ~/doubleeye/jetson && cmake -S . -B build && cmake --build build -j6
+./tools/deploy.sh
+```
+
+Or on the Jetson directly. Note cmake there is **3.10**, which supports neither
+`-S`/`-B` (3.13+) nor `--build -j` (3.12+) — passing either makes cmake print its
+usage and exit *without building*:
+
+```sh
+mkdir -p ~/doubleeye/jetson/build && cd ~/doubleeye/jetson/build
+cmake .. && make -j6
 ```
 
 Then, **before measuring anything** — this is not optional, see finding 1:
