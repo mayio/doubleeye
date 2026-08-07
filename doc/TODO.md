@@ -8,15 +8,56 @@ actionable list.
 
 ---
 
+## 0. Architecture: what runs on the GPU, what runs on the CPU — **first priority**
+
+**Deferred by decision, not forgotten.** Mario has postponed this; it stays at the
+top of the list because it constrains the shape of everything after it.
+
+The reasoning, the measurements and a proposed answer are already written up in
+[10-architecture.md](10-architecture.md). Nothing needs to be re-derived; what is
+outstanding is the decision itself.
+
+**Why it is first.** The system is meant to grow object tracking, SLAM, ground
+detection and trajectory estimation. Each of those consumes the sparse feature set,
+and the boundary between GPU and CPU determines what the stages hand each other.
+Choosing it is one page of reasoning; retrofitting it means rewriting the interfaces
+between every stage.
+
+**What is already measured**, so the decision does not need new data:
+
+- 2 of 6 CPU cores in use. GPU load 0. 23.07 ms of a 33.3 ms budget.
+- Dense per-pixel work is 12.29 ms of that (FAST 8.30, NMS 3.74, Census 0.25).
+- Sparse irregular work is 7.86 ms (MASDA).
+
+**The proposal on the table**: GPU owns the image plane, CPU owns the graph, and the
+interface between them is a compact keypoint-plus-descriptor buffer rather than an
+image. No CUDA yet, because there is 10 ms of slack and four idle cores, and because
+a CNN for object detection would want the GPU to itself.
+
+**The one piece of work that should not wait for the decision**, since it is
+expensive either way: every tool currently re-runs detection itself. With four
+consumers that is four redundant detections. Make the sparse feature set a single
+first-class output with one producer.
+
+---
+
 ## 1. Needs you, physically — nothing else can proceed past these
 
 ### 1.1 Get a laser rangefinder — **the binding constraint**
 
 Bring-up step 4: measure walls at 1, 2 and 3 m.
 
-**Why it is first.** It does not only gate driving, it gates *matcher development*.
-The only quality measures available right now are match count, objective, and median
-|dy|, and none of them can distinguish "removed 100 wrong matches" from "removed 100
+**Update, 2026-08-07: this no longer gates matcher development.** Middlebury supplies
+ground truth on eight real scenes, and `core/tools/de_bench.cpp` runs the C++ matcher
+and detector against it, so match correctness is measurable today without a
+rangefinder. Every recent matcher change was validated that way. What the rangefinder
+still gates is depth accuracy *on this camera*, on this baseline, in these rooms --
+absolute scale, calibration drift, and anything about the vehicle's own environment.
+That is real, but it is validation rather than development.
+
+**Why it was first.** It gated *matcher development*, back when the only quality
+measures available were match count, objective, and median
+|dy|, none of which can distinguish "removed 100 wrong matches" from "removed 100
 right ones". Two prior experiments (coarse-to-fine and smoothness) both came back
 negative and **neither result is conclusive** for exactly this reason — see
 [09-matching.md](09-matching.md). Until a disparity can be checked against a known
