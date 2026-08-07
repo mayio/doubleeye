@@ -270,6 +270,31 @@ std::vector<Match> match_brute_force(const std::vector<Keypoint>& left,
                                      const std::vector<uint64_t>& desc_right,
                                      const MatchConfig& cfg);
 
+// Sub-pixel disparity refinement.
+//
+// Disparity currently comes out as the difference of two INDEPENDENTLY refined
+// keypoint positions. Each is sub-pixel, but their errors are uncorrelated, so
+// the difference is noisier than either -- and nothing in it ever looked at how
+// well the two windows actually line up.
+//
+// This fits a parabola to the intensity matching cost at d-1, d and d+1 and
+// takes its vertex, which is what the two positions cannot give you: a
+// measurement of the alignment BETWEEN the windows rather than of each window
+// against its own image.
+//
+// Cost is SAD over a (2*half+1) square window. Three window evaluations per
+// match, run once after matching, so it does not touch the message passing.
+// Matches too near a border to evaluate all three are left untouched.
+//
+// The vertex offset is clamped to +-0.5 px. A parabola fit to three samples of a
+// non-parabolic cost can put its vertex arbitrarily far away when the curvature
+// is near zero, and an unclamped fit is how sub-pixel refinement silently makes
+// disparity worse.
+void refine_disparity(const Image8& left, const Image8& right,
+                      const std::vector<Keypoint>& kl,
+                      const std::vector<Keypoint>& kr,
+                      std::vector<Match>* matches, int half = 3);
+
 // Sum of s(i,j) over a matching, the quantity all three methods are trying to
 // maximise (subject to lambda/gamma for leaving nodes unmatched).
 float matching_objective(const std::vector<Match>& matches,

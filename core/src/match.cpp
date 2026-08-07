@@ -764,6 +764,51 @@ SmoothResult match_iterated_smoothness(const std::vector<Keypoint>& left,
   return out;
 }
 
+
+void refine_disparity(const Image8& left, const Image8& right,
+                      const std::vector<Keypoint>& kl,
+                      const std::vector<Keypoint>& kr,
+                      std::vector<Match>* matches, int half) {
+  if (!matches || left.empty() || right.empty()) return;
+  const int W = left.width, H = left.height;
+
+  // SAD between the left window at (xl, y) and the right window at (xl - d, y).
+  // The pair is rectified, so both windows sit on the same row by construction.
+  const auto cost = [&](int xl, int y, int d) -> long {
+    const int xr = xl - d;
+    if (xl - half < 0 || xl + half >= W) return -1;
+    if (xr - half < 0 || xr + half >= W) return -1;
+    if (y - half < 0 || y + half >= H) return -1;
+    long acc = 0;
+    for (int v = -half; v <= half; ++v) {
+      for (int u = -half; u <= half; ++u) {
+        acc += std::abs(int(left.at(xl + u, y + v)) -
+                        int(right.at(xr + u, y + v)));
+      }
+    }
+    return acc;
+  };
+
+  for (Match& m : *matches) {
+    if (m.left < 0 || m.right < 0) continue;
+    if (size_t(m.left) >= kl.size() || size_t(m.right) >= kr.size()) continue;
+    const int xl = int(kl[size_t(m.left)].x + 0.5f);
+    const int y = int(kl[size_t(m.left)].y + 0.5f);
+    const int d0 = int(std::lround(m.disparity));
+    const long c0 = cost(xl, y, d0);
+    const long cm = cost(xl, y, d0 - 1);
+    const long cp = cost(xl, y, d0 + 1);
+    if (c0 < 0 || cm < 0 || cp < 0) continue;      // too near a border
+
+    const double denom = double(cm) - 2.0 * double(c0) + double(cp);
+    if (denom <= 0.0) continue;   // not a minimum here; leave it alone
+    double off = 0.5 * (double(cm) - double(cp)) / denom;
+    if (off > 0.5) off = 0.5;
+    if (off < -0.5) off = -0.5;
+    m.disparity = float(double(d0) + off);
+  }
+}
+
 float matching_objective(const std::vector<Match>& matches,
                          const MatchConfig& cfg, int n_left, int n_right) {
   float total = 0.f;

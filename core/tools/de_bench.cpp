@@ -68,8 +68,21 @@ bool load_scene(const std::string& dir, const std::string& name, Scene* s) {
 
 struct Eval {
   int matches = 0, scorable = 0, tp = 0, fp = 0, unscorable = 0, matchable = 0;
+  int within_half = 0;            // |error| <= 0.5 px, the sub-pixel question
+  std::vector<float> err;         // |d_est - d_true| over scorable matches
   double prec() const { return scorable ? double(tp) / scorable : 0.0; }
   double recall() const { return matchable ? double(tp) / matchable : 0.0; }
+  // Median over the INLIERS only. Including gross mismatches would let the
+  // median wander with the outlier rate, which is a different question from how
+  // precisely a correct match is localised.
+  double median_inlier_err() {
+    std::vector<float> v;
+    for (float e : err) if (e <= kTol) v.push_back(e);
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    return double(v[v.size() / 2]);
+  }
+  double frac_half() const { return tp ? double(within_half) / tp : 0.0; }
 };
 
 // Same rules as masda_middlebury.evaluate_real, deliberately, so the two sides
@@ -91,8 +104,16 @@ Eval evaluate(const Scene& s, const std::vector<Keypoint>& kl,
   for (const Match& x : m) {
     const float d_true = gt_at(kl[x.left]);
     if (d_true <= 0.f) { ++e.unscorable; continue; }
-    const float d_est = kl[x.left].x - kr[x.right].x;
-    if (std::fabs(d_est - d_true) <= kTol) ++e.tp; else ++e.fp;
+    // x.disparity rather than recomputing from the keypoints: refinement writes
+    // its result there, and recomputing would silently discard it.
+    const float d_err = std::fabs(x.disparity - d_true);
+    e.err.push_back(d_err);
+    if (d_err <= kTol) {
+      ++e.tp;
+      if (d_err <= 0.5f) ++e.within_half;
+    } else {
+      ++e.fp;
+    }
   }
   e.scorable = e.tp + e.fp;
 
@@ -127,12 +148,12 @@ double now_ms() {
 
 struct Row {
   Eval e;
-  double ms = 0;
+  double ms = 0, refine_ms = 0;
   int kp_l = 0, kp_r = 0, edges = 0;
 };
 
 Row run_one(const Scene& s, DetectorConfig det, int right_density,
-            float min_margin, MatchConfig cfg) {
+            float min_margin, MatchConfig cfg, bool subpixel) {
   cfg.max_disparity = s.dmax;
   cfg.min_disparity = 1.f;
   CensusConfig ccfg;
@@ -157,7 +178,11 @@ Row run_one(const Scene& s, DetectorConfig det, int right_density,
                            [&](const Match& x) { return x.margin < min_margin; }),
             m.end());
   }
+  const double t2 = now_ms();
+  if (subpixel) refine_disparity(s.left, s.right, kl, kr, &m);
+  const double t3 = now_ms();
   Row r;
+  r.refine_ms = t3 - t2;
   r.e = evaluate(s, kl, kr, m);
   r.ms = t1 - t0;
   r.kp_l = int(kl.size());
@@ -172,7 +197,10 @@ Row total(const std::vector<Row>& rows) {
     t.e.matches += r.e.matches; t.e.scorable += r.e.scorable;
     t.e.tp += r.e.tp; t.e.fp += r.e.fp;
     t.e.unscorable += r.e.unscorable; t.e.matchable += r.e.matchable;
-    t.ms += r.ms; t.kp_l += r.kp_l; t.kp_r += r.kp_r; t.edges += r.edges;
+    t.ms += r.ms; t.refine_ms += r.refine_ms;
+    t.kp_l += r.kp_l; t.kp_r += r.kp_r; t.edges += r.edges;
+    t.e.within_half += r.e.within_half;
+    t.e.err.insert(t.e.err.end(), r.e.err.begin(), r.e.err.end());
   }
   return t;
 }
@@ -194,12 +222,16 @@ int main(int argc, char** argv) {
   int right_density = 0;
   float min_margin = 0.f;
   bool sweep = false;
+  bool subpixel = false;
+  bool both = false;      // run with refinement off and on, for the comparison
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has = i + 1 < argc;
     if (a == "--right-density" && has) right_density = std::atoi(argv[++i]);
     else if (a == "--min-margin" && has) min_margin = float(std::atof(argv[++i]));
     else if (a == "--sweep") sweep = true;
+    else if (a == "--subpixel") subpixel = true;
+    else if (a == "--both") both = true;
     else { std::fprintf(stderr, "unknown argument '%s'\n", a.c_str()); return 2; }
   }
 
@@ -244,19 +276,27 @@ int main(int argc, char** argv) {
       sweep ? std::vector<float>{0.f, 0.05f, 0.10f, 0.20f, 0.30f}
             : std::vector<float>{min_margin};
 
-  std::printf("\n%-9s %-7s %8s %8s %8s %9s %8s %9s %9s\n",
-              "right/c", "margin", "kp_r", "edges", "matches", "correct",
-              "prec", "recall", "ms/scene");
+  std::vector<bool> refine_modes;
+  if (both) { refine_modes.push_back(false); refine_modes.push_back(true); }
+  else refine_modes.push_back(subpixel);
+
+  std::printf("\n%-9s %-7s %-8s %8s %8s %9s %8s %9s %9s %9s %9s\n",
+              "right/c", "margin", "subpix", "kp_r", "edges", "correct",
+              "prec", "recall", "medErr", "|e|<=.5", "ms/scene");
   for (int rd : densities) {
     for (float mm : margins) {
-      std::vector<Row> rows;
-      for (const Scene& s : scenes)
-        rows.push_back(run_one(s, det, rd, mm, cfg));
-      const Row t = total(rows);
-      std::printf("%-9d %-7.2f %8d %8d %8d %9d %8.3f %9.3f %9.2f\n",
-                  rd > 0 ? rd : det.per_cell, mm, t.kp_r, t.edges,
-                  t.e.matches, t.e.tp, t.e.prec(), t.e.recall(),
-                  t.ms / double(scenes.size()));
+      for (bool sp : refine_modes) {
+        std::vector<Row> rows;
+        for (const Scene& s : scenes)
+          rows.push_back(run_one(s, det, rd, mm, cfg, sp));
+        Row t = total(rows);
+        std::printf("%-9d %-7.2f %-8s %8d %8d %9d %8.3f %9.3f %9.3f %8.1f%% "
+                    "%9.2f\n",
+                    rd > 0 ? rd : det.per_cell, mm, sp ? "on" : "off",
+                    t.kp_r, t.edges, t.e.tp, t.e.prec(), t.e.recall(),
+                    t.e.median_inlier_err(), 100.0 * t.e.frac_half(),
+                    (t.ms + t.refine_ms) / double(scenes.size()));
+      }
     }
   }
   return 0;

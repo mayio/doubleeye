@@ -490,6 +490,69 @@ void test_lambda_gamma_are_distinct() {
         "gamma is not charged when no RIGHT keypoint is unmatched");
 }
 
+
+// Sub-pixel disparity refinement. Built as a synthetic pair with a known
+// FRACTIONAL shift, since that is the only way to tell a refinement that works
+// from one that merely moves the number.
+void test_refine_disparity() {
+  std::printf("sub-pixel disparity\n");
+  const int W = 120, H = 40;
+  const float true_d = 7.5f;      // deliberately half-way between integers
+
+  // A smooth, non-repeating intensity profile, so the SAD cost has one clean
+  // minimum. A hard edge would give a V-shaped cost whose parabola fit is
+  // meaningless, and random noise would give a cost with no sub-pixel structure
+  // at all.
+  const auto profile = [&](float x) {
+    return 128.0f + 90.0f * std::sin(x * 0.11f) * std::cos(x * 0.037f);
+  };
+  Image8 left(W, H), right(W, H);
+  for (int y = 0; y < H; ++y) {
+    for (int x = 0; x < W; ++x) {
+      left.at(x, y) = uint8_t(std::min(255.f, std::max(0.f, profile(float(x)))));
+      // right(x) == left(x + d), so a feature at xl in the left sits at
+      // xl - d in the right: positive disparity, matching the convention.
+      const float xs = float(x) + true_d;
+      right.at(x, y) = uint8_t(std::min(255.f, std::max(0.f, profile(xs))));
+    }
+  }
+
+  const std::vector<Keypoint> kl = {kp(60.f, 20.f)};
+  const std::vector<Keypoint> kr = {kp(60.f - true_d, 20.f)};
+
+  // Seed the integer disparity on either side of the truth and check refinement
+  // pulls both toward it.
+  for (float seed : {7.0f, 8.0f}) {
+    std::vector<Match> m(1);
+    m[0].left = 0;
+    m[0].right = 0;
+    m[0].disparity = seed;
+    refine_disparity(left, right, kl, kr, &m);
+    const float before = std::fabs(seed - true_d);
+    const float after = std::fabs(m[0].disparity - true_d);
+    check(after < before,
+          "refinement improves disparity from seed " + std::to_string(seed) +
+              " (error " + std::to_string(before) + " -> " +
+              std::to_string(after) + ")");
+    check(after < 0.25f,
+          "refined disparity lands within a quarter pixel of the truth");
+  }
+
+  // The clamp: a match near the border cannot evaluate all three costs, so it
+  // must be left exactly as it was rather than silently refined off a garbage fit.
+  {
+    const std::vector<Keypoint> edge_l = {kp(1.f, 20.f)};
+    const std::vector<Keypoint> edge_r = {kp(0.f, 20.f)};
+    std::vector<Match> m(1);
+    m[0].left = 0;
+    m[0].right = 0;
+    m[0].disparity = 1.f;
+    refine_disparity(left, right, edge_l, edge_r, &m);
+    check(m[0].disparity == 1.f,
+          "a match too near the border is left untouched");
+  }
+}
+
 int main() {
   std::printf("MASDA matcher tests\n\n");
   test_single_pair();
@@ -501,6 +564,7 @@ int main() {
   test_convergence_reporting();
   test_disparity_prior();
   test_margin();
+  test_refine_disparity();
   test_lambda_gamma_are_distinct();
   test_empty_inputs();
   std::printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "ALL PASSED",

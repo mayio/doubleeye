@@ -453,3 +453,37 @@ usually nobody's best candidate, so it goes unmatched whatever gamma says: gamma
 only bites when a right keypoint is genuinely contested, and the extra ones mostly
 are not. The lambda/gamma fix was still worth making, since the naming was wrong
 and the fields are not interchangeable, but this particular payoff is not there.
+
+## Sub-pixel disparity
+
+Disparity was the difference of two independently refined keypoint positions.
+Both are sub-pixel, but their errors are uncorrelated, and nothing in the
+subtraction ever looked at how well the two windows line up. `refine_disparity`
+fits a parabola to the SAD cost between the windows at d-1, d, d+1 and takes its
+vertex: three window evaluations per match, run after matching, so the message
+passing is untouched. The vertex offset is clamped to +-0.5 px, because a parabola
+through three samples of a non-parabolic cost can put its vertex anywhere once the
+curvature approaches zero, and that is how sub-pixel refinement quietly makes
+disparity worse.
+
+Measured on the eight Middlebury scenes, at the recommended configuration:
+
+| refinement | correct | precision | median inlier error | within 0.5 px |
+|---|---|---|---|---|
+| off | 1585 | 0.718 | 0.196 px | 87.3% |
+| **on** | **1601** | **0.725** | **0.167 px** | **94.5%** |
+
+Median inlier error falls 14%, and the share of correct matches localised inside
+half a pixel goes from 87.3% to 94.5% -- the tail outside half a pixel more than
+halves, 12.7% to 5.5%. Correct matches and precision also rise slightly, since a
+few matches sitting just outside the 1 px threshold move inside it.
+
+Jetson agrees: 1583 -> 1599 correct, 0.196 -> 0.167 px, 87.2% -> 94.5%, and the
+refinement does not show up in the timing.
+
+One correction to how I framed this beforehand. I said median disparity error was
+0.50 px and that this was pure integer-versus-quarter-pixel quantisation. That was
+true of the *Python* experiment, whose detector returns integer positions. The C++
+detector already has `subpixel = true`, so its error was 0.196 px before any of
+this, and the headroom was a third of what I claimed. The gain is real but it is
+in the tail, not the median.
