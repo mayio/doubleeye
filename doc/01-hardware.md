@@ -10,7 +10,7 @@
 | — Memory | 8 GB LPDDR4 shared CPU/GPU, EMC up to 1866 MHz | 58.4 GB/s theoretical; the real bottleneck per the plan |
 | — Storage | 28 GB eMMC root | ~13 GB free. A 120 s recording saving every 30th frame is ~63 MB. |
 | USB 3 link | `/sys/devices/3530000.xhci/usb2/2-1`, `speed=5000`, descriptor `3.2` | Camera connection |
-| IMU | **absent** | Not present on the system. See below — this blocks bring-up step 2. |
+| IMU | **Pixhawk 2.4.8**, present but **unpowered / not connected** | Carries the IMU. See below for how to power it. Nothing appears on USB or serial yet. |
 | RC car | — | Indoor platform, apartment scale (0.3–3 m) |
 | WiFi | TX2 at `192.168.2.114`, ~100 ms RTT | Development link only, not used in the data path |
 
@@ -73,10 +73,68 @@ and binds nothing — which is why it produces no IIO device and no error.
 **This blocks bring-up step 2** (IMU Allan variance) and, after it, step 3's
 hand-eye and time calibration.
 
-The one possibility not excluded: an IMU wired to a raw UART. `/dev/ttyTHS1`,
-`ttyTHS2` and `ttyTHS3` exist, and a passive serial device cannot be detected
-without knowing its baud rate and protocol. Nothing suggests one is there, but
-if the IMU is a serial module this is where it would be.
+None of this changes with the Pixhawk: the BMI160 the device tree talks about is
+a different, absent chip. The actual IMU is in the Pixhawk, below.
+
+## The IMU is a Pixhawk 2.4.8 — how to power it
+
+A Pixhawk 2.4.8 is physically connected but **nothing appears on the Jetson**:
+`lsusb` shows only the RealSense, and there are no `/dev/ttyACM*` or
+`/dev/ttyUSB*` nodes. That is consistent with it having no power.
+
+It has three possible power inputs. For our purpose only the first matters.
+
+### 1. Micro-USB — use this
+
+Plug the Pixhawk's micro-USB into a Jetson USB port. That is the whole
+procedure. It powers the flight controller and its sensors from 5 V, draws
+roughly 250 mA (well inside USB limits), and presents a USB CDC-ACM device, so it
+should appear as `/dev/ttyACM0`.
+
+No battery, no power module, no soldering. For reading IMU data on the bench this
+is both the simplest and the correct option.
+
+Two cautions. Clone 2.4.8 boards often have a weak micro-USB socket, so it is a
+poor choice for a vibrating vehicle — see option 2 for that. And USB does **not**
+power the servo rail, which is irrelevant here since we drive nothing.
+
+### 2. POWER port plus a power module — for on-vehicle use
+
+The 6-pin `POWER` port takes the bundled power module, which sits between battery
+and board, feeds the Pixhawk a regulated 5.3 V, and additionally provides
+voltage and current sense. This is the intended flight-power path and is
+mechanically far more robust than micro-USB.
+
+If you go this way, connect the Pixhawk to the Jetson over a `TELEM` UART rather
+than USB — Jetson side that is `/dev/ttyTHS1/2/3`, which do exist. Requires a
+level-appropriate connection and a matching baud rate on both ends.
+
+USB and the power module may be connected **at the same time** safely; the board
+diode-ORs its power inputs.
+
+### 3. Servo rail — avoid
+
+The rail can back-power the board through a BEC, but it is the least protected
+path and depends on jumper and fuse details that vary between clones. There is no
+reason to use it here.
+
+### After it powers up
+
+Expect a `/dev/ttyACM0`. What it speaks depends on firmware (PX4 or ArduPilot,
+unknown until we look) — both talk MAVLink. Tell me once it enumerates and I will
+identify the firmware and IMU, and read samples.
+
+**One recommendation that matters for bring-up step 2.** For Allan variance, do
+**not** stream IMU data over MAVLink. Allan variance needs a long, gap-free
+record at a stable sample rate, and a MAVLink stream over USB drops and re-times
+messages. Instead log on the Pixhawk itself to its SD card at full rate
+(PX4 `.ulg` or ArduPilot `.bin`), then copy the log off. That gives complete,
+hardware-timestamped samples at the sensor's native rate — far better input than
+anything streamed. **This needs an SD card in the Pixhawk.**
+
+MAVLink streaming to the Jetson is the right mechanism for the *runtime* use, the
+plan's gyro rotation compensation, where what matters is low latency rather than
+a perfect record.
 
 ## Still required
 
@@ -84,7 +142,8 @@ Not yet present, needed for the bring-up steps that follow.
 
 | Item | Needed for | Notes |
 |---|---|---|
-| **An IMU** | Steps 2, 3, and all IMU-dependent work in the plan | None is present. See above. The plan's gyro rotation compensation and gravity-vector ground-plane detection both depend on it. |
+| **Power for the Pixhawk** | Steps 2, 3, and all IMU-dependent work | The IMU exists but is unpowered. Micro-USB to the Jetson is enough for bench work. See above. |
+| **SD card for the Pixhawk** | Step 2 — Allan variance | Onboard logging at full rate is much better input than a MAVLink stream. |
 | Laser rangefinder | Step 4 — static ground truth | Walls at 1, 2, 3 m. The plan calls this the only realistic indoor ground truth, and it is enough to verify sub-pixel accuracy. |
 | Calibration target | Step 3 — Kalibr | Checkerboard or AprilGrid. Kalibr with `--time-calibration` runs on Ubuntu 18.04/Melodic, so the old toolchain is an advantage here. |
 | Foam IMU mount | Vibration decoupling | An RC car on hard flooring excites the IMU above Nyquist; MEMS accelerometers rectify that into an apparent bias, tilting the gravity vector speed-dependently in a way that *looks plausible*. |

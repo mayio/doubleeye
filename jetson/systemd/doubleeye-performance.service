@@ -1,0 +1,43 @@
+# Lock the TX2 into MAXN with static max clocks at every boot.
+#
+# Why this is needed rather than optional: in power mode 3 (MAXP_CORE_ARM) with
+# both Denver cores offline and clocks unlocked, 848x480@30 on two IR streams
+# delivers ~18.5 fps instead of 30 -- a 34% loss with no error, no kernel
+# message, and contiguous frame numbers. See doc/03-obstacles.md obstacle 5.
+#
+# Two separate settings have to be reasserted:
+#
+#   nvpmodel      /etc/nvpmodel.conf on this box carries `< PM_CONFIG DEFAULT=3 >`,
+#                 and NVIDIA's own nvpmodel.service applies that at every boot.
+#                 So mode 0 does NOT survive a reboot here; it must be re-set
+#                 after nvpmodel.service has run, hence the ordering below.
+#   jetson_clocks Never persists by design -- it only changes running state.
+#
+# Cost: max clocks means max power draw and heat, which matters on a battery.
+# Disable with `systemctl disable --now doubleeye-performance` when that
+# matters more than capture integrity.
+
+[Unit]
+Description=DoubleEye: lock Jetson power mode (MAXN) and static max clocks
+Documentation=https://github.com/mayio/doubleeye/blob/main/doc/03-obstacles.md
+# Must run AFTER NVIDIA's nvpmodel.service, which would otherwise apply
+# DEFAULT=3 on top of us. nv.service is the per-boot NVIDIA setup both depend on.
+After=nvpmodel.service nv.service
+Wants=nvpmodel.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Capture the as-booted clock settings once, so ExecStop can put them back.
+ExecStartPre=/bin/mkdir -p /var/lib/doubleeye
+ExecStartPre=/bin/sh -c '[ -f /var/lib/doubleeye/l4t_dfs.conf ] || /usr/bin/jetson_clocks --store /var/lib/doubleeye/l4t_dfs.conf'
+
+ExecStart=/usr/sbin/nvpmodel -m 0
+ExecStart=/usr/bin/jetson_clocks
+
+# Leading '-' so a missing or stale stored config cannot wedge the unit.
+ExecStop=-/usr/bin/jetson_clocks --restore /var/lib/doubleeye/l4t_dfs.conf
+
+[Install]
+WantedBy=multi-user.target

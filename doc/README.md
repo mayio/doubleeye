@@ -17,6 +17,7 @@ duplicates it; this is the engineering record that sits underneath it.
 | [02-software-environment.md](02-software-environment.md) | Exact versions on both machines, what was installed vs. pre-existing, how to build and deploy |
 | [03-obstacles.md](03-obstacles.md) | Every problem hit, with symptom → diagnosis → resolution. The most useful document here. |
 | [04-baseline-measurements.md](04-baseline-measurements.md) | Measured numbers, for citation and for regression comparison |
+| [05-operations.md](05-operations.md) | How to record, pull, view, analyse, and print a calibration target |
 
 ## Status at time of writing
 
@@ -26,10 +27,12 @@ unimodal frame-interval distribution. One item remains open: hardware sync
 cannot be verified in the current configuration — see
 [03-obstacles.md](03-obstacles.md), obstacle 7.
 
-Bring-up step 2 (IMU Allan variance) is **blocked**: there is no IMU on the
-system. The `nvs_bmi160` module and device-tree node are stock L4T leftovers with
-no hardware behind them — verified in
-[01-hardware.md](01-hardware.md#there-is-currently-no-imu-on-the-system--verified).
+Bring-up step 2 (IMU Allan variance) is **blocked on powering the Pixhawk
+2.4.8**, which carries the IMU and currently enumerates nowhere. Micro-USB to the
+Jetson is sufficient for bench work — see
+[01-hardware.md](01-hardware.md#the-imu-is-a-pixhawk-248--how-to-power-it).
+Separately, the `nvs_bmi160` module and its device-tree node are stock L4T
+leftovers with no hardware behind them, and are not the IMU.
 
 ## Conventions used throughout
 

@@ -154,12 +154,22 @@ reason than reproducibility: without them the capture is not merely
 **Symptom.** Latent. Obstacle 5 would silently return at the next boot and
 present as a brand-new bug.
 
-**Diagnosis.** `nvpmodel -m 0` persists — it writes the default mode to
-configuration. `jetson_clocks` does not; it only alters the running state.
+**Diagnosis.** Worse than first assumed. `jetson_clocks` does not persist —
+expected, it only alters running state. But **`nvpmodel -m 0` does not persist
+either** on this box: `/etc/nvpmodel.conf` carries `< PM_CONFIG DEFAULT=3 >` and
+NVIDIA's own enabled `nvpmodel.service` reapplies that at every boot. So the
+board returns to the broken mode **3** on every power cycle, not just to unlocked
+clocks. An earlier version of this document had this wrong.
 
-**Resolution.** Not forced at boot, on purpose: max clocks means max power draw,
-and this is a battery-powered vehicle where the plan already treats power as a
-real constraint. That is a policy decision, not something to impose silently.
+**Resolution.** `doubleeye-performance.service`, ordered `After=nvpmodel.service`
+so it reasserts MAXN after NVIDIA's unit has applied `DEFAULT=3`, then locks
+clocks. Installed, enabled, and **verified across a real reboot**: MAXN, 6/6
+cores online, all at 2.04 GHz minimum, unit `active (exited)`.
+
+The cost is real and worth stating: max clocks means max power draw on a battery
+vehicle. `sudo systemctl disable --now doubleeye-performance` turns it off and
+restores the as-booted clocks. The unit source is version-controlled at
+`jetson/systemd/doubleeye-performance.service`.
 
 Instead, both tools now read the power state at startup and print it, warning
 loudly with the measured consequence when the machine is not at full

@@ -32,11 +32,28 @@ Deliberately minimal — **nothing was installed via `apt`**.
 |---|---|---|
 | SSH public key | ed25519 from the desktop added to `~/.ssh/authorized_keys` | removing the key line |
 | Passwordless sudo | `/etc/sudoers.d/99-nvidia-nopasswd`, mode 0440 | `sudo rm /etc/sudoers.d/99-nvidia-nopasswd` |
-| Power mode | `sudo nvpmodel -m 0` (MAXN) — **persists across reboot** | `sudo nvpmodel -m 3` |
-| Clocks | `sudo jetson_clocks` — **does NOT persist across reboot** | reboot, or `jetson_clocks --restore` |
+| Power mode | `sudo nvpmodel -m 0` (MAXN) — **does NOT persist**, see below | `sudo nvpmodel -m 3` |
+| Clocks | `sudo jetson_clocks` — **does NOT persist**, by design | reboot |
+| systemd unit | `/etc/systemd/system/doubleeye-performance.service`, enabled — reapplies both at boot | `sudo systemctl disable --now doubleeye-performance` |
 | Source tree | `~/doubleeye/jetson/` | `rm -rf` |
 | Build output | `~/doubleeye/jetson/build/` → `rs_probe`, `rs_ir_capture` | `rm -rf` |
 | Recordings | `~/bags/` | `rm -rf` |
+
+### Why the power settings need a service
+
+Neither setting survives a reboot, and the `nvpmodel` half is counter-intuitive:
+
+- `/etc/nvpmodel.conf` on this box carries **`< PM_CONFIG DEFAULT=3 >`**, and
+  NVIDIA's own enabled `nvpmodel.service` runs `nvpmodel -f /etc/nvpmodel.conf`
+  at every boot. So the board comes up in mode **3** regardless of what was set
+  at runtime. An earlier version of this document wrongly claimed mode 0
+  persisted; it does not.
+- `jetson_clocks` only alters running state and never persists.
+
+`doubleeye-performance.service` (source in `jetson/systemd/`) is ordered
+`After=nvpmodel.service` so it reasserts MAXN *after* NVIDIA's unit has applied
+the default, then locks clocks. Verified across a real reboot: MAXN, 6/6 cores
+online, all at 2.04 GHz minimum. See [05-operations.md](05-operations.md).
 
 ### Not installed, on purpose
 
