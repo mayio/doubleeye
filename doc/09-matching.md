@@ -601,8 +601,22 @@ So resolution is the lever of last resort, not the second option. Recommendation
 `fast_threshold = 12`, which puts preprocessing at 56.5% of budget and should
 leave the recommended matcher configuration fitting inside 30 Hz.
 
-**One measurement still missing.** "Should leave it fitting" is arithmetic, not a
-measurement: 18.84 ms preprocessing plus something under the 8.84 ms the matcher
-costs at threshold 8, since fewer keypoints means fewer edges. Given that the last
-two budget estimates in this document were both wrong, that total needs measuring
-end to end with `--fast-threshold 12` before anything is switched on.
+### Measured: the whole stack fits at 30 Hz
+
+`de_profile --fast-threshold 12 --right-density 6 --min-margin 0.10`, which is
+every improvement switched on including sub-pixel refinement, Jetson, 40 pairs:
+
+| resolution | kp/img | FAST | NMS | refine | census | match | pair | %budget |
+|---|---|---|---|---|---|---|---|---|
+| **848x480** | 1307 | 8.30 | 3.74 | 2.92 | 0.25 | 7.86 | **23.07** | **69.3%** |
+| 424x240 | 339 | 2.48 | 0.82 | 1.31 | 0.06 | 1.46 | 6.13 | 18.4% |
+
+23.07 ms against 33.3 ms, so about 10 ms of headroom, with more keypoints per
+image than the 848x480 baseline had (1307 against 1075, because the right image is
+over-proposing). My arithmetic guess was ~27 ms; measured is 23.07. Third estimate
+in this document, third time the measurement differed -- but at least this one
+differed in the useful direction.
+
+So: `fast_threshold 12`, `--right-density 6`, `--min-margin 0.10`, sub-pixel on.
+That is the configuration to run, and it now has a measured budget and a
+ground-truth accuracy number behind every part of it.

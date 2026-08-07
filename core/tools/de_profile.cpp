@@ -74,9 +74,15 @@ int main(int argc, char** argv) {
   }
   const std::string bag = argv[1];
   int limit = 30;
+  int fast_thresh = 0;
+  int right_density = 0;
+  float min_margin = 0.f;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--limit" && i + 1 < argc) limit = std::atoi(argv[++i]);
+    else if (a == "--fast-threshold" && i + 1 < argc) fast_thresh = std::atoi(argv[++i]);
+    else if (a == "--right-density" && i + 1 < argc) right_density = std::atoi(argv[++i]);
+    else if (a == "--min-margin" && i + 1 < argc) min_margin = float(std::atof(argv[++i]));
   }
 
   int W = 848, H = 480;
@@ -96,10 +102,13 @@ int main(int argc, char** argv) {
     return 1;
   }
   const int n = std::min(int(nums.size()), limit > 0 ? limit : int(nums.size()));
-  std::printf("bag %s  %dx%d  %d frames of %zu\n\n", bag.c_str(), W, H, n,
-              nums.size());
+  std::printf("bag %s  %dx%d  %d frames of %zu  fast_threshold %d"
+              "  right/cell %d  margin %.2f\n\n", bag.c_str(), W, H, n,
+              nums.size(), fast_thresh > 0 ? fast_thresh : 8,
+              right_density > 0 ? right_density : 3, min_margin);
 
   DetectorConfig det;
+  if (fast_thresh > 0) det.fast_threshold = fast_thresh;
   CensusConfig ccfg;
   MatchConfig cfg;
   cfg.lambda = cfg.gamma = -0.1f;
@@ -118,8 +127,10 @@ int main(int argc, char** argv) {
       if (factor > 1) { a = downsample(a, factor); b = downsample(b, factor); }
 
       DetectProfile pa, pb;
+      DetectorConfig det_r = det;
+      if (right_density > 0) det_r.per_cell = right_density;
       const std::vector<Keypoint> kl = detect_keypoints_fast(a, det, &pa);
-      const std::vector<Keypoint> kr = detect_keypoints_fast(b, det, &pb);
+      const std::vector<Keypoint> kr = detect_keypoints_fast(b, det_r, &pb);
 
       const double t0 = now_ms();
       std::vector<uint64_t> dl(kl.size()), dr(kr.size());
@@ -133,7 +144,12 @@ int main(int argc, char** argv) {
       // comparison silently changes the problem as well as its size.
       MatchConfig mc = cfg;
       mc.max_disparity = cfg.max_disparity / float(factor);
-      const std::vector<Match> m = match_masda(kl, dl, kr, dr, mc, nullptr);
+      std::vector<Match> m = match_masda(kl, dl, kr, dr, mc, nullptr);
+      if (min_margin > 0.f)
+        m.erase(std::remove_if(m.begin(), m.end(),
+                               [&](const Match& x) { return x.margin < min_margin; }),
+                m.end());
+      refine_disparity(a, b, kl, kr, &m);
       const double t2 = now_ms();
       (void)m;
 
