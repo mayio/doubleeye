@@ -361,6 +361,84 @@ def decide(S, belief, lam):
     return out
 
 
+def _seg_max_excluding(vals, idx, n):
+    """Per-segment max with each element's own contribution removed, in O(E).
+
+    This is the whole trick. Both message updates need
+    max_{k != j} over a row (or column), and doing it naively is quadratic in the
+    row length. Computing the segment max, how many elements attain it, and the
+    max strictly below it is enough to answer "max excluding me" exactly:
+
+      * an element below the max sees the max
+      * an element at the max sees the max too, if something else also attains it
+      * otherwise it sees the runner-up
+
+    Ties are handled rather than assumed away, which matters here because
+    near-ties are the regime of interest.
+    """
+    m1 = np.full(n, -np.inf)
+    np.maximum.at(m1, idx, vals)
+    at_max = vals >= m1[idx]              # m1 is the max, so >= means ==
+    cnt = np.zeros(n, np.int64)
+    np.add.at(cnt, idx[at_max], 1)
+    m2 = np.full(n, -np.inf)
+    below = ~at_max
+    if below.any():
+        np.maximum.at(m2, idx[below], vals[below])
+    second = np.where(cnt > 1, m1, m2)
+    return np.where(at_max, second[idx], m1[idx])
+
+
+def to_edges(S):
+    """Dense score matrix -> edge list. Production code would build the edge list
+    directly and never form the matrix; this exists so the sparse and dense
+    solvers can be compared on identical input."""
+    ei, ej = np.nonzero(np.isfinite(S))
+    return ei.astype(np.int64), ej.astype(np.int64), S[ei, ej].astype(np.float64)
+
+
+def masda_sparse(ei, ej, se, m, n, lam=-0.1, gam=-0.1, iters=30, damping=0.4,
+                 eps=1e-5):
+    """MASDA on an edge list: O(T * E) instead of O(T * m * n).
+
+    Identical mathematics to the dense version -- same messages, same damping,
+    same belief, same decision rule. The only change is that work is proportional
+    to the number of candidate associations rather than to the size of the matrix
+    they would sparsely occupy. With ~1400 keypoints per image and ~3200
+    candidates, that is a factor of several hundred in avoided arithmetic.
+    """
+    beta = np.zeros(len(se))
+    rho = np.zeros(len(se))
+    hist = []
+    for _ in range(iters):
+        comp = np.maximum(lam, _seg_max_excluding(beta, ei, m))
+        new_rho = (1 - damping) * (se - comp) + damping * rho
+        comp = np.maximum(gam, _seg_max_excluding(new_rho, ej, n))
+        new_beta = (1 - damping) * (se - comp) + damping * beta
+        delta = max(float(np.abs(new_rho - rho).max()),
+                    float(np.abs(new_beta - beta).max()))
+        rho, beta = new_rho, new_beta
+        hist.append(delta)
+        if delta < eps:
+            break
+
+    belief = beta + rho - se
+    # Same rule as the dense path: order by belief, decide by lambda, one-to-one.
+    order = np.argsort(-belief)
+    used_i = np.zeros(m, bool)
+    used_j = np.zeros(n, bool)
+    out = {}
+    for e in order:
+        if se[e] <= lam:
+            continue
+        i, j = int(ei[e]), int(ej[e])
+        if used_i[i] or used_j[j]:
+            continue
+        out[i] = j
+        used_i[i] = used_j[j] = True
+    return out, np.array(hist)
+
+
 def mutual_nn(S, lam=-0.1, ratio=0.85):
     """Mutual nearest neighbour with a Lowe-style ratio test."""
     m, n = S.shape

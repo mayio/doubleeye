@@ -33,10 +33,9 @@ The short version of the results:
 - But **precision collapses for both methods** in the ambiguous regime.
   Mutual exclusivity is information, and it is real information — it is not enough
   information. That negative result is more useful than the positive one.
-- And the "faster" of the original title **does not hold for a dense-matrix
-  implementation**. Mine is 2× *slower* than scipy's compiled Jonker–Volgenant.
-  The asymptotic advantage is real but only materialises when the sparsity is
-  exploited. I show why, with numbers.
+- On speed, the representation is the whole story. A dense implementation is 2×
+  *slower* than scipy's compiled Jonker–Volgenant; the same algorithm on an edge
+  list is **157–282× faster than JV** at identical quality. Section 6.
 
 Everything here is reproducible from a single self-contained script — no image
 files, so nothing carries a licence, and the scene is generated procedurally so
@@ -420,48 +419,122 @@ is not the property you actually need.
 
 ---
 
-## 6. On "faster" — where the advantage is, and where it is not
+## 6. On "faster" — and why the representation is the whole story
 
-The original post's complexity argument is $O(T \cdot m \cdot n \cdot K)$ against
-Jonker–Volgenant's $O(N^3)$. Let me measure it honestly.
+The complexity argument is $O(T \cdot E)$ against Jonker-Volgenant's $O(N^3)$. It is
+worth measuring rather than asserting, and the first attempt is instructive.
 
-| regime | nodes | edges | MASDA (numpy) | JV (scipy) | speedup |
+**A dense implementation forfeits the entire argument.** Written the obvious way —
+messages held in an $m \times n$ array padded with $-\infty$ — it is *slower* than
+scipy's compiled Jonker-Volgenant:
+
+| regime | nodes | edges | dense MASDA | JV (scipy) | speedup |
 |---|---|---|---|---|---|
-| broadband | 1405 | 3216 | 3893 ms | 1668 ms | **0.4×** |
-| dots | 1614 | 3843 | 5353 ms | 2283 ms | **0.4×** |
-| periodic | 2019 | 4529 | 6622 ms | 3726 ms | **0.6×** |
+| broadband | 1405 | 3216 | 3897 ms | 1607 ms | **0.4×** |
+| dots | 1614 | 3843 | 5336 ms | 2585 ms | **0.5×** |
+| periodic | 2019 | 4529 | 7547 ms | 3898 ms | **0.5×** |
 
-**My implementation is 2× slower than scipy's Jonker–Volgenant.** Two reasons, and
-both are about the implementation rather than the algorithm:
+With $m \approx n \approx 1400$ the matrix holds ~2 million cells and **3216 real
+edges** — a factor of 600 in arithmetic spent on entries that are $-\infty$. The
+$O(T \cdot E)$ bound assumes an edge list; a dense array delivers
+$O(T \cdot m \cdot n)$, and no amount of vectorisation recovers the difference.
 
-1. **It operates on a dense $m \times n$ matrix** padded with $-\infty$. With
-   $m \approx n \approx 1400$ that is ~2 million cells against **3216 real edges** —
-   a factor of 600 in wasted work per iteration. The $O(T \cdot E)$ bound assumes
-   an edge list; a dense matrix gives $O(T \cdot m \cdot n)$.
-2. `top2_excluding` uses a full `argsort` where `argpartition` suffices, adding a
-   $\log n$ factor for no reason.
+### 6.1 The sparse formulation
 
-The asymptotic argument is not wrong — it just does not apply to code that ignores
-the sparsity. For contrast, the same algorithm as a C++ edge-list implementation on
-comparable real data (848×480 IR pair, ~1075 keypoints, 2882 candidate edges, 20
-iterations) runs in **1.67 ms**, against a 33.3 ms frame budget at 30 Hz. There the
-$O(T \cdot E)$ structure is exploited and the cost is negligible — the keypoint
-detector, at 21 ms, dominates it by more than tenfold.
+Hold the messages on the **edges**. The only non-obvious part is that both updates
+need $\max_{k \neq j}$ over a row or column, which naively is quadratic in the row
+length. Three segment reductions answer it exactly in $O(E)$:
 
-So the fair statement is: **MASDA's advantage is that its cost is linear in the
-number of plausible associations, which in a geometrically constrained problem is a
-tiny fraction of $m \times n$.** Realising that requires representing the problem
-sparsely. A dense implementation forfeits the entire argument, and a good compiled
-LAP solver will beat it.
+```python
+def _seg_max_excluding(vals, idx, n):
+    """Per-segment max with each element's own contribution removed, in O(E)."""
+    m1 = np.full(n, -np.inf)
+    np.maximum.at(m1, idx, vals)          # segment max
+    at_max = vals >= m1[idx]              # m1 is the max, so >= means ==
+    cnt = np.zeros(n, np.int64)
+    np.add.at(cnt, idx[at_max], 1)        # how many attain it
+    m2 = np.full(n, -np.inf)
+    below = ~at_max
+    if below.any():
+        np.maximum.at(m2, idx[below], vals[below])   # max strictly below
+    second = np.where(cnt > 1, m1, m2)
+    return np.where(at_max, second[idx], m1[idx])
+```
 
-This also reframes when to prefer MASDA over an exact solver. It is not accuracy —
-the exact solver is exactly as good and sometimes marginally better. It is that
-MASDA is anytime and incremental: it can be stopped early with a usable answer, its
-messages carry over between frames when the problem changes slightly, and it
-extends to factors that break the assignment structure entirely, which is where a
-LAP solver simply cannot follow.
+Three cases: an element below the max sees the max; an element *at* the max also
+sees the max, provided something else attains it too; otherwise it sees the
+runner-up. Ties are handled rather than assumed away, which matters because
+near-ties are the regime of interest.
 
----
+The solver is then five lines per iteration:
+
+```python
+def masda_sparse(ei, ej, se, m, n, lam=-0.1, gam=-0.1, iters=30, damping=0.4):
+    beta = np.zeros(len(se)); rho = np.zeros(len(se))
+    for _ in range(iters):
+        comp = np.maximum(lam, _seg_max_excluding(beta, ei, m))
+        new_rho  = (1 - damping) * (se - comp) + damping * rho
+        comp = np.maximum(gam, _seg_max_excluding(new_rho, ej, n))
+        new_beta = (1 - damping) * (se - comp) + damping * beta
+        rho, beta = new_rho, new_beta
+    belief = beta + rho - se
+    ...
+```
+
+Identical mathematics — same messages, same damping, same belief, same decision
+rule. Only the representation changes.
+
+### 6.2 What that buys
+
+| regime | edges | dense | **sparse** | JV | sparse vs dense | **sparse vs JV** |
+|---|---|---|---|---|---|---|
+| broadband | 3216 | 3897 ms | **10.2 ms** | 1607 ms | 382× | **157×** |
+| dots | 3843 | 5336 ms | **12.6 ms** | 2585 ms | 424× | **206×** |
+| periodic | 4529 | 7547 ms | **13.8 ms** | 3898 ms | 545× | **282×** |
+
+**382–545× faster than the dense form, and 157–282× faster than compiled
+Jonker-Volgenant** — from interpreted NumPy, against optimised C.
+
+### 6.3 And the quality is unchanged
+
+A speed claim is worthless without this. Evaluated against ground truth:
+
+| regime | method | matches | correct | precision | recall | objective |
+|---|---|---|---|---|---|---|
+| broadband | dense | 840 | 694 | 0.826 | 0.815 | 507.83 |
+| | **sparse** | 840 | **694** | 0.826 | 0.815 | **507.83** |
+| | optimal LAP | 840 | 695 | 0.827 | 0.816 | 507.83 |
+| dots | dense | 902 | 708 | 0.785 | 0.812 | 521.21 |
+| | **sparse** | 902 | **707** | 0.784 | 0.811 | **521.21** |
+| | optimal LAP | 902 | 706 | 0.783 | 0.810 | 521.21 |
+| periodic | dense | 1109 | 196 | 0.177 | 0.344 | 623.27 |
+| | **sparse** | 1109 | **196** | 0.177 | 0.344 | **623.27** |
+| | optimal LAP | 1111 | 194 | 0.175 | 0.341 | 628.92 |
+
+Objectives agree to four decimals. Correct-match counts are identical except one
+match in 902 on the dot texture, where the two orderings break a tie differently.
+The assignments are not bit-identical — with tied beliefs they need not be — but
+they are equally good, and both sit at the LAP optimum.
+
+As an independent check, the same algorithm as a C++ edge-list implementation on
+real imagery (848×480 IR pair, ~1075 keypoints, 2882 candidate edges, 20
+iterations) runs in **1.67 ms** against a 33.3 ms frame budget at 30 Hz — with the
+keypoint detector, at 21 ms, dominating it more than tenfold.
+
+### 6.4 The actual claim
+
+MASDA's advantage is that **its cost is linear in the number of *plausible*
+associations**, and in a geometrically constrained problem that is a tiny fraction
+of $m \times n$. Here the epipolar band and disparity range cut ~2 million possible
+pairings to ~3200 candidates, and only a representation that exploits that sees the
+benefit.
+
+Which reframes the comparison with an exact solver. It is not accuracy —
+Jonker-Volgenant is exactly as good and occasionally marginally better. It is that
+MASDA is anytime, incremental and extensible: it can be stopped early with a usable
+answer, its messages carry between frames when the problem changes slightly, and it
+accepts factors that destroy the assignment structure altogether, where a LAP solver
+cannot follow.
 
 ## 7. Comparison with existing work
 
@@ -519,8 +592,9 @@ structure a MASDA front-end would naturally feed.
 **Where MASDA is the right choice.**
 
 - Cost linear in *plausible* associations, not in $m \times n$. With geometric
-  constraints reducing candidates to ~2.3 per keypoint, that is a very large
-  practical win — provided the implementation is sparse.
+  constraints cutting candidates to ~2.3 per keypoint, the sparse form runs
+  157–282× faster than an exact LAP solver at identical quality — but only if the
+  implementation exploits that sparsity.
 - Optimal or indistinguishable from optimal on these problems, without needing to
   be.
 - **Anytime**: usable after a handful of iterations, with the decision stabilising

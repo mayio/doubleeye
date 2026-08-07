@@ -42,7 +42,9 @@ Writes every figure into `figures/`. Needs numpy, scipy, matplotlib.
 Both are discussed in the post rather than hidden, since they are part of its
 argument, but they are real and worth fixing if the code is reused:
 
-- The solver works on a **dense** `m x n` matrix padded with `-inf`, so it does
+- `masda_sparse()` is the fast path: edge-list messages, O(T*E). `masda()` keeps the
+  dense form because section 6 of the post uses the contrast as its central point.
+  The dense one
   O(T·m·n) work where O(T·E) is available. With ~1400 nodes and ~3200 edges that is
   ~600x wasted effort, and it is why the numpy implementation loses to scipy's
   Jonker-Volgenant. Section 6 of the post uses this as its central point about where
