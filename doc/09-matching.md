@@ -398,11 +398,47 @@ with a dense Shi-Tomasi detector at cell 12. The C++ path uses FAST candidates
 with Shi-Tomasi scoring at cell 32. Those are different detectors in a different
 density regime, so the transfer is plausible and unproven.
 
-Closing that gap means running the C++ matcher on Middlebury directly, against
-ground truth, which needs the pairs converted to the raw Y8 layout the bag loader
-expects. That is the next piece of work, and until it is done the recommended
-configuration is a recommendation from the Python experiment, not from the C++
-one.
+### Closed: the C++ matcher, measured against ground truth
+
+`core/tools/de_bench.cpp` runs the C++ matcher and the C++ detector on the
+Middlebury scenes, with the same evaluation rules as the Python side (unknown
+ground truth excluded from precision rather than scored wrong; matchable requires
+the partner to have been detected). `article/export_middlebury.py` writes the
+pairs as raw Y8 plus a float32 disparity map, since core/ has no image decoder and
+should not gain one for a benchmark.
+
+Eight scenes, `--sweep`:
+
+| right/cell | margin gate | matches | correct | precision | recall | ms/scene |
+|---|---|---|---|---|---|---|
+| 3 (baseline) | 0.00 | 2026 | 1402 | 0.706 | 0.937 | 0.38 |
+| 3 | 0.10 | 1816 | 1323 | 0.743 | 0.884 | 0.38 |
+| 6 | 0.00 | 2585 | **1706** | 0.673 | 0.899 | 0.58 |
+| **6** | **0.10** | 2251 | **1585** | **0.718** | 0.836 | 0.62 |
+| 9 | 0.00 | 2743 | 1772 | 0.659 | 0.882 | 0.83 |
+| 9 | 0.10 | 2338 | 1622 | 0.708 | 0.807 | 0.80 |
+| 12 | 0.10 | 2382 | 1615 | 0.693 | 0.791 | 0.95 |
+
+**The recommendation holds on the C++ path.** Over-proposing at 2x lifts correct
+matches by 21.7% (1402 to 1706), and adding the 0.10 margin gate lands at 1585
+correct with precision 0.718 -- better than the baseline on *both* axes, +183
+correct and +0.012 precision. At matched precision the curve is outside the
+baseline's too: baseline gives 1250 correct at 0.762, and 2x with a 0.30 gate
+gives 1375 at the same 0.762.
+
+The gain is larger here than in Python (+13.1% against +9%), which is consistent
+with the C++ detector proposing far fewer right keypoints to begin with (3607
+across the eight scenes against Python's 5688) and so having more headroom.
+
+Note the different regime rather than assuming the numbers are interchangeable:
+recall reads much higher here (0.937 against 0.716) because `matchable` is
+relative to what the detector proposed, and FAST at cell 32 proposes a smaller,
+easier set. The two experiments agree on the *direction and rough size* of the
+effect, which is what was in question.
+
+So `--right-density 6 --min-margin 0.10` is now justified by a ground-truth
+measurement of the code that actually ships. What it costs on the Jetson at
+848x480 is the 8.84 ms above, 27% of the frame budget.
 
 ### One thing that did not work
 
