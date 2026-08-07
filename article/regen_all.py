@@ -192,6 +192,8 @@ def figures(regimes, reals):
     ms.fig_damping(regimes["periodic"]["S"], LAM, GAM)
     for r in reals:
         mb.fig_real(r, r["scene"])
+        if r["scene"] == "teddy":
+            mb.fig_thumbnail(r)          # post thumbnail / social preview
 
     def teddy_regions(pl, kg, kk):
         bw = kg < 20

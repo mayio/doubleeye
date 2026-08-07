@@ -370,3 +370,41 @@ def fig_margin_vs_precision(points, fname="margin_vs_precision"):
     fig.savefig(f"{ms.FIG}/{fname}.png", dpi=115)
     plt.close(fig)
     print(f"  wrote {ms.FIG}/{fname}.png")
+
+
+def fig_thumbnail(r, fname="thumb_teddy"):
+    """Single-panel Teddy with its matches, for the post thumbnail.
+
+    The four-panel real_teddy figure is unreadable once scaled to a thumbnail, and
+    the same image is used as the social preview, so this is one panel: the left
+    image with MASDA's matches drawn, green where the disparity is within a pixel
+    of ground truth and red where it is not. No axes or titles, since they are
+    illegible at that size and the caption carries the explanation anyway.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    left, right, gt, known, pl, pr, S, a_sp, a_nn = r["_arrays"]
+    H, W = gt.shape
+    xi = np.clip(np.round(pl[:, 0]).astype(int), 0, W - 1)
+    yi = np.clip(np.round(pl[:, 1]).astype(int), 0, H - 1)
+
+    fig, ax = plt.subplots(figsize=(W / 100, H / 100), dpi=150)
+    ax.imshow(left, cmap="gray", interpolation="nearest")
+    for i, j in a_sp.items():
+        if not known[yi[i], xi[i]]:
+            continue
+        e = abs((pl[i, 0] - pr[j, 0]) - gt[yi[i], xi[i]])
+        ax.plot([pl[i, 0], pr[j, 0]], [pl[i, 1], pr[j, 1]], "-", lw=1.1,
+                alpha=0.9, color=("#37b24d" if e <= TOL else "#e03131"))
+    ax.set_xlim(0, W)
+    ax.set_ylim(H, 0)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    fig.subplots_adjust(0, 0, 1, 1)
+    fig.savefig(f"{ms.FIG}/{fname}.png", dpi=150, pad_inches=0,
+                bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {ms.FIG}/{fname}.png")
