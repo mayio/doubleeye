@@ -28,12 +28,17 @@ unimodal frame-interval distribution. One item remains open: hardware sync
 cannot be verified in the current configuration — see
 [03-obstacles.md](03-obstacles.md), obstacle 7.
 
-Bring-up step 2 (IMU Allan variance) is **blocked on powering the Pixhawk
-2.4.8**, which carries the IMU and currently enumerates nowhere. Micro-USB to the
-Jetson is sufficient for bench work — see
-[01-hardware.md](01-hardware.md#the-imu-is-a-pixhawk-248--how-to-power-it).
+Bring-up step 2 (IMU Allan variance) is **blocked on configuration, not
+hardware.** The Pixhawk 2.4.8 is powered and identified as running ArduPilot,
+reachable on `/dev/ttyACM0` and on `/dev/ttyTHS2` at 57600 baud, but it streams
+IMU at only 3.2 Hz and Allan variance needs the SD-card log rather than a stream
+— see
+[01-hardware.md](01-hardware.md#the-imu-is-a-pixhawk-248-running-ardupilot).
 Separately, the `nvs_bmi160` module and its device-tree node are stock L4T
 leftovers with no hardware behind them, and are not the IMU.
+
+The **camera half of step 3 is unblocked**: it needs no IMU, and a checkerboard
+is printed. See [05-operations.md](05-operations.md#6-stereo-calibration).
 
 Preprocessing (`core/`) exists and is measured. On the TX2 it currently runs at
 **299% of the 30 Hz budget**, essentially all of it the keypoint detector, with

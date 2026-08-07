@@ -10,7 +10,7 @@
 | — Memory | 8 GB LPDDR4 shared CPU/GPU, EMC up to 1866 MHz | 58.4 GB/s theoretical; the real bottleneck per the plan |
 | — Storage | 28 GB eMMC root | ~13 GB free. A 120 s recording saving every 30th frame is ~63 MB. |
 | USB 3 link | `/sys/devices/3530000.xhci/usb2/2-1`, `speed=5000`, descriptor `3.2` | Camera connection |
-| IMU | **Pixhawk 2.4.8**, present but **unpowered / not connected** | Carries the IMU. See below for how to power it. Nothing appears on USB or serial yet. |
+| IMU | **Pixhawk 2.4.8** running **ArduPilot**, powered and reachable | `/dev/ttyACM0` (USB) and `/dev/ttyTHS2` @ 57600 (TELEM2). Streams IMU at only 3.2 Hz as configured. |
 | RC car | — | Indoor platform, apartment scale (0.3–3 m) |
 | WiFi | TX2 at `192.168.2.114`, ~100 ms RTT | Development link only, not used in the data path |
 
@@ -76,13 +76,74 @@ hand-eye and time calibration.
 None of this changes with the Pixhawk: the BMI160 the device tree talks about is
 a different, absent chip. The actual IMU is in the Pixhawk, below.
 
-## The IMU is a Pixhawk 2.4.8 — how to power it
+## The IMU is a Pixhawk 2.4.8 running ArduPilot
 
-A Pixhawk 2.4.8 is physically connected but **nothing appears on the Jetson**:
-`lsusb` shows only the RealSense, and there are no `/dev/ttyACM*` or
-`/dev/ttyUSB*` nodes. That is consistent with it having no power.
+Powered and identified. Two working links, both verified at 100% clean MAVLink
+framing:
 
-It has three possible power inputs. For our purpose only the first matters.
+| Link | Device | Baud | Notes |
+|---|---|---|---|
+| USB | `/dev/ttyACM0` | n/a (CDC) | Enumerates as `26ac:0011`, "PX4 FMU v2.x" |
+| TELEM2 | `/dev/ttyTHS2` | **57600** | 115200 framed only 83.5% with nonsense system ids, so 57600 is correct |
+
+**The firmware is ArduPilot, not PX4.** The USB descriptor says "PX4 FMU v2.x",
+which is the bootloader and board identity and is not a reliable guide.
+`HEARTBEAT` decodes to `ARDUPILOTMEGA`, vehicle type `GROUND_ROVER` — sensible
+for an RC car. Confirmed independently by the presence of `AHRS2` (178) and
+`AHRS3` (182), which are ArduPilot-specific messages.
+
+Verify any of this with:
+
+```sh
+ssh jetson 'sudo timeout 6 dd if=/dev/ttyACM0 bs=1 count=40000 2>/dev/null | base64' \
+  | base64 -d > /tmp/mav.bin
+.venv/bin/python desktop/mavlink_probe.py /tmp/mav.bin --seconds 6
+```
+
+### Access permission
+
+The `nvidia` user was **not** in `dialout`, so it could not open either port —
+both are `root:dialout` mode 660. Fixed with `sudo usermod -aG dialout nvidia`;
+takes effect for new logins. Until then, `sudo` is needed.
+
+### What still needs configuring — the IMU rate is far too low
+
+As shipped, the stream carries:
+
+| Message | Rate |
+|---|---|
+| `AHRS3`, `VFR_HUD`, `ATTITUDE`, `AHRS2` | ~15.6 Hz |
+| **`RAW_IMU`, `SCALED_IMU2`** | **3.2 Hz** |
+| `HEARTBEAT` | 1.5 Hz |
+| `TIMESYNC` | 0.3 Hz |
+
+**3.2 Hz is unusable.** The plan's gyro rotation compensation works over a 33 ms
+frame interval and wants 100 Hz or better. Two separate fixes, for two separate
+purposes:
+
+- **Runtime (rotation compensation).** Raise ArduPilot's stream rates:
+  `SR0_RAW_SENS` for USB (SERIAL0) or `SR2_RAW_SENS` for TELEM2 (SERIAL2), to
+  50–100. Note TELEM2 at 57600 baud carries only ~5.7 kB/s total, so high-rate
+  IMU there competes with everything else; raise `SERIAL2_BAUD`, or prefer USB.
+- **Allan variance (step 2).** Do **not** use a stream at all. Enable raw IMU
+  logging to the SD card (`LOG_BITMASK` including IMU, plus
+  `INS_LOG_BAT_MASK`/`INS_LOG_BAT_OPT` for fast sampling), record a multi-hour
+  static log, and pull the `.bin`. Allan variance needs a gap-free record at a
+  stable rate, which no stream provides. **This requires an SD card in the
+  Pixhawk** — presence not yet confirmed.
+
+`TIMESYNC` being present is useful later: it is ArduPilot's own mechanism for
+relating its clock to the companion's, which is exactly the alignment problem
+step 3 has to solve.
+
+Setting parameters needs a tool. Nothing suitable is installed yet — no
+`mavproxy`, no `pymavlink`, no `socat` on either machine. Either use a ground
+station (Mission Planner or QGroundControl), or `pip3 install --user pymavlink`
+on the Jetson and script it.
+
+### Powering it, for reference
+
+Three possible power inputs. USB is what is in use now.
 
 ### 1. Micro-USB — use this
 
@@ -118,23 +179,7 @@ The rail can back-power the board through a BEC, but it is the least protected
 path and depends on jumper and fuse details that vary between clones. There is no
 reason to use it here.
 
-### After it powers up
 
-Expect a `/dev/ttyACM0`. What it speaks depends on firmware (PX4 or ArduPilot,
-unknown until we look) — both talk MAVLink. Tell me once it enumerates and I will
-identify the firmware and IMU, and read samples.
-
-**One recommendation that matters for bring-up step 2.** For Allan variance, do
-**not** stream IMU data over MAVLink. Allan variance needs a long, gap-free
-record at a stable sample rate, and a MAVLink stream over USB drops and re-times
-messages. Instead log on the Pixhawk itself to its SD card at full rate
-(PX4 `.ulg` or ArduPilot `.bin`), then copy the log off. That gives complete,
-hardware-timestamped samples at the sensor's native rate — far better input than
-anything streamed. **This needs an SD card in the Pixhawk.**
-
-MAVLink streaming to the Jetson is the right mechanism for the *runtime* use, the
-plan's gyro rotation compensation, where what matters is low latency rather than
-a perfect record.
 
 ## Still required
 
@@ -142,7 +187,6 @@ Not yet present, needed for the bring-up steps that follow.
 
 | Item | Needed for | Notes |
 |---|---|---|
-| **Power for the Pixhawk** | Steps 2, 3, and all IMU-dependent work | The IMU exists but is unpowered. Micro-USB to the Jetson is enough for bench work. See above. |
 | **SD card for the Pixhawk** | Step 2 — Allan variance | Onboard logging at full rate is much better input than a MAVLink stream. |
 | Laser rangefinder | Step 4 — static ground truth | Walls at 1, 2, 3 m. The plan calls this the only realistic indoor ground truth, and it is enough to verify sub-pixel accuracy. |
 | Calibration target | Step 3 — Kalibr | Checkerboard or AprilGrid. Kalibr with `--time-calibration` runs on Ubuntu 18.04/Melodic, so the old toolchain is an advantage here. |
