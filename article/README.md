@@ -37,22 +37,28 @@ cd article && ../.venv/bin/python masda_stereo.py
 
 Writes every figure into `figures/`. Needs numpy, scipy, matplotlib.
 
-## Known rough edges in the script
+## Two solvers, on purpose
 
-Both are discussed in the post rather than hidden, since they are part of its
-argument, but they are real and worth fixing if the code is reused:
+`masda_sparse()` is the one to use: messages on an edge list, O(T*E), measured at
+157-282x faster than scipy's Jonker-Volgenant with quality identical to the dense
+form -- same objective to four decimals, same correct-match counts against ground
+truth bar one tie in 902.
 
-- `masda_sparse()` is the fast path: edge-list messages, O(T*E). `masda()` keeps the
-  dense form because section 6 of the post uses the contrast as its central point.
-  The dense one
-  O(T·m·n) work where O(T·E) is available. With ~1400 nodes and ~3200 edges that is
-  ~600x wasted effort, and it is why the numpy implementation loses to scipy's
-  Jonker-Volgenant. Section 6 of the post uses this as its central point about where
-  the asymptotic advantage actually lives.
-- `top2_excluding` uses a full `argsort` where `argpartition` would do, adding a
-  needless log factor.
+`masda()` keeps the dense O(T*m*n) formulation deliberately, because section 6 of
+the post uses the contrast as its central argument: the asymptotic advantage is real
+and entirely forfeited by a representation that ignores sparsity. `to_edges()`
+converts between them so both run on identical input.
 
-Keypoint counts also differ between the three textures (1405 / 1614 / 2019), so
-"harder texture" is mildly confounded with "larger problem". The conclusions rest on
-per-regime ratios rather than absolute counts, so this does not change them, but
-capping detections to a common budget would be cleaner.
+## Known rough edges
+
+- `top2_excluding`, in the **dense** solver only, uses a full `argsort` where
+  `argpartition` would do. Left alone on purpose -- that path exists to be the slow
+  comparison, and speeding it up would blunt the point.
+- `build_problem` still forms the dense matrix before `to_edges` reduces it, so
+  problem *construction* is O(m*n) even though the *solve* is O(E). Fine for a demo,
+  wrong for a pipeline, which would emit candidates straight from the epipolar
+  search.
+- Keypoint counts differ between the three textures (1405 / 1614 / 2019), so "harder
+  texture" is mildly confounded with "larger problem". The conclusions rest on
+  per-regime ratios rather than absolute counts, so this does not change them, but
+  capping detections to a common budget would be cleaner.
