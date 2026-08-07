@@ -225,3 +225,36 @@ Open, in rough priority order:
 - Run the C++ matcher against Middlebury too, so the C++ and NumPy paths are
   compared on identical data with ground truth. This is now possible without a
   rangefinder and no longer blocks on hardware.
+
+## Matcher work, 2026-08-07
+
+Done:
+- **Score margin exported per match** (`Match::margin`). Best-minus-second-best
+  s(i,j), one O(E) pass. Precision by margin quartile over eight Middlebury
+  scenes: 0.169 / 0.286 / 0.391 / 0.659. `de_match` reports median margin and the
+  share below 0.2; it is in `matches.csv`. On `full_on`, MASDA has 31.5% of its
+  matches below 0.2 against mutual-NN's 14.3%, which is where MASDA's extra 47%
+  of matches live.
+- **lambda/gamma un-transposed.** lambda = clutter (left/measurement unmatched),
+  gamma = misdetection (right/object unmatched). No past result was wrong, since
+  every run held them equal, but they are not interchangeable once separated.
+  `test_lambda_gamma_are_distinct` guards it.
+- **core/ now builds on the Jetson.** It never had: `deploy.sh` synced only
+  `jetson/`, and the `core/build` on the Jetson held x86-64 objects from the
+  desktop. Consequence: MASDA is **5.04 ms on the Jetson**, not the 1.67 ms in the
+  docs, which was a desktop number compared against the Jetson frame budget. 15%
+  of the budget, not 5%.
+- **Local contrast is not useful** and the intuition is backwards. See
+  `article/contrast_study.py`. Do not raise `min_local_std` above its current 2.0.
+
+Open:
+- The published article still carries the 1.67 ms figure attributed to the Jetson
+  frame budget. Mario's call whether to correct it.
+- Detector repeatability: only 48-51% of left keypoints have a right keypoint
+  within 1 px of their true correspondence. `article/repeatability.py` tests
+  over-proposing on the right with a cheaper gamma.
+- Sub-pixel disparity. `detect()` returns integer positions, so median disparity
+  error is 0.50 px, exactly the integer-vs-quarter-pixel quantisation. Fit the
+  correlation surface between the two windows.
+- Port `_seg_max_excluding` (the O(E) second-max trick) into the C++ matcher.
+- Use the margin downstream: weight or gate matches by it before triangulation.
