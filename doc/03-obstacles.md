@@ -245,6 +245,25 @@ exists, but the librealsense source tree carrying
 remaining value would be sync verification, in-motion projector labelling, and
 per-frame exposure confirmation — in that order.
 
+**On verifying hardware sync — deferred deliberately, not forgotten.**
+
+Neither option for closing this belongs in step 1. Reading camera frame counters
+needs the patch, which the timing measurement above says is not worth it. And
+detecting a time offset optically needs a moving scene *plus* stereo
+correspondence, to show that a moving object's disparity is biased along its
+motion direction while the static background's is not — that is matching code,
+which does not exist yet.
+
+The better place for it is the first matcher. The plan already wants median
+`|Δy|` over matched pairs as a free runtime health metric for extrinsic drift,
+and that same statistic catches a sync error: an inter-channel time offset in a
+moving scene inflates the y-residual in exactly the regions that are moving. So
+sync verification falls out of work that is already planned, rather than
+requiring a dedicated experiment now.
+
+Until then it is an **assumption**, and should be labelled as one in any result
+that depends on it.
+
 **Workaround adopted for the projector A/B.** Rather than alternating within one
 recording, run the emitter **on** and **off** as two separate recordings. On a
 static scene that is equally valid and needs no per-frame label. It does not
