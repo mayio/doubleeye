@@ -35,6 +35,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <atomic>
 #include <thread>
 #include <vector>
 
@@ -353,10 +354,14 @@ void rf_filter(float* C, const float* ax, const float* ay, int W, int H) {
 // The coefficient planes. ax[i] governs the step into pixel i from its left
 // neighbour, ay[i] the step from the row above.
 void rf_coeffs(const float* I, float* ax, float* ay, int W, int H,
-               float sigma_s, float sigma_r) {
+               float sigma_s, float sigma_r, int nth) {
   const float k = -std::sqrt(2.f) / sigma_s;
   const float rs = sigma_s / sigma_r;
-  for (int y = 0; y < H; ++y)
+  // Two exp() per pixel is ~340k transcendentals, and left serial it was a
+  // measurable slice of the wall clock while three cores waited.
+  std::vector<std::thread> pool;
+  for (int t = 0; t < nth; ++t) pool.emplace_back([&, t]() {
+  for (int y = t; y < H; y += nth)
     for (int x = 0; x < W; ++x) {
       const size_t i = size_t(y) * W + x;
       const float gx = x > 0 ? std::fabs(I[i] - I[i - 1]) : 0.f;
@@ -364,6 +369,8 @@ void rf_coeffs(const float* I, float* ax, float* ay, int W, int H,
       ax[i] = std::exp(k * (1.f + rs * gx));
       ay[i] = std::exp(k * (1.f + rs * gy));
     }
+  });
+  for (auto& th : pool) th.join();
 }
 
 struct Cfg {
@@ -848,7 +855,8 @@ int main(int argc, char** argv) {
   }
   if (cfg.rf) {
     axv.resize(size_t(W) * H); ayv.resize(size_t(W) * H);
-    rf_coeffs(I.data(), axv.data(), ayv.data(), W, H, cfg.sigma_s, cfg.sigma_r);
+    rf_coeffs(I.data(), axv.data(), ayv.data(), W, H, cfg.sigma_s, cfg.sigma_r,
+              nthreads);
     axp = axv.data(); ayp = ayv.data();
   }
   {
@@ -863,8 +871,18 @@ int main(int argc, char** argv) {
     // Computing KB consecutive disparities before transposing means each cache
     // line receives KB consecutive k values instead of one. KB = 16 fills a
     // 64-byte line exactly.
-    const int KB = 16;
+    // Blockwise needs no transpose, so KB exists only to batch work. At KB=16 and
+    // D=60 that is exactly four blocks for four threads -- no balancing at all, and
+    // higher disparities do less work because the valid x range shrinks with d. So
+    // one disparity per unit of work, handed out dynamically.
+    //
+    // Measured before changing it: 159.86 ms of CPU over 56.5 ms wall is 2.83 of
+    // four threads busy, at a constant 3.36 GHz. The stage is not memory-bound --
+    // stalls on L3 misses are 2-5% of cycles and DRAM traffic is 8% of this
+    // machine's bandwidth -- it was simply idle.
+    const int KB = blockwise ? 1 : 16;
     const int nblocks = (D + KB - 1) / KB;
+    std::atomic<int> next_block(0);
     // Outside the pool so the per-thread top-2 survives the join for merging.
     std::vector<std::vector<float>> as0(nthreads), as1(nthreads);
     std::vector<std::vector<int16_t>> ad0(nthreads), ad1(nthreads);
@@ -926,7 +944,8 @@ int main(int argc, char** argv) {
       }
       return;
     }
-    for (int b = t; b < nblocks; b += nthreads) {
+    for (int b = next_block.fetch_add(1); b < nblocks;
+         b = next_block.fetch_add(1)) {
     const int klo = b * KB, khi = std::min(D, klo + KB);
     for (int k = klo; k < khi; ++k) {
       const int d = cfg.dmin + k;
@@ -1055,7 +1074,11 @@ int main(int argc, char** argv) {
     // disparities, so this is a 2-of-2n selection per pixel: ~675 K comparisons
     // for the whole image, against the 40 MB the transpose used to move.
     if (blockwise) {
-      for (size_t i = 0; i < WH; ++i) {
+      std::vector<std::thread> mpool;
+      for (int mt = 0; mt < nthreads; ++mt) mpool.emplace_back([&, mt]() {
+      const size_t lo = WH * size_t(mt) / nthreads;
+      const size_t hi = WH * size_t(mt + 1) / nthreads;
+      for (size_t i = lo; i < hi; ++i) {
         float b0 = -1e30f, b1 = -1e30f;
         int i0 = -1, i1 = -1;
         for (int t = 0; t < nthreads; ++t) {
@@ -1070,6 +1093,8 @@ int main(int argc, char** argv) {
         if (i1 >= 0) { gcs[i * 2 + 1] = b1; gcd[i * 2 + 1] = i1; n = 2; }
         gcn[i] = n;
       }
+      });
+      for (auto& th : mpool) th.join();
     }
   }
   const double t_cost = now_ms() - tc0;

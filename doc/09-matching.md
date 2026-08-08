@@ -2213,3 +2213,71 @@ be skipped outright. Bounding-box filtering per plane is the form to measure.
 `--prior` is kept: it is the vehicle for this measurement, and a temporal prior from the
 previous frame is planned (see 3.1 in TODO.md). Anything using it must not use offset
 indexing, for the reason above.
+
+## What the hardware counters said: none of it was memory
+
+With `perf_event_paranoid` lowered, the cost stage was measured rather than reasoned
+about. Every hypothesis on the table was wrong, including all three that had already
+cost a day of failed fixes.
+
+`--guided --box --agg 0` (score and insert only), teddy:
+
+| threads | task-clock | cycles | instructions | GHz | IPC | wall |
+|---|---|---|---|---|---|---|
+| 1 | 99.4 ms | 331.5 M | 573.3 M | 3.34 | 1.73 | 101.0 ms |
+| 2 | 117.3 | 392.2 | 603.8 | 3.34 | 1.54 | 68.9 |
+| 4 | 159.9 | 537.5 | 661.0 | 3.36 | 1.23 | 56.5 |
+
+| | 1 thread | 4 threads |
+|---|---|---|
+| stalls on L3 miss | 2.3% of cycles | 5.6% |
+| DRAM traffic (LLC misses x 64 B) | 30.8 MB | 82.5 MB |
+| achieved bandwidth | 0.34 GB/s | **1.6 GB/s** of 18.9 |
+| dTLB misses | 94 K | 217 K (0.04% of instructions) |
+| store-forward blocks | 67 K | 290 K |
+
+**It was never memory-bound.** Stalls waiting on L3 misses are 2-5% of cycles, DRAM
+traffic is 8% of this machine's bandwidth, TLB misses are 0.04% of instructions, and
+store-forward blocking is negligible. IPC of 1.2-1.7 is a core that is executing, not
+waiting. Bandwidth, L3 capacity, TLB pressure, 4K aliasing and memory-level parallelism
+are all dead at once.
+
+**The estimate that misled me was counting plane touches.** 29 planes per slice at
+675 KB gave "1.45 GB in 125 ms = 11.6 GB/s", which looked like 61% of peak. Measured
+DRAM traffic is 1.6 GB/s -- **off by 7x** -- because a 675 KB plane touched repeatedly
+within a pass is served by L1 and L2 and never reaches DRAM. Counting bytes moved
+between *arrays* is not counting bytes moved to *memory*, and the difference is the
+whole cache hierarchy.
+
+That single error explains all three failed fixes. Cache capacity, census re-reads and
+pass fusion are all ways to move fewer bytes, on a stage that was not waiting for bytes.
+
+### What it actually was: idle cores
+
+`task-clock` over wall clock gives the answer directly: **159.9 ms of CPU in 56.5 ms of
+wall is 2.83 of four threads busy**, at a constant 3.36 GHz -- so not a turbo effect
+either, which was the next thing worth ruling out. The stage was not slow, it was
+absent. Two causes, both structural:
+
+1. **`D=60` with `KB=16` is exactly four blocks for four threads**, statically assigned.
+   No balancing at all, and higher disparities do less work because the valid x range
+   shrinks with d. Blockwise needs no transpose, so KB exists only to batch: one
+   disparity per work unit, handed out through an atomic counter.
+2. **Serial sections inside the timed region.** `rf_coeffs` computes two `exp()` per
+   pixel -- ~340 K transcendentals -- on one thread, and the per-thread top-2 merge ran
+   on one thread too.
+
+| | total, teddy | threads busy |
+|---|---|---|
+| before | 55.9 ms | 2.83 |
+| dynamic scheduling + parallel setup | **51.6 ms** | **3.21** |
+
+8%, bit-identical, and eight scenes at **62 ms mean**, unchanged at 75.6% / 10.3%.
+There is still most of a core idle, so this is not finished.
+
+**The lesson is about instrumentation, not about this loop.** Three fixes were built and
+measured against a bottleneck that a profiler would have ruled out in one run, and the
+reason the profiler was not used first is that it needed a sysctl and the ablations felt
+sufficient. They were not: ablation tells you what a stage costs, and only counters tell
+you *why*. When two or three mechanism guesses in a row fail on the same code, that is
+the signal to stop guessing and get the counters, not to try a fourth.
