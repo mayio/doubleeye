@@ -2307,3 +2307,41 @@ stage is slow, check what it is doing that it does not need to do at all.** Thre
 alternative filter paths accreted over a day of experiments, each correctly leaving the
 others' buffers in place, and nothing about the resulting allocation looked wrong in
 review.
+
+## On the Jetson at last: the same code, a different profile
+
+Every dense number until now was desktop-only. Measured on the TX2 (MAXN, clocks
+locked at 2.035 GHz, six cores), teddy 450x375 at D=60:
+
+| stage | desktop, 4 threads | TX2, 6 threads | ratio |
+|---|---|---|---|
+| census | 2.3 ms | 8.3 | 3.6x |
+| cost | 41.9 | 79.4 | 1.9x |
+| **solve** | **4.1** | **24.0** | **5.9x** |
+| total | 48.3 | 111.7 | 2.3x |
+
+**The solve was 5.9x worse and scaled 1.46x on six cores**, against 3.8x on the
+desktop. Same class of fault as the cost-stage allocation: each solve thread took three
+W*D planes -- 108 KB each, 324 KB a thread, 2 MB across six -- which `std::vector`
+zero-fills, and which the sparse path never reads. In blockwise mode the per-thread
+candidate copies are unused too, because the candidates live in the shared merged
+arrays.
+
+Interleaved best-of-8 on the TX2, output bit-identical:
+
+| | solve | total |
+|---|---|---|
+| before | 15.8 ms | 112.4 |
+| allocate only the active path | **12.5** | **90.7** |
+
+**19% on the Jetson for a change worth about 2% on the desktop**, which is the whole
+argument for rule 2 in one measurement. A 2 MB memset is a rounding error against 18.9
+GB/s and is not one against the TX2's memory system.
+
+**TX2 run-to-run variance is 37%** (cost 73.1 to 100.6 ms) at stable clocks and 35 C, so
+it is scheduling and core asymmetry -- four A57s and two Denvers -- not thermal. Single
+runs on this board mean nothing; everything above is interleaved best-of-8.
+
+**Output is bit-identical between aarch64 and x86-64**, which is worth knowing: no
+change here has introduced a platform-dependent reordering, so desktop scoring remains
+valid for correctness even though it is useless for timing.

@@ -1123,19 +1123,30 @@ int main(int argc, char** argv) {
   std::vector<std::thread> pool;
   for (int t = 0; t < nthreads; ++t) {
     pool.emplace_back([&, t]() {
-      // Per-thread scratch, allocated once: three W*D float planes.
-      std::vector<float> s(size_t(W) * D), beta(size_t(W) * D), rho(size_t(W) * D);
-      std::vector<float> gath(size_t(D) + 2), svals(size_t(D) + 2);
-      std::vector<int> idxs(size_t(D) + 2), k0(W), k1(W), bestk(W), order(W);
+      // Per-thread scratch for whichever path runs, and only that one.
+      //
+      // The dense planes are W*D floats -- 108 KB each at 450x60, so 324 KB a
+      // thread -- and std::vector zero-fills them. Allocated unconditionally they
+      // were 2 MB of memset across six threads for buffers the sparse path never
+      // reads. Measured on the TX2 this was most of the solve stage; it barely
+      // showed on the desktop, which is the whole reason for measuring on the
+      // target.
+      const int K = cfg.topk > 0 ? std::min(cfg.topk, D) : 0;
+      const size_t DN = K > 0 ? 0 : size_t(W) * D;       // dense path only
+      const size_t GN = K > 0 ? 0 : size_t(D) + 2;
+      const size_t WN = K > 0 ? 0 : size_t(W);
+      // In blockwise mode the candidates live in the shared merged arrays, so even
+      // the sparse per-thread copies are not needed.
+      const size_t CN = (K > 0 && !blockwise) ? size_t(W) * K : 0;
+      std::vector<float> s(DN), beta(DN), rho(DN);
+      std::vector<float> gath(GN), svals(GN);
+      std::vector<int> idxs(GN), k0(WN), k1(WN), bestk(W), order(W);
       std::vector<float> best(W);
       std::vector<char> taken(W);
-      // Sparse path scratch. At K=8 and W=450 a row's candidates are 28 KB,
-      // against 108 KB for the dense W*D row it replaces.
-      const int K = cfg.topk > 0 ? std::min(cfg.topk, D) : 0;
-      std::vector<float> cs(size_t(W) * std::max(1, K));
+      std::vector<float> cs(CN);
       std::vector<float> sbeta(size_t(W) * std::max(1, K));
       std::vector<float> srho(size_t(W) * std::max(1, K));
-      std::vector<int> cd(size_t(W) * std::max(1, K)), cn(W);
+      std::vector<int> cd(CN), cn(CN ? size_t(W) : 0);
       std::vector<int> bstart(size_t(W) + 1), bitems(size_t(W) * std::max(1, K));
       std::vector<int> cursor(W);
       for (int y = t; y < H; y += nthreads) {
