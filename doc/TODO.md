@@ -41,141 +41,64 @@ first-class output with one producer.
 
 ---
 
-## 0.3 Dense MASDA: ahead of SGM on accuracy, 5.2x behind on runtime
+## 0.3 Dense MASDA: ahead of SGM on accuracy, ~3x behind on runtime
 
-State after 2026-08-08, `core/tools/de_dense.cpp`, eight Middlebury scenes:
+State end of 2026-08-08. `core/tools/de_dense.cpp`, eight Middlebury scenes:
 
-| | coverage | bad-1.0 | runtime |
-|---|---|---|---|
-| SGM | 78.0% | 10.9% | 16 ms |
-| **dense MASDA** | 75.6% | **10.3%** | **83 ms** |
+| | coverage | bad-1.0 | desktop | TX2 |
+|---|---|---|---|---|
+| SGM | 78.0% | 10.9% | 16 ms | -- |
+| **dense MASDA** | 76.0% | **9.7%** | ~45 ms | ~95 ms |
 
-teddy 7.6% against SGM's 8.1%, cones 5.5% against 5.5%. **Ahead on accuracy**, at
-2.4 points less coverage. The day went 246 -> 83 ms and 11.0 -> 10.3% bad-1.0, so
-speed and accuracy moved together rather than trading.
-
-Re-score any change with one command, and diff the raw disparity to prove a speed
-change was only a speed change:
+**Ahead on accuracy by 1.2 points, behind on coverage by 2.0.** The day went 246 -> 45 ms
+desktop and 11.0 -> 9.7% bad-1.0, so speed and accuracy moved together throughout.
 
 ```sh
-.venv/bin/python article/dense_bench.py --out /tmp/after   # 75.6% cov, 10.3% bad
-cmp /tmp/before/teddy.f32 /tmp/after/teddy.f32
+.venv/bin/python article/dense_bench.py --out /tmp/after    # 76.0% cov, 9.7% bad
+cmp /tmp/before/teddy.f32 /tmp/after/teddy.f32              # for pure speed changes
+tools/deploy.sh && ssh jetson 'cd ~/doubleeye/core && ./build/de_dense ...'
 ```
 
-**What worked, all measured and written up in [09-matching.md](09-matching.md):**
-window aggregation, guided-filter edge-aware support, margin gate, eight independent
-chains in the box filter's running sum (74% of it, latency-bound), recursive
-edge-aware aggregation replacing the guided filter (29 plane touches -> 12),
-**top-2 candidates** (faster *and* 0.8 points better), and **blockwise top-2** so
-the 40 MB volume never exists.
+**Read [09-matching.md](09-matching.md) before touching this.** Every item below has a
+measurement behind it and several have a recorded negative that looks like a good idea.
 
-**What did not:** sub-pixel parabola, fast guided filter, disparity blocking, band
-fusion on a cache-capacity argument, step 3 before step 2.
+### The one decision to make first
 
-### The stage split has moved, so the target has too
+**Does the cost volume become disparity-minor?** The score loop wants disparity in the
+SIMD lanes -- that is how ReS2tAC vectorises it, and it is what makes the table lookups
+vectorisable via `vqtbl4q_u8`. The recursive filter wants disparity-major, one whole plane
+at a time, because that is what it aggregates over. The two cannot both be satisfied by
+the current layout.
 
-teddy, four threads: **census 8-13 ms, cost ~54 ms, solve ~4 ms**.
+This is the `[d][x]` versus `[x][d]` question that has now arrived three times: from the
+solver (settled by sparse candidates removing the transpose), from band fusion (parked),
+and now from SIMD. **Settle it before writing any more vector code** -- the last attempt
+failed precisely because it vectorised within the wrong loop order.
 
-- **The solve is done.** 46 ms this morning, 4.1 ms now. Not worth further work.
-- **Cost is 65%** and still the target. What is left inside it: the score loop
-  re-reads both 1.35 MB census planes per disparity slice, and the recursive filter
-  is 12 plane touches in float32.
-- **Census is now 12-16%** without anyone having looked at it, and it is a fixed cost
-  paid twice per pair independent of D. First time it has been big enough to matter.
-- **int16** is the obvious next lever on the cost stage: half the traffic and twice
-  the SIMD lanes, on a stage measured to be pass- and traffic-bound. Precision is a
-  non-issue at 49 Hamming levels.
-- **Coverage is the one number behind SGM** (75.6% against 78.0%). Nothing tried today
-  addressed it, and the margin gate is deliberately trading it for precision.
+### Ranked after that
 
-### Still open on quality
+1. **Vectorised score loop.** The largest single item: ~80 ms of TX2 CPU. `VCNT` for
+   Hamming, disparity in the lanes, `vqtbl4q_u8` for the 49-entry table, 8-bit costs.
+   Cannot be bit-identical, so it needs `dense_bench.py`, not `cmp`.
+2. **Coverage**, the only axis SGM still leads and untouched all day. The margin gate is
+   deliberately trading it for precision; the question is whether a better-calibrated gate
+   holds the precision at higher coverage.
+3. **Prior as a MASK on absolute-disparity planes**, with per-plane bounding boxes. The
+   offset-indexed version is a measured negative and the mechanism is known.
+4. **Idle cores.** Desktop 3.27 of 4, TX2 2.9x of 6.
 
-- **Graded cost** (Census plus absolute difference). Roughly half the remaining error
-  is in near-fronto-parallel regions at 6-7%, which nothing here touches, and Census's
-  49 levels against SGM's continuous Birchfield-Tomasi is the likely reason.
-- **Slanted support windows** (PatchMatch, doi:10.5244/C.25.14). Measured as second
-  priority behind edge-aware support, which is now done -- so this is next in line.
-  Both MASDA and SGM share the fronto-parallel bias, so it is a place SGM is weak.
+### Do not retry without new information
 
-**All dense numbers are desktop-only.** The Jetson was unreachable. The recursive
-filter and the blockwise reduction both target traffic and working set, which is
-where the TX2 is poorer than this laptop, so both should win by *more* there -- but
-that is a prediction, and predictions ran 2-for-9 today.
+Coarse-to-fine with offset-indexed planes (aggregation needs constant-disparity planes),
+band fusion on a cache-capacity argument, census re-read blocking, fusing the insert into
+the filter, hoisting row pointers in the score loop, `--csct` at the current operating
+point, vectorising popcount while staying pixel-major. All measured, all in 09-matching.md
+with mechanisms.
 
-### Next: sparse candidates (Mario's suggestion), measured and cleared
-
-**Ceiling measured first, and it does not bind.** Top-8 recall is 82.8% of known
-pixels against the pipeline's 67.9% delivered -- fifteen points of headroom, so 7.5x
-fewer edges is available at no measurable accuracy cost. See
-[09-matching.md](09-matching.md#how-many-candidates-per-pixel-are-needed-measured-before-pruning-anything)
-and `article/topk_recall.py`.
-
-The design, so it can be picked up cold:
-
-1. After aggregation, keep the **top k=8 by rank within each pixel** -- never a global
-   magnitude threshold, for the reason in 09-matching. Store `(score, d)` pairs, so a
-   row is `W*k` entries (28 KB at k=8, W=450) instead of `W*D` floats.
-2. The rho update is unchanged in shape: a contiguous run of k per left pixel.
-3. The beta update needs each RIGHT pixel's claimants, which pruning makes irregular.
-   Build it per row with a **counting sort into buckets by `xr = x - d`** -- O(k*W)
-   per row, entirely within the row, and cache-resident. This is the piece that
-   replaces the stride-(D+1) diagonal walk.
-4. Rows stay independent, so the existing row-parallel thread pool is unchanged and
-   **the solve needs no halo at all** -- correspondences lie on one image row. Only the
-   aggregation filter ever needed overlapping bands.
-
-**What to watch**: pruning removes claimants from the uniqueness competition, so it
-changes the beta dynamics rather than only the candidate list. Score with
-`article/dense_bench.py`; this one cannot be bit-identical, so it needs the numbers.
-
-**This also makes the old steps 2 and 3 unnecessary** rather than merely reordered:
-there is no volume to lay out as `[d][x]` and no stride-(D+1) walk to make
-pixel-parallel. Band fusion stays parked on the tension recorded above.
-
-**Runtime is still the whole gap.** Two levers left, and the lesson from the fast
-guided filter is that they must not touch the cost values:
-
-1. **uint16 cost volume — deferred, not dropped.** Measured today: the machine
-   sustains 18.9 GB/s at four threads while the cost stage achieves 2.5 GB/s, so
-   traffic is not the current limit and shrinking the volume would buy nothing
-   *yet*.
-
-   **Revisit once the dependency chain is fixed**, for two reasons. Bottlenecks
-   move: removing a latency-bound serial chain can raise throughput until memory
-   becomes the limit, and 2.5 GB/s has a lot of headroom to climb into. And uint16
-   is not only half the bytes — it is **twice the SIMD lanes**, sixteen 16-bit
-   elements per 256-bit register against eight floats, so it helps the vectorised
-   filter directly rather than only through bandwidth.
-
-   Precision is not the obstacle: 65536 levels against a 49-level Census aggregate
-   is ample. So this is a scheduling decision, not a rejection — measure the
-   achieved bandwidth again after the SIMD box filter lands, and if it has moved
-   toward 18 GB/s, do it.
-   **Superseded — see 09-matching.md, "What SGM does that makes it 12x faster".**
-   The box filter is 37% of the cost stage; scoring and moving the volume are 45%,
-   and the serial reductions are the rest. The ordered restructuring is: band-fuse
-   so the volume never exists, switch the band layout to `[d][x]`, rewrite both
-   reductions as loops over d with x inside so they vectorise across *pixels*
-   (SGM's trick — the fix for a non-vectorisable reduction is to run many
-   independent ones side by side), then int16 for the lanes. Its running sum
-   (`acc += in[x]; acc -= in[x-2r-1]`) is a serial dependency chain that cannot
-   vectorise and is limited by add latency — four passes per slice, sixty slices.
-   Processing several rows at once with one SIMD lane per row makes the chains
-   independent. Rows are already independent, so it is loop restructuring, not an
-   algorithm change. This also explains the hyperthread regression better than
-   bandwidth did.
-2. **PatchMatch propagation.** Avoids materialising the volume at all. Now supported
-   by three independent arguments: slanted surfaces (accuracy), candidate generation
-   (what every measurement here says decides the outcome), and runtime.
-
-Still untried on quality: a **graded cost** (Census plus absolute difference).
-Roughly half the remaining error sits in near-fronto-parallel regions at 6-7%, which
-nothing done today touches, and Census's 49 Hamming levels against SGM's continuous
-Birchfield-Tomasi is the most likely reason.
-
-**All dense numbers are desktop-only.** The Jetson was unreachable. The
-bandwidth-bound finding matters more there, so re-measure before optimising against
-a memory wall of unknown height.
+**The desktop is no longer a proxy for the TX2.** int16 was neutral on the desktop and
+worth 20% on the Jetson; `--csct` was worthless on the desktop and worth 10% on the
+Jetson. Time anything new on the target before believing it. TX2 run-to-run variance is
+37%, so use interleaved best-of-N there, never single runs.
 
 ## 0.35 Edge-aware support first, then slanted planes — measured, not assumed
 
