@@ -2042,3 +2042,60 @@ than a bit-identity check.
 The earlier coarse-to-fine negative does not transfer: that failed on the *sparse*
 matcher because k was already 2.7, so there were no false candidates for a prior to
 remove. Here D=60 is real and the saving is arithmetic.
+
+## Coarse-to-fine: cleared, but the first version of the experiment said the opposite
+
+Every stage is linear in D, so a half-resolution coarse pass (D/2 over a quarter of the
+pixels, so D/8 of the work) plus a narrow refinement band at full resolution costs
+`D/8 + (2B+1)` instead of D. At the mean D=75 across these scenes that is 5.2x less
+arithmetic at B=2.
+
+The ceiling is hard: if the truth is outside the band around the upsampled coarse
+estimate, no refinement recovers it. `article/coarse_ceiling.py` measures it, as a
+fraction of *correct pixels over all known ground truth* -- the quantity the decision
+actually turns on, rather than the availability the top-k sweep measured.
+
+**Run 1 said no, decisively.** Ceiling 68.4% at B=2 against the 67.9% the pipeline
+already delivers: a perfect refinement would exactly match today's output and any
+imperfection would lose. The dominant term was that **24.5% of known pixels had no
+coarse estimate at all**.
+
+**That was my experiment's fault, not the method's.** I had run the coarse pass with the
+shipping `--min-margin 0.01`, which is a gate whose whole purpose is to trade coverage
+for precision *in a final answer*. In a prior, every gated pixel is a pixel with no
+search band. And a hole in a prior does not mean "no band" -- coarse-to-fine inpaints
+it, which is standard and which I had not done.
+
+Ungated, holes filled from valid neighbours:
+
+| B | 1 | **2** | 3 | 4 | 6 | 8 |
+|---|---|---|---|---|---|---|
+| ceiling | 78.9% | **81.5%** | 83.0% | 84.4% | 86.4% | 88.3% |
+| work ratio | 6.1x | **5.2x** | 4.6x | 4.1x | 3.4x | 2.8x |
+| no coarse | | **0.2%** | | | | |
+
+**81.5% against 67.9% delivered: 13.6 points of headroom at 5.2x less work.** Cleared,
+and it is now the largest available lever by a wide margin.
+
+**The lesson is the sharper half of this.** A cheap experiment produced a clean,
+decisive, plausible negative that was an artefact of one flag, and stopping there would
+have closed off the biggest remaining lever with a number that looked authoritative.
+The top-k sweep had the mirror problem -- it measured the wrong quantity but erred
+conservatively, so the conclusion survived. This one erred the other way. **The check
+that caught it was asking why the dominant term was what it was**, rather than reading
+the headline: 24.5% missing coarse estimates is not a property of coarse-to-fine, and
+noticing that took one question.
+
+### What it should cost, and what becomes the bottleneck
+
+The work ratio applies to the cost stage, which is what is linear in D. Census is not:
+it is paid once per image pair regardless, plus a quarter as much again for the
+half-resolution pair. Projecting from the current teddy split (census ~8-13 ms, cost
+~43-54, solve ~4):
+
+    cost 54/5.2 ~ 10 ms, census ~8 + ~2, solve ~4-8  =>  ~25-30 ms
+
+Against SGM's 16 ms. Meaningfully closer rather than parity -- **and census becomes the
+largest single item**, which is where the next attribution should point. That is a
+projection from a work ratio, not a measurement, and this file's record on projections
+is why it is written as one.
