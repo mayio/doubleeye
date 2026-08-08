@@ -846,6 +846,11 @@ int main(int argc, char** argv) {
   const float *axp = nullptr, *ayp = nullptr;
   {
     for (size_t i = 0; i < I.size(); ++i) I[i] = float(L.data[i]) / 255.f;
+  }
+  // mean_I and var_I exist only for the guided filter. Under the recursive filter
+  // they were still being computed -- a downsample, two box filters and a variance
+  // pass over the whole image, serially, for a result nothing read.
+  if (!cfg.rf) {
     std::vector<float> t1(size_t(Ws) * Hs), IIs(size_t(Ws) * Hs);
     downsample(I.data(), Is.data(), W, H, Ws, Hs, F);
     for (size_t i = 0; i < Is.size(); ++i) IIs[i] = Is[i] * Is[i];
@@ -888,10 +893,15 @@ int main(int argc, char** argv) {
     std::vector<std::vector<int16_t>> ad0(nthreads), ad1(nthreads);
     std::vector<std::thread> cpool;
     for (int t = 0; t < nthreads; ++t) cpool.emplace_back([&, t]() {
-    std::vector<float> slice(size_t(W) * H), tmp(size_t(W) * H);
-    std::vector<float> ip(size_t(W) * H), mp(size_t(W) * H), mip(size_t(W) * H);
-    std::vector<float> ab(size_t(W) * H), bb(size_t(W) * H);
-    std::vector<float> ma(size_t(W) * H), mb(size_t(W) * H);
+    // Only the chosen filter path's scratch is allocated. Every thread used to
+    // take all eighteen planes -- 12 MB each, 46 MB across four threads -- and
+    // std::vector zero-fills them, so most of a memset of 46 MB was being paid on
+    // the critical path for buffers the recursive filter never touches.
+    const size_t FN = cfg.rf ? 0 : size_t(W) * H;
+    std::vector<float> slice(size_t(W) * H), tmp(FN);
+    std::vector<float> ip(FN), mp(FN), mip(FN);
+    std::vector<float> ab(FN), bb(FN);
+    std::vector<float> ma(FN), mb(FN);
     std::vector<float> blk(blockwise ? 0 : size_t(KB) * W * H);
     // Thread-local running top-2, structure of arrays so the reject test touches
     // ONE plane. Separate arrays matter: a packed struct would pull 12 bytes per
@@ -904,7 +914,7 @@ int main(int argc, char** argv) {
     float* ts1 = blockwise ? as1[t].data() : nullptr;
     int16_t* td0 = blockwise ? ad0[t].data() : nullptr;
     int16_t* td1 = blockwise ? ad1[t].data() : nullptr;
-    const size_t NS = (F == 1) ? size_t(W) * H : size_t(Ws) * Hs;
+    const size_t NS = cfg.rf ? 0 : ((F == 1) ? size_t(W) * H : size_t(Ws) * Hs);
     std::vector<float> ps(NS), ips(NS), mps(NS), mips(NS), ts(NS);
     std::vector<float> abs_(NS), bbs(NS), mas(NS), mbs(NS);
     if (guided_search) {

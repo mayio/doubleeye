@@ -2281,3 +2281,29 @@ reason the profiler was not used first is that it needed a sysctl and the ablati
 sufficient. They were not: ablation tells you what a stage costs, and only counters tell
 you *why*. When two or three mechanism guesses in a row fail on the same code, that is
 the signal to stop guessing and get the counters, not to try a fourth.
+
+### 17% was waste, not a bottleneck
+
+Chasing the idle core further, with no mechanism reasoning involved -- just reading
+what the code allocates. Every cost-stage thread took **all eighteen scratch planes**,
+one set per filter path, 12 MB each and 46 MB across four threads, and `std::vector`
+zero-fills them. Under the recursive filter exactly one of those planes is ever
+touched. The guided filter's `mean_I` and `var_I` were computed too -- a downsample,
+two box filters and a variance pass over the whole image, serially -- for a result
+nothing read.
+
+| | total, teddy |
+|---|---|
+| before | 50.8 ms |
+| allocate only the active path | **42.4 ms** |
+
+**17%, bit-identical, and eight scenes at 54 ms mean.** No hypothesis was needed and
+none of the day's mechanism reasoning would ever have found it: this was not a
+bottleneck to be relieved, it was work that did not need doing, and profiling attributes
+it to whichever stage happens to contain the `memset`.
+
+Worth stating plainly because it is the cheapest lesson here: **before asking why a
+stage is slow, check what it is doing that it does not need to do at all.** Three
+alternative filter paths accreted over a day of experiments, each correctly leaving the
+others' buffers in place, and nothing about the resulting allocation looked wrong in
+review.
