@@ -32,6 +32,8 @@ PIPE    := $(BUILD)/de_pipe
 DENSE   := $(BUILD)/de_dense
 TESTBIN := $(BUILD)/test_preproc
 TESTMAT := $(BUILD)/test_match
+# Header-only kernel, so no object to link; reports SKIPPED off AArch64.
+TESTSIMD := $(BUILD)/test_simd_score
 
 .PHONY: all clean test
 all: $(TOOL) $(MATCHER) $(BENCH) $(PROF) $(PIPE) $(DENSE)
@@ -69,10 +71,15 @@ $(TESTBIN): tests/test_preproc.cpp $(OBJS)
 $(TESTMAT): tests/test_match.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
 
-test: $(TESTBIN) $(TESTMAT)
+$(TESTSIMD): tests/test_simd_score.cpp include/doubleeye/simd_score.hpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $< -o $@
+
+test: $(TESTBIN) $(TESTMAT) $(TESTSIMD)
 	@$(TESTBIN)
 	@echo
 	@$(TESTMAT)
+	@echo
+	@$(TESTSIMD)
 
 clean:
 	rm -rf $(BUILD)

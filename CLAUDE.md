@@ -23,7 +23,8 @@ comments, commit messages, or documentation.
 | `doc/` | the documentation. `03-obstacles.md` is the most useful file here |
 
 ```bash
-cd core && make && make test      # 90 assertions, must stay at 0 failures
+cd core && make && make test      # 104 assertions, must stay at 0 failures. 16 of them are the NEON
+                                  # kernel and report SKIPPED off the Jetson
 tools/deploy.sh                   # sync jetson/ and core/ to the TX2 and build both
 ```
 
