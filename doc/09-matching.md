@@ -1313,3 +1313,33 @@ caught this time because checking cost two minutes.
 - **Untried and still promising:** slanted planes for the genuinely-slanted
   population, and a graded cost (Census plus absolute difference) for the ~50% of
   error that sits in flat regions and is untouched by anything done today.
+
+### Blocking the disparity dimension: right idea, smaller effect than predicted
+
+The scatter into the volume writes `vol[(y*W+x)*D + k]`, which for fixed k walks
+stride D floats — 240 bytes, so one useful float per 64-byte cache line, over a
+40 MB array, sixty times. Given the work is bandwidth bound that looked like the
+dominant cost.
+
+Processing disparity in blocks of 16 and transposing once per block, so each output
+cache line receives 16 consecutive k values instead of one:
+
+| | cost stage | total |
+|---|---|---|
+| before | 168 ms | 226 ms |
+| after | 155 ms | **212 ms** |
+
+Output bit-identical (81.9% coverage, 7.7% bad on teddy). A 6% gain, not the large
+one the cache arithmetic suggested — so the strided scatter was **not** the dominant
+term, and I had over-attributed.
+
+What actually dominates is the guided filter itself: four box passes per disparity
+slice, each reading and writing a W×H float plane, sixty times. That is roughly half
+a gigabyte of traffic per image pair, and it is inherent to doing the filtering at
+full resolution.
+
+The known fix is the **fast guided filter**: subsample the guidance and the input,
+filter at reduced resolution, upsample the two coefficient planes and apply them at
+full resolution. The coefficients are smooth, so subsampling by 4 costs almost
+nothing in quality and removes ~16x of the filter traffic. Untried, and the obvious
+next step on runtime.

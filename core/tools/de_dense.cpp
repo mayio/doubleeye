@@ -350,13 +350,28 @@ int main(int argc, char** argv) {
   }
   {
     const int r = std::max(0, cfg.agg);
+    // Disparity is processed in BLOCKS, and each thread owns whole blocks.
+    //
+    // The scatter into the volume writes vol[(y*W+x)*D + k], which for a fixed k
+    // walks stride D floats -- 240 bytes, so one useful float per cache line, over
+    // a 40 MB array, sixty times. That write amplification was the dominant memory
+    // cost, and the work is bandwidth bound.
+    //
+    // Computing KB consecutive disparities before transposing means each cache
+    // line receives KB consecutive k values instead of one. KB = 16 fills a
+    // 64-byte line exactly.
+    const int KB = 16;
+    const int nblocks = (D + KB - 1) / KB;
     std::vector<std::thread> cpool;
     for (int t = 0; t < nthreads; ++t) cpool.emplace_back([&, t]() {
     std::vector<float> slice(size_t(W) * H), tmp(size_t(W) * H);
     std::vector<float> ip(size_t(W) * H), mp(size_t(W) * H), mip(size_t(W) * H);
     std::vector<float> ab(size_t(W) * H), bb(size_t(W) * H);
     std::vector<float> ma(size_t(W) * H), mb(size_t(W) * H);
-    for (int k = t; k < D; k += nthreads) {
+    std::vector<float> blk(size_t(KB) * W * H);
+    for (int b = t; b < nblocks; b += nthreads) {
+    const int klo = b * KB, khi = std::min(D, klo + KB);
+    for (int k = klo; k < khi; ++k) {
       const int d = cfg.dmin + k;
       std::fill(slice.begin(), slice.end(), 0.f);
       for (int y = 3; y < H - 3; ++y)
@@ -383,9 +398,19 @@ int main(int argc, char** argv) {
         box_filter(slice.data(), mp.data(), tmp.data(), W, H, r);
         slice.swap(mp);
       }
+      // Stage into the block buffer; the transpose happens once per block.
+      float* dst = &blk[size_t(k - klo) * W * H];
+      std::fill(dst, dst + size_t(W) * H, -1e30f);
       for (int y = 3; y < H - 3; ++y)
         for (int x = 3 + d; x < W - 3; ++x)
-          vol[(size_t(y) * W + x) * D + k] = slice[size_t(y) * W + x];
+          dst[size_t(y) * W + x] = slice[size_t(y) * W + x];
+    }
+    // Blocked transpose: KB consecutive k values per output cache line.
+    const int kn = khi - klo;
+    for (size_t px = 0; px < size_t(W) * H; ++px) {
+      float* out = &vol[px * D + klo];
+      for (int j = 0; j < kn; ++j) out[j] = blk[size_t(j) * W * H + px];
+    }
     }
     });
     for (auto& th : cpool) th.join();
