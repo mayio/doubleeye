@@ -1512,3 +1512,26 @@ Step 3 is where the 12x mostly lives, and step 4 multiplies it.
 is a larger change than the ones above; writing it half-done and unverified would be
 worse than leaving it. The current state is 202 ms, quality level with SGM, with every
 number in this document reproducible from `core/tools/de_dense.cpp` as committed.
+
+### Step 3 before step 2 is a regression, which confirms the ordering matters
+
+Tried the pixel-parallel reduction on its own, without first changing the layout:
+loop d outer, x inner, carrying a top-2 per pixel in three arrays so every inner
+loop is W independent lanes.
+
+Solve went **43 ms to 57 ms** — a 12% regression on the whole program. Output
+identical, so the arithmetic was right; the memory was not.
+
+The reason is the layout it was applied to. In `[x][d]`, "x inner at fixed d" reads
+`beta[x*D + k]`, which strides by D floats — 240 bytes, a fresh cache line per
+element. Vectorising the arithmetic while making every load a cache miss is a net
+loss, and comfortably so.
+
+So the plan's ordering is load-bearing rather than stylistic: **`[d][x]` is a
+prerequisite for the pixel-parallel reduction, not a companion optimisation.** With
+that layout the same loop reads contiguously and the lanes are free; without it the
+lanes cost more than they save.
+
+Reverted. Recorded because the failure is informative: it is evidence that the
+remaining 12x really is in the layout-plus-vectorisation combination, and that
+neither half delivers alone. The four steps have to go in order.
