@@ -1849,3 +1849,66 @@ known ground truth (80.3% against 75.0% on teddy) because MASDA's gate discards
 correct pixels along with wrong ones. That is the trade the gate exists to make, not a
 defect, but anything downstream that wants pixels rather than precision should know
 the choice is there.
+
+## Sparse candidates: faster AND more accurate, at k=2 rather than k=8
+
+Built as designed -- top-k by rank within each pixel, claimant lists rebuilt per row
+by counting sort into `xr = x - d` buckets, which replaces the stride-(D+1) diagonal
+walk in the beta update. Rows stay independent, so the row-parallel pool is unchanged.
+
+Sweeping k over the eight scenes:
+
+| k | coverage | bad-1.0 | mean runtime |
+|---|---|---|---|
+| dense, D=60 | 76.4% | 11.1% | 164 ms |
+| **2** | **75.6%** | **10.3%** | **120 ms** |
+| 3 | 75.9% | 11.1% | 127 |
+| 4 | 75.9% | 11.3% | 127 |
+| 6 | 76.1% | 11.6% | 131 |
+| 8 | 76.1% | 11.6% | 148 |
+| 12 | 76.2% | 11.5% | 153 |
+| 16 | 76.3% | 11.4% | 155 |
+
+**k=2 is better than the dense solver on both axes** -- 0.8 points of bad-1.0 and 1.4x
+the speed -- and the curve is not monotonic: it degrades to 11.6% by k=6-8 and then
+climbs back towards the dense 11.1% as k approaches D. Coverage falls 0.8 points, so
+correct-pixels-over-known is 67.8% against the dense 67.9%: the same yield at higher
+precision, which is the trade the margin gate exists to make.
+
+**k=1 is not comparable and should not be read from the same table.** With no
+runner-up the margin degenerates to `best - lambda`, which is always large, so the
+gate stops rejecting anything -- hence its apparent 80.5% coverage. The gate is
+identical for every k >= 2, because the margin only ever looks at the top two, so
+differences across k >= 2 are purely the message passing seeing fewer candidates.
+
+### The measurement that cleared this measured the wrong quantity
+
+`topk_recall.py` was written to bound pruning: is the truth *available* in the top k?
+It said k=8 keeps 82.8% against 67.9% delivered, so k=8 was safe. That reasoning was
+sound and the conclusion was right, but it was not the operative effect. **Availability
+was never the constraint -- competition was.** k=8 keeps strictly more of the truth
+available than k=2 and scores 1.3 points worse.
+
+The mechanism is the one already on record from the sparse matcher: Census plus
+uniqueness cannot pick the correct match out of 71 candidates, and it was measured
+there as a semi-dense variant getting *worse* (0.587) precisely because every right
+pixel was offered. Restricting each left pixel to its best and its runner-up makes the
+uniqueness constraint arbitrate between two plausible options instead of ranking a
+crowd. Pruning is doing quality work, not just saving time.
+
+Recording this because the shape recurs: a bound that is correct, cheap and
+reassuring can still be about a different mechanism than the one that decides the
+outcome. The recall sweep should have been a bad-1.0 sweep over k from the start --
+which costs the same and answers the question directly.
+
+### Where dense MASDA now stands against SGM
+
+| | coverage | bad-1.0 | runtime |
+|---|---|---|---|
+| SGM | 78.0% | 10.9% | 16 ms |
+| dense MASDA | 75.6% | **10.3%** | 120 ms |
+
+Per scene, teddy is 7.6% against SGM's 8.1% and cones 5.5% against 5.5%. **On
+accuracy this is now ahead rather than level**, at 2.4 points less coverage and 7.5x
+the runtime. Over the session: 246 -> 120 ms mean and 11.0 -> 10.3% bad-1.0, so the
+whole of it was speed and accuracy together rather than a trade.

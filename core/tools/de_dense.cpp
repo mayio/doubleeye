@@ -292,6 +292,7 @@ struct Cfg {
   bool guided = true;      // edge-aware aggregation
   float eps = 0.0025f;     // guided-filter regularisation, I in [0,1]
   int fgf = 1;             // fast guided filter: measured NOT worth it, see below
+  int topk = 2;                // candidates per pixel; 2 measured best, 0 = dense
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
   int threads = 0;
 };
@@ -433,6 +434,140 @@ void solve_row(int y, int W, int D, const Cfg& cfg,
   (void)y;
 }
 
+// MASDA on a pruned candidate list instead of the full disparity range.
+//
+// Measured before building it (article/topk_recall.py): the true disparity is
+// within 1 px of one of the top 8 candidates by aggregated cost for 82.8% of
+// known-ground-truth pixels, while the shipping pipeline delivers 67.9% correct.
+// Fifteen points of headroom, so pruning to k=8 is 7.5x fewer edges at no
+// accuracy the benchmark can resolve.
+//
+// Pruning is by RANK WITHIN A PIXEL, never a global threshold on score. Census
+// costs are absolute Hamming fractions, so a textureless region scores uniformly
+// mediocre and its correct match scores mediocre too; a magnitude cutoff would
+// delete precisely the flat regions where half the remaining error sits.
+//
+// The rho update keeps its shape -- a contiguous run of k per left pixel. The
+// beta update is the interesting one: "this right pixel's other claimants" was a
+// stride-(D+1) diagonal walk through the volume, which pruning makes irregular.
+// A counting sort into buckets by xr = x - d rebuilds the claimant lists in
+// O(k*W) per row, entirely within the row and cache-resident at 28 KB. That
+// diagonal walk was the one genuinely awkward thing the dense layout imposed, and
+// this removes it rather than reorganising it.
+void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
+                      float* cs, int* cd, int* cn,
+                      float* beta, float* rho,
+                      float* out_disp, float* out_margin, int hw,
+                      int* bstart, int* bitems, int* cursor,
+                      float* best, int* bestj, int* order, char* taken) {
+  if (W < 1 || K < 1) return;      // states the obvious to the compiler, which
+  const size_t KS = size_t(K);      // otherwise cannot bound the fills below and
+  const int dmin = cfg.dmin;        // warns that they may exceed any object size
+  const float keep = 1.f - cfg.damping;
+
+  // --- select the top K per pixel, sorted best first ---
+  //
+  // One pass over D holding a sorted list of K by insertion. The alternative,
+  // K selection passes over D, is 8x60 comparisons per pixel; this is 60 plus
+  // the few insertions that actually beat the running Kth best.
+  for (int x = 0; x < W; ++x) {
+    float* S = cs + size_t(x) * KS;
+    int* Dd = cd + size_t(x) * KS;
+    int n = 0;
+    int lo = 0, hi = 0;
+    if (x >= hw && x < W - hw) {
+      lo = std::max(0, x - (W - hw) + 1 - dmin + 1);
+      hi = std::min(D, x - hw - dmin + 1);
+      if (hi < lo) hi = lo;
+    }
+    const float* V = vol + size_t(x) * D;
+    for (int k = lo; k < hi; ++k) {
+      const float v = V[k];
+      if (v <= -1e29f) continue;
+      if (n < K) {
+        int j = n++;
+        for (; j > 0 && S[j - 1] < v; --j) { S[j] = S[j - 1]; Dd[j] = Dd[j - 1]; }
+        S[j] = v; Dd[j] = k;
+      } else if (v > S[K - 1]) {
+        int j = K - 1;
+        for (; j > 0 && S[j - 1] < v; --j) { S[j] = S[j - 1]; Dd[j] = Dd[j - 1]; }
+        S[j] = v; Dd[j] = k;
+      }
+    }
+    cn[x] = n;
+    // Identical to the dense margin: best minus the better of the runner-up and
+    // lambda, which for K >= 2 sees the same two values it did before.
+    const float alt = (n < 2) ? cfg.lambda : std::max(S[1], cfg.lambda);
+    out_margin[x] = (n == 0) ? 0.f : S[0] - alt;
+  }
+
+  // --- claimant lists per right pixel, by counting sort ---
+  std::fill(cursor, cursor + W, 0);
+  for (int x = 0; x < W; ++x)
+    for (int j = 0; j < cn[x]; ++j) {
+      const int xr = x - (dmin + cd[size_t(x) * KS + j]);
+      if (xr >= 0 && xr < W) ++cursor[xr];
+    }
+  bstart[0] = 0;
+  for (int xr = 0; xr < W; ++xr) bstart[xr + 1] = bstart[xr] + cursor[xr];
+  for (int xr = 0; xr < W; ++xr) cursor[xr] = bstart[xr];
+  for (int x = 0; x < W; ++x)
+    for (int j = 0; j < cn[x]; ++j) {
+      const int xr = x - (dmin + cd[size_t(x) * KS + j]);
+      if (xr >= 0 && xr < W) bitems[cursor[xr]++] = int(size_t(x) * KS + j);
+    }
+
+  std::fill(beta, beta + size_t(W) * KS, 0.f);
+  std::fill(rho, rho + size_t(W) * KS, 0.f);
+
+  for (int it = 0; it < cfg.iters; ++it) {
+    for (int x = 0; x < W; ++x) {
+      const int n = cn[x];
+      if (n == 0) continue;
+      const size_t b = size_t(x) * KS;
+      Top2 t;
+      for (int j = 0; j < n; ++j) t.push(beta[b + j], j);
+      for (int j = 0; j < n; ++j) {
+        const float tgt = cs[b + j] - std::max(cfg.lambda, t.excl(j));
+        rho[b + j] = keep * tgt + cfg.damping * rho[b + j];
+      }
+    }
+    for (int xr = 0; xr < W; ++xr) {
+      const int lo = bstart[xr], hi = bstart[xr + 1];
+      if (hi <= lo) continue;
+      Top2 t;
+      for (int p = lo; p < hi; ++p) t.push(rho[bitems[p]], p - lo);
+      for (int p = lo; p < hi; ++p) {
+        const int idx = bitems[p];
+        beta[idx] = keep * (cs[idx] - std::max(cfg.gamma, t.excl(p - lo)))
+                    + cfg.damping * beta[idx];
+      }
+    }
+  }
+
+  for (int x = 0; x < W; ++x) {
+    best[x] = -1e30f; bestj[x] = -1; taken[x] = 0; order[x] = x;
+    const size_t b = size_t(x) * KS;
+    for (int j = 0; j < cn[x]; ++j) {
+      if (cs[b + j] <= cfg.lambda) continue;
+      const float bel = beta[b + j] + rho[b + j] - cs[b + j];
+      if (bel > best[x]) { best[x] = bel; bestj[x] = j; }
+    }
+  }
+  std::sort(order, order + W, [&](int a, int b) { return best[a] > best[b]; });
+  for (int oi = 0; oi < W; ++oi) {
+    const int x = order[oi];
+    out_disp[x] = std::nanf("");
+    if (bestj[x] < 0) continue;
+    if (cfg.min_margin > 0.f && out_margin[x] < cfg.min_margin) continue;
+    const int d = dmin + cd[size_t(x) * KS + bestj[x]];
+    const int xr = x - d;
+    if (xr < 0 || taken[xr]) continue;
+    taken[xr] = 1;
+    out_disp[x] = float(d);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -464,6 +599,7 @@ int main(int argc, char** argv) {
     else if (a == "--min-margin" && has) cfg.min_margin = float(std::atof(argv[++i]));
     else if (a == "--out" && has) outp = argv[++i];
     else if (a == "--dump-vol" && has) volp = argv[++i];
+    else if (a == "--topk" && has) cfg.topk = std::atoi(argv[++i]);
   }
   Image8 L, R;
   if (!load_raw_y8(lp, W, H, &L) || !load_raw_y8(rp, W, H, &R)) {
@@ -686,7 +822,25 @@ int main(int argc, char** argv) {
       std::vector<int> idxs(size_t(D) + 2), k0(W), k1(W), bestk(W), order(W);
       std::vector<float> best(W);
       std::vector<char> taken(W);
+      // Sparse path scratch. At K=8 and W=450 a row's candidates are 28 KB,
+      // against 108 KB for the dense W*D row it replaces.
+      const int K = cfg.topk > 0 ? std::min(cfg.topk, D) : 0;
+      std::vector<float> cs(size_t(W) * std::max(1, K));
+      std::vector<float> sbeta(size_t(W) * std::max(1, K));
+      std::vector<float> srho(size_t(W) * std::max(1, K));
+      std::vector<int> cd(size_t(W) * std::max(1, K)), cn(W);
+      std::vector<int> bstart(size_t(W) + 1), bitems(size_t(W) * std::max(1, K));
+      std::vector<int> cursor(W);
       for (int y = t; y < H; y += nthreads) {
+        if (K > 0) {
+          solve_row_sparse(W, D, K, cfg, &vol[size_t(y) * W * D],
+                           cs.data(), cd.data(), cn.data(),
+                           sbeta.data(), srho.data(),
+                           &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
+                           bstart.data(), bitems.data(), cursor.data(),
+                           best.data(), bestk.data(), order.data(), taken.data());
+          continue;
+        }
         solve_row(y, W, D, cfg, &vol[size_t(y) * W * D],
                   s.data(), beta.data(), rho.data(),
                   &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
