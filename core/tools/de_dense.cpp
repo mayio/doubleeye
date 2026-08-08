@@ -502,6 +502,8 @@ struct Cfg {
   int topk = 2;                // candidates per pixel; 2 measured best, 0 = dense
   int band = 2;                // prior-guided: search +-band around the prior
   bool csct = false;           // centre-symmetric census: 24 bits instead of 48
+  float ad = 0.15f;            // graded cost weight; 0.15 with trunc 10 measured best
+  int ad_trunc = 10;           // truncation for the absolute difference, 8-bit
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
   int threads = 0;
 };
@@ -820,6 +822,8 @@ int main(int argc, char** argv) {
     else if (a == "--topk" && has) cfg.topk = std::atoi(argv[++i]);
     else if (a == "--band" && has) cfg.band = std::atoi(argv[++i]);
     else if (a == "--csct") cfg.csct = true;
+    else if (a == "--ad" && has) cfg.ad = float(std::atof(argv[++i]));
+    else if (a == "--ad-trunc" && has) cfg.ad_trunc = std::atoi(argv[++i]);
     else if (a == "--prior" && has) priorp = argv[++i];
   }
   Image8 L, R;
@@ -1120,7 +1124,36 @@ int main(int argc, char** argv) {
         const int half = cfg.csct ? 12 : 24;
         for (int h = 0; h <= 2 * half; ++h)
           tbl[h] = int16_t(((half - h) * SCORE_ONE) / half);
-        if (cfg.csct) {
+        // Graded cost: Census plus a truncated absolute difference.
+        //
+        // Census gives 49 quantisation levels (25 under --csct) and is invariant to
+        // monotonic intensity change, which is what makes it robust. Its weakness is
+        // that a flat region produces near-identical descriptors and the score has
+        // nothing to separate candidates with. An absolute difference is continuous
+        // and has exactly the complementary failure -- it breaks under gain and
+        // exposure differences where Census does not. Combining them is standard and
+        // is the level-count argument running the other way from --csct, which
+        // measurably lost accuracy by halving the levels.
+        //
+        // Truncated so that an occlusion or a specular pixel cannot dominate.
+        const int32_t wq = int32_t(std::max(0.f, std::min(1.f, cfg.ad)) * 1024.f);
+        int16_t adt[256];
+        if (wq) {
+          const int T = std::max(1, cfg.ad_trunc);
+          for (int v = 0; v < 256; ++v)
+            adt[v] = int16_t(SCORE_ONE - (2 * SCORE_ONE * std::min(v, T)) / T);
+        }
+        if (wq && !cfg.csct) {
+          const uint8_t* Ld = L.data.data();
+          const uint8_t* Rd = R.data.data();
+          for (int y = 3; y < H - 3; ++y)
+            for (int x = 3 + d; x < W - 3; ++x) {
+              const size_t i = size_t(y) * W + x;
+              const int32_t c = tbl[popcnt64(cl[i] ^ cr[i - size_t(d)])];
+              const int32_t a = adt[std::abs(int(Ld[i]) - int(Rd[i - size_t(d)]))];
+              islice[i] = int16_t((c * (1024 - wq) + a * wq) >> 10);
+            }
+        } else if (cfg.csct) {
           for (int y = 3; y < H - 3; ++y)
             for (int x = 3 + d; x < W - 3; ++x)
               islice[size_t(y) * W + x] = tbl[__builtin_popcount(

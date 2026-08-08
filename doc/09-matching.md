@@ -2455,3 +2455,42 @@ The graded-cost idea points the other way: Census plus an absolute difference *a
 levels. That remains the untried lever on the half of the error that sits in
 near-fronto-parallel regions, and CS-CT is evidence for the mechanism behind it -- moving
 the level count down measurably hurts, so moving it up is worth testing.
+
+## Graded cost: 9.7% bad-1.0, and now ahead of SGM by more than a point
+
+Census plus a truncated absolute difference, the lever this file has listed as untried
+since the SGM comparison. Census gives 49 quantisation levels and is invariant to
+monotonic intensity change; its weakness is that a flat region produces near-identical
+descriptors and the score has nothing to separate candidates with. An absolute
+difference is continuous and fails in the complementary way -- under gain and exposure
+differences, where Census does not.
+
+**The evidence for trying it came from the CS-CT negative**: halving the level count
+from 49 to 25 measurably cost 1.2 points, so the level count matters and moving it up
+was worth testing. Two dimensions swept over all eight scenes:
+
+| weight | 0 | 0.10 | **0.15** | 0.20 | 0.25 | 0.35 | 0.5 |
+|---|---|---|---|---|---|---|---|
+| bad-1.0 | 10.3% | 9.9 | **9.7** | 9.9 | 10.0 | 10.4 | 10.7 |
+
+| truncation | 4 | 6 | **8** | **10** | 20 | 40 |
+|---|---|---|---|---|---|---|
+| bad-1.0 | 9.9% | 9.8 | **9.7** | **9.7** | 9.9 | 10.2 |
+
+Both are genuine interior optima, swept past on each side. Truncation matters as much as
+the weight: at 40 the raw difference lets an occluded or specular pixel dominate, at 4 it
+is nearly binary and throws away the continuity that was the point.
+
+| | coverage | bad-1.0 | desktop | TX2 |
+|---|---|---|---|---|
+| SGM | 78.0% | 10.9% | 16 ms | -- |
+| census only | 75.7% | 10.3% | 40 ms | 88.4 |
+| **census + graded** | **76.0%** | **9.7%** | 43 ms | 92.6 |
+
+**Better on coverage and accuracy at once**, for about 5% of runtime on both machines --
+two image loads and a table lookup per pixel-disparity in the score loop. Unlike the
+last several changes this one costs the same proportion on both targets, because it adds
+arithmetic rather than shifting memory or lane width.
+
+Against SGM this is now **9.7% against 10.9%**, a lead of 1.2 points rather than 0.6, at
+2.0 points less coverage.
