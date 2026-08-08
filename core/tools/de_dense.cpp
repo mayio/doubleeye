@@ -208,8 +208,86 @@ void upsample(const float* in, float* out, int W, int H, int Ws, int Hs, int f) 
   (void)f;
 }
 
+// Domain-transform recursive edge-aware filter, in place, no temporaries.
+//
+// Why replace the guided filter: measured, the cost stage is bound by how many
+// times it walks memory, not by the arithmetic in the walks -- a 15x larger
+// aggregation window is free, and threads saturate at two. The guided filter
+// touches 29 whole planes per disparity slice and needs eight temporaries. This
+// touches 12 and needs none, so the per-thread working set drops from ~6 MB to
+// one plane and the shared coefficients.
+//
+// Gastal and Oliveira 2011, doi:10.1145/2010324.1964964. Two 1-D passes per
+// axis, each a normalised IIR:
+//
+//     F[x] = F[x] + a[x] * (F[x-1] - F[x])
+//
+// with a[x] in [0,1) shrinking towards 0 across an intensity edge, which is what
+// makes it edge-aware. a depends only on the GUIDE image, so like the guided
+// filter's mean_I and var_I it is computed once for the whole volume rather than
+// per disparity -- that is what makes an edge-aware filter affordable here at
+// all.
+//
+// The horizontal passes are a serial dependency in x, the same problem the box
+// filter's running sum had, and get the same fix: L rows at once for L
+// independent chains. The vertical passes carry a whole row and vectorise over x
+// with no help.
+template <int L>
+inline void rf_horiz(float* C, const float* ax, int W, int y, int n) {
+  float f[L];
+  for (int l = 0; l < n; ++l) f[l] = C[size_t(y + l) * W];
+  for (int x = 1; x < W; ++x)
+    for (int l = 0; l < n; ++l) {
+      const size_t i = size_t(y + l) * W + x;
+      f[l] = C[i] + ax[i] * (f[l] - C[i]);
+      C[i] = f[l];
+    }
+  for (int l = 0; l < n; ++l) f[l] = C[size_t(y + l) * W + W - 1];
+  for (int x = W - 2; x >= 0; --x)
+    for (int l = 0; l < n; ++l) {
+      const size_t i = size_t(y + l) * W + x;
+      f[l] = C[i] + ax[i + 1] * (f[l] - C[i]);
+      C[i] = f[l];
+    }
+}
+
+void rf_filter(float* C, const float* ax, const float* ay, int W, int H) {
+  const int CH = 8;
+  for (int y = 0; y < H; y += CH) rf_horiz<CH>(C, ax, W, y, std::min(CH, H - y));
+  for (int y = 1; y < H; ++y) {
+    float* cur = C + size_t(y) * W;
+    const float* prv = C + size_t(y - 1) * W;
+    const float* a = ay + size_t(y) * W;
+    for (int x = 0; x < W; ++x) cur[x] += a[x] * (prv[x] - cur[x]);
+  }
+  for (int y = H - 2; y >= 0; --y) {
+    float* cur = C + size_t(y) * W;
+    const float* nxt = C + size_t(y + 1) * W;
+    const float* a = ay + size_t(y + 1) * W;
+    for (int x = 0; x < W; ++x) cur[x] += a[x] * (nxt[x] - cur[x]);
+  }
+}
+
+// The coefficient planes. ax[i] governs the step into pixel i from its left
+// neighbour, ay[i] the step from the row above.
+void rf_coeffs(const float* I, float* ax, float* ay, int W, int H,
+               float sigma_s, float sigma_r) {
+  const float k = -std::sqrt(2.f) / sigma_s;
+  const float rs = sigma_s / sigma_r;
+  for (int y = 0; y < H; ++y)
+    for (int x = 0; x < W; ++x) {
+      const size_t i = size_t(y) * W + x;
+      const float gx = x > 0 ? std::fabs(I[i] - I[i - 1]) : 0.f;
+      const float gy = y > 0 ? std::fabs(I[i] - I[i - size_t(W)]) : 0.f;
+      ax[i] = std::exp(k * (1.f + rs * gx));
+      ay[i] = std::exp(k * (1.f + rs * gy));
+    }
+}
+
 struct Cfg {
   int dmin = 1, dmax = 60, iters = 2, agg = 3;
+  bool rf = true;              // recursive edge-aware filter; --guided for the old one
+  float sigma_s = 12.f, sigma_r = 0.20f;   // sigma_r swept: 0.2 is the peak
   bool subpixel = false;   // measured: hurts slightly, see below
   bool guided = true;      // edge-aware aggregation
   float eps = 0.0025f;     // guided-filter regularisation, I in [0,1]
@@ -376,6 +454,10 @@ int main(int argc, char** argv) {
     else if (a == "--agg" && has) cfg.agg = std::atoi(argv[++i]);
     else if (a == "--subpixel") cfg.subpixel = true;
     else if (a == "--box") cfg.guided = false;
+    else if (a == "--rf") cfg.rf = true;
+    else if (a == "--guided") cfg.rf = false;
+    else if (a == "--sigma-s" && has) cfg.sigma_s = float(std::atof(argv[++i]));
+    else if (a == "--sigma-r" && has) cfg.sigma_r = float(std::atof(argv[++i]));
     else if (a == "--eps" && has) cfg.eps = float(std::atof(argv[++i]));
     else if (a == "--fgf" && has) cfg.fgf = std::max(1, std::atoi(argv[++i]));
     else if (a == "--threads" && has) cfg.threads = std::atoi(argv[++i]);
@@ -445,6 +527,10 @@ int main(int argc, char** argv) {
   const int rs = (F == 1) ? cfg.agg : std::max(1, cfg.agg / F);
   std::vector<float> I(size_t(W) * H);
   std::vector<float> Is(size_t(Ws) * Hs), mIs(size_t(Ws) * Hs), vIs(size_t(Ws) * Hs);
+  // Shared, read-only, disparity-independent: 1.35 MB for both, against the
+  // guided filter's eight per-thread temporaries.
+  std::vector<float> axv, ayv;
+  const float *axp = nullptr, *ayp = nullptr;
   {
     for (size_t i = 0; i < I.size(); ++i) I[i] = float(L.data[i]) / 255.f;
     std::vector<float> t1(size_t(Ws) * Hs), IIs(size_t(Ws) * Hs);
@@ -453,6 +539,11 @@ int main(int argc, char** argv) {
     box_filter(Is.data(), mIs.data(), t1.data(), Ws, Hs, rs);
     box_filter(IIs.data(), vIs.data(), t1.data(), Ws, Hs, rs);
     for (size_t i = 0; i < vIs.size(); ++i) vIs[i] -= mIs[i] * mIs[i];
+  }
+  if (cfg.rf) {
+    axv.resize(size_t(W) * H); ayv.resize(size_t(W) * H);
+    rf_coeffs(I.data(), axv.data(), ayv.data(), W, H, cfg.sigma_s, cfg.sigma_r);
+    axp = axv.data(); ayp = ayv.data();
   }
   {
     const int r = std::max(0, cfg.agg);
@@ -506,7 +597,9 @@ int main(int argc, char** argv) {
       float* dst = &blk[size_t(k - klo) * W * H];
       std::fill(dst, dst + size_t(W) * H, -1e30f);
       bool staged = false;
-      if (r > 0 && cfg.guided && F == 1) {
+      if (cfg.rf) {
+        rf_filter(slice.data(), axp, ayp, W, H);
+      } else if (r > 0 && cfg.guided && F == 1) {
         // Direct full-resolution guided filter. Kept as a separate path because
         // routing F == 1 through the subsample/upsample machinery costs a
         // redundant copy and two bilinear passes for nothing: 207 ms against

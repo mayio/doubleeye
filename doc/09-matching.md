@@ -1734,3 +1734,55 @@ achieved 2.5 GB/s of 18.9, so traffic looked irrelevant. Measured properly it is
 11.6 GB/s and saturating four cores, so halving every one of those 29 touches is
 worth what the original argument said it was not — quite apart from doubling the SIMD
 lanes.
+
+## Recursive edge-aware aggregation: 1.34x for a tenth of a point
+
+Acting on the pass-count finding. The guided filter walks 29 whole planes per
+disparity slice and needs eight temporaries; a domain-transform recursive filter
+(Gastal and Oliveira 2011, doi:10.1145/2010324.1964964) walks 12 and needs none.
+Two 1-D passes per axis, each a normalised IIR:
+
+    F[x] = F[x] + a[x] * (F[x-1] - F[x])
+
+`a` shrinks towards 0 across an intensity edge, which is what makes it edge-aware,
+and it depends only on the guide image -- so like the guided filter's `mean_I` and
+`var_I` it is computed once for the whole volume, which is what makes an edge-aware
+filter affordable at all. Two shared read-only coefficient planes, 1.35 MB, against
+eight per-thread temporaries at ~6 MB.
+
+Its horizontal passes are a serial dependency in x, the same problem the box filter's
+running sum had, and take the same fix: eight rows at once for eight independent
+chains. The vertical passes carry a whole row and vectorise over x unaided.
+
+**Teddy**, where the cost stage is the point:
+
+| | coverage | bad-1.0 | cost stage | total |
+|---|---|---|---|---|
+| guided | 81.9% | 7.7% | 131 ms | 181 ms |
+| recursive | 81.5% | **7.9%** | **73 ms** | **126 ms** |
+
+**All eight scenes**, measured back to back in one session:
+
+| | coverage | bad-1.0 | mean runtime |
+|---|---|---|---|
+| guided | 76.7% | 11.0% | 239 ms |
+| recursive | 76.4% | **11.1%** | **178 ms** |
+
+1.8x on the cost stage, 1.34x overall, for 0.1 point of bad-1.0 and 0.3 of coverage.
+Both remain available (`--guided`); the recursive filter is now the default, and the
+reason to expect it to win by *more* on the Jetson is that the gap it closes is
+traffic and working set, which is where the TX2 is poorer than this laptop.
+
+**`sigma_r` was swept and 0.2 is a genuine peak** -- 7.9% at 0.2, rising to 8.2% at
+0.4, 8.9% at 1.0 and 9.2% at 2.0. Reading the first three points alone (0.05, 0.1,
+0.2) suggested it improved monotonically, which would have shipped the wrong default;
+the peak only appears once the range is extended past it. `sigma_s` barely matters,
+and the algebra says why: the exponent is `-sqrt(2)*(1/sigma_s + g/sigma_r)`, so for
+any large `sigma_s` the first term vanishes and the coefficient is set by the gradient
+term alone.
+
+**This is a trade, not a free win**, and the 0.1 point is smaller than the
+scene-to-scene spread, so it should not be quoted as "no loss" -- it is "no loss that
+this benchmark can resolve". Runtime on this laptop drifts ±12% with thermals across
+runs of identical work, which is why the comparison above is back to back and why
+single runs are not worth reporting.

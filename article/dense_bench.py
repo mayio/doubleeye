@@ -81,16 +81,18 @@ def main():
     ap.add_argument("--min-margin", default="0.01")
     ap.add_argument("--out", default=None,
                     help="directory to keep raw disparity in, for cmp")
+    ap.add_argument("--extra", default="",
+                    help="extra de_dense flags, e.g. '--rf --sigma-r 0.2'")
     a = ap.parse_args()
     if not os.path.exists(BIN):
         sys.exit(f"{BIN} not built -- run `cd core && make`")
     if a.out:
         os.makedirs(a.out, exist_ok=True)
     args = ["--threads", a.threads, "--agg", a.agg, "--iters", a.iters,
-            "--min-margin", a.min_margin]
+            "--min-margin", a.min_margin] + a.extra.split()
 
     print(f"de_dense --agg {a.agg} --iters {a.iters} "
-          f"--min-margin {a.min_margin} --threads {a.threads}\n")
+          f"--min-margin {a.min_margin} --threads {a.threads} {a.extra}\n")
     print(f"{'scene':<10}{'coverage':>10}{'bad-1.0':>10}{'ms':>8}")
     rows = [run(s, args, a.out) for s in scenes()]
     for r in rows:
