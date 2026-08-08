@@ -41,52 +41,66 @@ first-class output with one producer.
 
 ---
 
-## 0.3 Dense MASDA: level with SGM on quality, 13x behind on runtime
+## 0.3 Dense MASDA: ahead of SGM on accuracy, 5.2x behind on runtime
 
-State after 2026-08-08. `core/tools/de_dense.cpp`, eight Middlebury scenes:
+State after 2026-08-08, `core/tools/de_dense.cpp`, eight Middlebury scenes:
 
-| | coverage | bad-1.0 | runtime, teddy |
+| | coverage | bad-1.0 | runtime |
 |---|---|---|---|
-| dense MASDA | 76.7% | **11.0%** | 184 ms |
-| SGM | 78.0% | **10.9%** | 16 ms |
+| SGM | 78.0% | 10.9% | 16 ms |
+| **dense MASDA** | 75.6% | **10.3%** | **83 ms** |
 
-Runtime is 184 ms on teddy and cones (D=60) and 250-290 ms on the six 2005 scenes
-(D=80), mean 246 ms over the eight. Re-score any change with one command, and diff
-the raw disparity to prove a speed change was only a speed change:
+teddy 7.6% against SGM's 8.1%, cones 5.5% against 5.5%. **Ahead on accuracy**, at
+2.4 points less coverage. The day went 246 -> 83 ms and 11.0 -> 10.3% bad-1.0, so
+speed and accuracy moved together rather than trading.
+
+Re-score any change with one command, and diff the raw disparity to prove a speed
+change was only a speed change:
 
 ```sh
-.venv/bin/python article/dense_bench.py --out /tmp/after   # 76.7% cov, 11.0% bad
+.venv/bin/python article/dense_bench.py --out /tmp/after   # 75.6% cov, 10.3% bad
 cmp /tmp/before/teddy.f32 /tmp/after/teddy.f32
 ```
 
-Quality started the day 3.5x behind (28.1% against 8.1%) and is now a tie. What
-worked: window aggregation (26.6% -> 10.6%), guided-filter edge-aware support
-(10.6% -> 8.8%), margin gate for the operating point. What did not: sub-pixel
-parabola, fast guided filter, disparity blocking (6% only). All measured, all
-recorded in 09-matching.md with mechanisms.
+**What worked, all measured and written up in [09-matching.md](09-matching.md):**
+window aggregation, guided-filter edge-aware support, margin gate, eight independent
+chains in the box filter's running sum (74% of it, latency-bound), recursive
+edge-aware aggregation replacing the guided filter (29 plane touches -> 12),
+**top-2 candidates** (faster *and* 0.8 points better), and **blockwise top-2** so
+the 40 MB volume never exists.
 
-**Step 1 of the restructuring is done, and it changed what the plan should be.**
-Measured, not assumed — full write-up in
-[09-matching.md](09-matching.md#the-restructuring-step-1-measure-the-premise-before-building-on-it):
+**What did not:** sub-pixel parabola, fast guided filter, disparity blocking, band
+fusion on a cache-capacity argument, step 3 before step 2.
 
-- **Done, 15% and bit-identical**: eight independent horizontal chains in the box
-  filter (the running sum was 74% of it and is latency-bound, 2.45x in isolation),
-  normalisation folded into the vertical stores, and the guided filter's final
-  combine written straight into the block buffer. Cost stage 147.7 -> 124.8 ms,
-  total 216.0 -> 184.2 ms, quality unchanged to the decimal.
-- **The working-set premise was wrong.** Cropping until a plane is L2-resident buys
-  35% at four threads, not the 3x the argument implied: these passes stream with no
-  reuse, and streaming is prefetchable, so cache capacity barely matters.
-- **What the numbers now point at is traffic, not cache or arithmetic.** Both halves
-  of the cost stage scale at only ~1.4-1.5x on four real cores. The score loop
-  re-reads both 1.35 MB census planes once per disparity slice: **162 MB**, which
-  banding would turn into ~2.7 MB.
-- **Band fusion is no longer the obvious step 1.** Its halo is 4r rows because the
-  guided filter chains two box passes, so an L2-sized band does 3.5x redundant filter
-  work and a band that amortises the halo is back to thrashing L3. Resolving that
-  needs per-thread row stripes with the box accumulators carried across band
-  boundaries — a two-level streaming pipeline. Measure how much of the 1.4x scaling
-  the 162 MB explains *before* building it.
+### The stage split has moved, so the target has too
+
+teddy, four threads: **census 8-13 ms, cost ~54 ms, solve ~4 ms**.
+
+- **The solve is done.** 46 ms this morning, 4.1 ms now. Not worth further work.
+- **Cost is 65%** and still the target. What is left inside it: the score loop
+  re-reads both 1.35 MB census planes per disparity slice, and the recursive filter
+  is 12 plane touches in float32.
+- **Census is now 12-16%** without anyone having looked at it, and it is a fixed cost
+  paid twice per pair independent of D. First time it has been big enough to matter.
+- **int16** is the obvious next lever on the cost stage: half the traffic and twice
+  the SIMD lanes, on a stage measured to be pass- and traffic-bound. Precision is a
+  non-issue at 49 Hamming levels.
+- **Coverage is the one number behind SGM** (75.6% against 78.0%). Nothing tried today
+  addressed it, and the margin gate is deliberately trading it for precision.
+
+### Still open on quality
+
+- **Graded cost** (Census plus absolute difference). Roughly half the remaining error
+  is in near-fronto-parallel regions at 6-7%, which nothing here touches, and Census's
+  49 levels against SGM's continuous Birchfield-Tomasi is the likely reason.
+- **Slanted support windows** (PatchMatch, doi:10.5244/C.25.14). Measured as second
+  priority behind edge-aware support, which is now done -- so this is next in line.
+  Both MASDA and SGM share the fronto-parallel bias, so it is a place SGM is weak.
+
+**All dense numbers are desktop-only.** The Jetson was unreachable. The recursive
+filter and the blockwise reduction both target traffic and working set, which is
+where the TX2 is poorer than this laptop, so both should win by *more* there -- but
+that is a prediction, and predictions ran 2-for-9 today.
 
 ### Next: sparse candidates (Mario's suggestion), measured and cleared
 
