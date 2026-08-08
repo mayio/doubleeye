@@ -722,3 +722,65 @@ prior rather than by anything about max-sum. That makes the smoothness factor th
 highest-value piece of work on the matcher, ahead of everything currently in
 section 0.5 of the TODO, and it makes `dense_baseline.py` the thing to measure it
 against.
+
+### Can this reach SGM? Measured from both ends: not as it stands
+
+Two experiments, each cheap, and together they close the question without writing a
+smoothness factor first.
+
+**1. How many of MASDA's errors could any better inference fix?** For every wrong
+match, ask whether the correct right keypoint was in that left keypoint's candidate
+list at all. Pooled over the eight scenes, 2916 scorable matches:
+
+| | share |
+|---|---|
+| correct | 61.6% |
+| wrong, but the correct answer **was** a candidate | 8.1% |
+| wrong, and the correct answer was **never offered** | 30.3% |
+
+So a perfect re-ranking of the existing candidates — a smoothness factor that never
+makes a mistake — tops out at **0.697**. SGM is at 0.858. The prior cannot close the
+gap, because in 30% of cases the answer is not in the room.
+
+Proposing more right keypoints does not rescue this. Sweeping the right detector
+from 555 to 2994 keypoints per scene raises the fixable share (0.081 to 0.148) and
+lowers the correct share by more (0.616 to 0.531), leaving the ceiling flat at
+0.68-0.70 throughout. The correct correspondence frequently is not at *any* detected
+keypoint; it is between them.
+
+**2. So give it every pixel.** A semi-dense variant lets each left keypoint match
+any right pixel on its row within the disparity range — 71 candidates per keypoint
+instead of 5, so the correct answer is essentially always available. Uniqueness is
+kept.
+
+| variant | candidates/kp | precision | solver |
+|---|---|---|---|
+| keypoint-to-keypoint | 5 | 0.616 | 7 ms |
+| **semi-dense, keypoint-to-pixel** | **71** | **0.587** | **68 ms** |
+| dense SGM | every pixel | 0.858 | 17 ms |
+
+**It gets worse, not better.** With the answer always available and 14x the
+candidates, Census plus uniqueness cannot pick it out. That is the same crowding
+effect measured everywhere else in this project, at its logical extreme.
+
+### What the two together say
+
+The gap to SGM is not the candidate set and it is not the inference. Both are
+excluded by measurement. It is the **prior**: SGM decides a pixel's disparity partly
+from its neighbours, and a per-keypoint descriptor comparison has no access to that
+information no matter how the candidates are arranged.
+
+So the honest answer to "can we get as far as SGM" is **not with uniqueness and
+Census alone**, and that is now measured from both directions rather than argued.
+
+The configuration that could is semi-dense candidates *plus* a smoothness factor:
+the first so the answer is available, the second so it can be found. That is
+approximately SGM with a uniqueness constraint added, which is a genuinely
+interesting object — SGM has no uniqueness and pays for it with a left-right check
+and 78% coverage.
+
+But note the arithmetic before starting: the semi-dense solver alone is 68 ms per
+450x375 scene, three times the Jetson's entire current frame budget at a fifth of
+the pixels, before any smoothness term exists. Whatever this becomes, it is not the
+30 Hz on-vehicle matcher. That is a research direction, and the thing that ships is
+the sparse matcher with its confidence measure.

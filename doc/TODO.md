@@ -41,12 +41,24 @@ first-class output with one producer.
 
 ---
 
-## 0.4 Smoothness as a factor — now the highest-value matcher work
+## 0.4 Smoothness as a factor — worth doing, but it will not reach SGM
 
 Dense SGM beats MASDA **at MASDA's own keypoints**, 0.858 against 0.616 precision,
 pooled over the eight Middlebury scenes, while also filling 78% of the image in
-17 ms (`article/dense_baseline.py`). The gap is not about max-sum; it is the
-smoothness prior MASDA does not have, measured at 24 points of precision.
+17 ms (`article/dense_baseline.py`).
+
+**Measured before building it, and the answer bounds the work.** A perfect
+re-ranking of MASDA's existing candidates tops out at **0.697**, because in 30.3% of
+its errors the correct right keypoint was never a candidate. Denser right detection
+does not lift that ceiling (flat at 0.68-0.70 from 555 to 2994 right keypoints).
+And a semi-dense variant that offers every right pixel — so the answer is always
+available — gets *worse*, 0.587, because Census plus uniqueness cannot pick the
+right one out of 71 candidates.
+
+So a smoothness factor is worth roughly +8 points, not +24, and reaching SGM needs
+semi-dense candidates **and** smoothness together, which costs 68 ms per 450x375
+scene for the solver alone: three times the Jetson budget at a fifth of the pixels.
+That is a research direction, not the on-vehicle matcher. See 09-matching.md.
 
 Uniqueness and smoothness are orthogonal — SGM has no uniqueness constraint and
 needs a left-right check bolted on to reach 78% coverage. A factor graph with both
