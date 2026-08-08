@@ -2967,3 +2967,31 @@ four threads and the Denvers are busy being the CUDA driver and the fetcher thre
 Reverted; the pin stays only in `de_dense_cuda`, where it was measured to help. The
 general rule that survives: pinning is a per-configuration measurement, not a platform
 fact.
+
+## The GPU's lessons, tried on the CPU the same night: both negative, same mechanism
+
+Part 3's write-up proposed two GPU findings as CPU improvements. Both were built and
+measured within hours, and both are negatives worth their mechanisms:
+
+**Fusing the top-2 insert into the filter's final vertical pass** (with the plane store
+deleted and the recurrence carried through a 1.7 KB row buffer): bit-identical, and a
+wash -- filter+insert 337 ms thread-summed unfused against 329 fused, wall equal to
+slightly worse. On the GPU this same fusion deleted a 10.9 ms kernel and 50 MB of
+stores, because there the traffic was DRAM. **On the CPU the plane sits in L2 between
+passes** (814 KB against 2 MB), so the store the fusion deletes was nearly free and the
+re-read it deletes was nearly a cache hit. A first single-loop version was 18% WORSE
+outright: the branchy insert inside the recurrence loop killed GCC's autovectorisation,
+which is its own recorded trap -- fuse loops on a CPU only if the hot loop stays
+branch-free.
+
+**Pinning the worker pools to the A57s**: 40% worse mean for 10x less spread (earlier
+section). The Denvers are throughput the CPU tool needs and the GPU tool does not.
+
+The score-into-first-filter-pass fusion proposed alongside these was NOT built: it
+shares the exact mechanism (the score plane is L2-resident when the horizontal pass
+reads it), so the same null result is predicted. Recorded as untested inference, not
+measurement.
+
+The meta-lesson closes the series' loop: the desktop was not a proxy for the TX2, the
+TX2's CPU is not a proxy for its GPU, and optimisations are measurements attached to a
+memory system, not portable facts.
