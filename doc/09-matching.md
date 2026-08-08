@@ -2797,3 +2797,61 @@ Three levers, and they are not the same size:
 Vectorising the score loop was ranked first and was worth 11% of the stage at best. The
 ranking was wrong, and it was wrong because it ranked by *item size* rather than by
 *item size times achievable factor divided by what the change costs elsewhere*.
+
+## The mask construction, built and measured: parity accuracy, 1.24x desktop, FLAT on the TX2
+
+`--c2f` in de_dense: a half-resolution coarse pass (D/2, ungated, holes filled row-then-
+column), nearest-upsampled into a prior, and a fine pass over ABSOLUTE-disparity planes
+where plane d is evaluated only on rows whose interval wants it -- per-row [mx0,mx1]
+intervals, per-plane bounding boxes, the filter over the padded rectangle via a rect
+variant of rf_filter_i16, the insert inside the interval. Exactly the form "What would
+actually work" specified. The default path is bit-identical before and after, checked on
+both machines.
+
+Pooled over the eight scenes: **76.7% coverage / 10.6% bad-1.0 against 76.0% / 9.7%** --
+correct-over-known 68.6% against 68.8%, parity. Desktop 46 -> 37 ms mean. **TX2, real
+848x480 pair, interleaved best-of-6: 156 min full sweep against 168 min --c2f. Flat.**
+
+### Why 5.2x of arithmetic became 1.0x of TX2 runtime
+
+The ceiling measurement promised 5.2x less *arithmetic* and delivered it -- the fine
+score loop's work really does shrink by the band fraction. Three costs do not:
+
+- **Background planes have full-width rectangles.** A plane visible left and right of a
+  foreground object gets a bbox spanning the row, so fill and filter touch nearly the
+  whole image for most planes. Only truly absent planes vanish.
+- **The solve does not scale with D at all.** It is resolution-bound: the fused merge
+  streams nthreads x 4 int16 planes -- 19.5 MB per pass at 848x480 -- and at 47 ms it is
+  now the LARGEST single item on the board. Plus 13 more in the coarse solve.
+- **The coarse level is a fixed 43 ms** on the TX2 (census 6, cost 19, solve 13, prep 5),
+  almost exactly what the mask saves from the fine cost stage (108 -> 78).
+
+Two sub-experiments, both measured, both kept out:
+
+- **A second band around the coarse runner-up** (for thin structures that vanish at half
+  resolution: Art 12.7 -> 14.9): pooled 10.6 -> 11.2, teddy 7.1 -> 8.0. Where the coarse
+  level is ambiguous, its runner-up is the wrong period of a repetitive texture, and a
+  band around it hands the fine solver a wrong surface it can aggregate into confidence.
+- **A strict per-pixel membership test in the insert**: 10.6 -> 11.6, a full point. The
+  row-interval slack admits candidates a pixel's own band would exclude, and candidates
+  decide the outcome. The loose interval IS the better matcher.
+
+Coarse `iters=1` and MPAD 16 -> 8 are both accuracy-neutral (< 0.1) and kept.
+
+### Where this leaves the real-time plan
+
+`--c2f` stays, off by default: accuracy parity, a real desktop win, and it is the vehicle
+for the temporal prior (TODO 3.1), which needs exactly this mask machinery and has no
+coarse-level cost at all -- the previous frame is free. But it is not the 5.2x, and the
+5.2x as imagined does not exist in this construction on this board.
+
+The identified next structure, NOT built: **parallelise the masked fine pass over row
+stripes instead of planes.** Each thread owns a stripe and runs all active planes over
+it; the top-2 becomes one shared pair of planes with no merge at all (rows are disjoint),
+killing the 47 ms solve-merge and the 19.5 MB x 2 of per-thread top-2 traffic. The price
+is vertical-IIR truncation at stripe boundaries -- sigma_s = 12 decays to 0.15 in 16 rows,
+so ~40% of rows in a 6-stripe split see some truncation. That is a measurable quality
+question and the reason it is a design decision rather than a patch.
+
+The other route is the GPU, which is where the frame budget was always going to close;
+see TODO 0.3.

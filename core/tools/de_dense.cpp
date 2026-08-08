@@ -437,6 +437,59 @@ inline void rf_horiz_i16(int16_t* C, const uint16_t* ax, int W, int y, int n) {
     }
 }
 
+// The recursive filter over a sub-rectangle, for masked planes. The IIRs start at
+// the rectangle's edges instead of the image's, so aggregation support is truncated
+// there -- an approximation the full-sweep path does not make, which is why the
+// default path still calls the whole-plane version and why the mask's accuracy is
+// scored with dense_bench rather than argued. Bounds: rows [y0, y1), cols [x0, x1).
+template <int LN>
+inline void rf_horiz_i16_rect(int16_t* C, const uint16_t* ax, int W, int y, int n,
+                              int x0, int x1) {
+  int32_t f[LN];
+  for (int l = 0; l < n; ++l) f[l] = C[size_t(y + l) * W + x0];
+  for (int x = x0 + 1; x < x1; ++x)
+    for (int l = 0; l < n; ++l) {
+      const size_t i = size_t(y + l) * W + x;
+      const int32_t c = C[i];
+      f[l] = c + ((int32_t(ax[i]) * (f[l] - c) + (1 << 14)) >> 15);
+      C[i] = int16_t(f[l]);
+    }
+  for (int l = 0; l < n; ++l) f[l] = C[size_t(y + l) * W + x1 - 1];
+  for (int x = x1 - 2; x >= x0; --x)
+    for (int l = 0; l < n; ++l) {
+      const size_t i = size_t(y + l) * W + x;
+      const int32_t c = C[i];
+      f[l] = c + ((int32_t(ax[i + 1]) * (f[l] - c) + (1 << 14)) >> 15);
+      C[i] = int16_t(f[l]);
+    }
+}
+
+void rf_filter_i16_rect(int16_t* C, const uint16_t* ax, const uint16_t* ay,
+                        int W, int y0, int y1, int x0, int x1) {
+  if (y1 - y0 < 1 || x1 - x0 < 2) return;
+  const int CH = 8;
+  for (int y = y0; y < y1; y += CH)
+    rf_horiz_i16_rect<CH>(C, ax, W, y, std::min(CH, y1 - y), x0, x1);
+  for (int y = y0 + 1; y < y1; ++y) {
+    int16_t* cur = C + size_t(y) * W;
+    const int16_t* prv = C + size_t(y - 1) * W;
+    const uint16_t* a = ay + size_t(y) * W;
+    for (int x = x0; x < x1; ++x) {
+      const int32_t c = cur[x];
+      cur[x] = int16_t(c + ((int32_t(a[x]) * (prv[x] - c) + (1 << 14)) >> 15));
+    }
+  }
+  for (int y = y1 - 2; y >= y0; --y) {
+    int16_t* cur = C + size_t(y) * W;
+    const int16_t* nxt = C + size_t(y + 1) * W;
+    const uint16_t* a = ay + size_t(y + 1) * W;
+    for (int x = x0; x < x1; ++x) {
+      const int32_t c = cur[x];
+      cur[x] = int16_t(c + ((int32_t(a[x]) * (nxt[x] - c) + (1 << 14)) >> 15));
+    }
+  }
+}
+
 void rf_filter_i16(int16_t* C, const uint16_t* ax, const uint16_t* ay,
                    int W, int H) {
   const int CH = 8;
@@ -532,6 +585,7 @@ struct Cfg {
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
   int threads = 0;
   bool simd = false;           // NEON score kernel, disparity in the lanes
+  bool c2f = false;            // half-res coarse pass, prior as a mask (--band)
 };
 
 // One image row. Rows share no left or right pixel, so this needs no locking.
@@ -816,157 +870,29 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  if (argc < 5) {
-    std::fprintf(stderr,
-        "usage: %s LEFT.y8 RIGHT.y8 W H [--dmax N] [--iters N] [--threads N]\n"
-        "          [--min-margin F] [--out disp.f32] [--simd]\n"
-        "  --simd  NEON score kernel, AArch64 only, bit-identical, off by default:\n"
-        "          1.6x on the score loop and 0.92x on the stage at D=60. See\n"
-        "          doc/09-matching.md.\n", argv[0]);
-    return 2;
-  }
-  const std::string lp = argv[1], rp = argv[2];
-  const int W = std::atoi(argv[3]), H = std::atoi(argv[4]);
-  Cfg cfg;
-  std::string outp, volp, priorp;
-  for (int i = 5; i < argc; ++i) {
-    const std::string a = argv[i];
-    const bool has = i + 1 < argc;
-    if (a == "--dmax" && has) cfg.dmax = std::atoi(argv[++i]);
-    else if (a == "--iters" && has) cfg.iters = std::atoi(argv[++i]);
-    else if (a == "--agg" && has) cfg.agg = std::atoi(argv[++i]);
-    else if (a == "--subpixel") cfg.subpixel = true;
-    else if (a == "--box") cfg.guided = false;
-    else if (a == "--rf") cfg.rf = true;
-    else if (a == "--guided") cfg.rf = false;
-    else if (a == "--sigma-s" && has) cfg.sigma_s = float(std::atof(argv[++i]));
-    else if (a == "--sigma-r" && has) cfg.sigma_r = float(std::atof(argv[++i]));
-    else if (a == "--eps" && has) cfg.eps = float(std::atof(argv[++i]));
-    else if (a == "--fgf" && has) cfg.fgf = std::max(1, std::atoi(argv[++i]));
-    else if (a == "--threads" && has) cfg.threads = std::atoi(argv[++i]);
-    else if (a == "--min-margin" && has) cfg.min_margin = float(std::atof(argv[++i]));
-    else if (a == "--out" && has) outp = argv[++i];
-    else if (a == "--dump-vol" && has) volp = argv[++i];
-    else if (a == "--topk" && has) cfg.topk = std::atoi(argv[++i]);
-    else if (a == "--band" && has) cfg.band = std::atoi(argv[++i]);
-    else if (a == "--csct") cfg.csct = true;
-    else if (a == "--ad" && has) cfg.ad = float(std::atof(argv[++i]));
-    else if (a == "--ad-trunc" && has) cfg.ad_trunc = std::atoi(argv[++i]);
-    else if (a == "--prior" && has) priorp = argv[++i];
-    else if (a == "--simd") cfg.simd = true;
-  }
-  Image8 L, R;
-  if (!load_raw_y8(lp, W, H, &L) || !load_raw_y8(rp, W, H, &R)) {
-    std::fprintf(stderr, "failed to load %s / %s at %dx%d\n",
-                 lp.c_str(), rp.c_str(), W, H);
-    return 1;
-  }
-  // --- optional prior, for a coarse-to-fine search ---------------------------
-  //
-  // The volume is indexed by OFFSET FROM THE PRIOR rather than by absolute
-  // disparity, so there are 2*band+1 whole planes instead of D. That is what keeps
-  // the recursive filter usable: it still sees one plane per index and aggregates
-  // at constant offset, which inside a smooth region is constant disparity -- the
-  // assumption window aggregation already makes. At a prior discontinuity the plane
-  // does mix disparities, but the filter is edge-aware and prior discontinuities
-  // sit on intensity edges, so it is better aligned here than a fixed-disparity
-  // plane is, not worse.
-  //
-  // Holes must already be filled by the caller. A hole means no search band at
-  // all, and measuring the ceiling with holes left in understated it by 13 points
-  // (see 09-matching.md) -- so this refuses a prior it cannot use rather than
-  // silently scoring one.
-  std::vector<float> prior;
-  if (!priorp.empty()) {
-    FILE* f = std::fopen(priorp.c_str(), "rb");
-    if (!f) { std::fprintf(stderr, "cannot open prior %s\n", priorp.c_str()); return 1; }
-    std::fseek(f, 0, SEEK_END);
-    const long bytes = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    const size_t n = size_t(bytes) / sizeof(float);
-    std::vector<float> raw(n);
-    if (std::fread(raw.data(), sizeof(float), n, f) != n) {
-      std::fprintf(stderr, "short read on prior %s\n", priorp.c_str());
-      std::fclose(f); return 1;
-    }
-    std::fclose(f);
-    prior.assign(size_t(W) * H, std::nanf(""));
-    if (n == size_t(W) * H) {
-      prior = raw;
-    } else if (n == size_t(W / 2) * (H / 2)) {
-      // Half resolution: nearest upsample, and a disparity of d at half scale is
-      // 2d at full scale.
-      const int W2 = W / 2, H2 = H / 2;
-      for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x)
-          prior[size_t(y) * W + x] =
-              2.f * raw[size_t(std::min(H2 - 1, y / 2)) * W2 + std::min(W2 - 1, x / 2)];
-    } else {
-      std::fprintf(stderr,
-                   "prior %s has %zu floats, expected %zu (full) or %zu (half)\n",
-                   priorp.c_str(), n, size_t(W) * H, size_t(W / 2) * (H / 2));
-      return 1;
-    }
-    size_t holes = 0;
-    for (float v : prior) if (!std::isfinite(v)) ++holes;
-    if (holes) {
-      std::fprintf(stderr, "prior has %zu holes of %zu; fill them first\n",
-                   holes, prior.size());
-      return 1;
-    }
-    if (cfg.topk != 2) {
-      std::fprintf(stderr, "--prior requires --topk 2\n");
-      return 1;
-    }
-  }
+// The whole dense pipeline -- census, cost volume, solve -- as one callable, so a
+// coarse pass can run it at half resolution and a fine pass can run it again under
+// the resulting prior. Extracted unchanged from main(); the timing struct exists
+// because the prints stay in main and dense_bench parses them.
+struct LevelTimes {
+  double census = 0, cost = 0, solve = 0;
+  double c_alloc = 0, c_fill = 0, c_score = 0, c_filt = 0, c_ins = 0;
+  double c_span = 0, span_max = 0;
+  double prologue = 0, tp_alloc = 0, tp_norm = 0, tp_coeff = 0, after = 0;
+};
 
-  if (cfg.csct && !(cfg.rf && cfg.topk == 2 && volp.empty())) {
-    // The other paths still read the 64-bit descriptors, which are not built in
-    // this mode. Refusing beats reading an empty vector.
-    std::fprintf(stderr, "--csct requires the default path (--rf, --topk 2, no "
-                         "--dump-vol)\n");
-    return 1;
-  }
-
-  // --simd refuses rather than falling back. A flag that silently does nothing is
-  // indistinguishable downstream from one that did something and bought nothing,
-  // which is the whole of rule 1 -- and this flag exists to be timed.
-  if (cfg.simd) {
-#ifndef DE_HAVE_NEON
-    std::fprintf(stderr, "--simd is the AArch64 NEON kernel; this is not an "
-                         "aarch64 build\n");
-    return 1;
-#else
-    if (cfg.csct) {
-      std::fprintf(stderr, "--simd reads the 64-bit descriptors; not --csct\n");
-      return 1;
-    }
-    if (!(cfg.rf && cfg.topk == 2 && volp.empty() && priorp.empty())) {
-      std::fprintf(stderr, "--simd requires the default path (--rf, --topk 2, no "
-                           "--dump-vol, no --prior)\n");
-      return 1;
-    }
-    if (cfg.ad_trunc < 1 || cfg.ad_trunc > 63) {
-      std::fprintf(stderr, "--simd needs 1 <= --ad-trunc <= 63 so the clamped "
-                           "difference is a legal 64-entry table index (got %d)\n",
-                   cfg.ad_trunc);
-      return 1;
-    }
-#endif
-  }
-
+void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
+               const std::vector<float>& prior, const std::string& volp,
+               std::vector<float>* disp_out, std::vector<float>* margin_out,
+               LevelTimes* T) {
+  const int W = L.width, H = L.height;
   const int D = cfg.dmax - cfg.dmin + 1;
-  int nthreads = cfg.threads > 0 ? cfg.threads
-                                 : int(std::thread::hardware_concurrency());
-  if (nthreads < 1) nthreads = 1;
-
   const double t0 = now_ms();
   std::vector<uint64_t> cl, cr;
   std::vector<uint32_t> cl32, cr32;
   if (cfg.csct) { cl32 = census_cs(L, nthreads); cr32 = census_cs(R, nthreads); }
   else { cl = census_image(L, 3, 3, nthreads); cr = census_image(R, 3, 3, nthreads); }
-  const double t_census = now_ms() - t0;
+  T->census = now_ms() - t0;
 
   // --- cost volume, aggregated over a window ---
   //
@@ -1003,7 +929,6 @@ int main(int argc, char** argv) {
   // about twice today and both guesses were wrong.
   std::vector<double> ts_span(nthreads, 0);
   const double tc0 = now_ms();
-  double tp_alloc = 0, tp_norm = 0, tp_coeff = 0;
   // With K = 2 the running top-2 per pixel IS the reduced volume, so the 40 MB
   // array is never allocated. It is still needed for --dump-vol and for the k
   // sweep, which is why both paths exist.
@@ -1014,16 +939,75 @@ int main(int argc, char** argv) {
   // and compares against a 675 KB runner-up plane that stays resident across all
   // D slices, so the common path is one streaming read and a cached compare.
   const bool blockwise = (cfg.topk == 2) && volp.empty();
-  const bool guided_search = !prior.empty();
-  const int NJ = 2 * cfg.band + 1;
   const size_t WH = size_t(W) * H;
+  // --- the prior as a MASK on absolute-disparity planes ---------------------------
+  //
+  // The offset-indexed version of this -- planes indexed by offset from the prior --
+  // is a measured negative with a known mechanism: aggregation needs
+  // constant-disparity planes, and an offset plane mixes disparities everywhere the
+  // prior varies, which cost 4 points of bad-1.0 at every band width (09-matching.md,
+  // "the ceiling was real and this construction cannot reach it"). So the planes
+  // stay ABSOLUTE and the prior only decides which pixels of which planes are worth
+  // computing: plane d is evaluated where |d - prior| <= band, as a per-row interval
+  // [mx0, mx1] plus a per-plane bounding box, and rows where nothing needs d are
+  // skipped outright. Scores outside the interval are simply never inserted, so a
+  // wrong prior costs candidates, never wrong values.
+  const bool mask = !prior.empty();
+  std::vector<int16_t> mx0, mx1;                     // [y][k] row intervals
+  std::vector<int> pylo, pyhi, pxlo, pxhi;           // per-plane bounding boxes
+  if (mask) {
+    mx0.assign(size_t(H) * D, int16_t(W));
+    mx1.assign(size_t(H) * D, int16_t(-1));
+    pylo.assign(D, H); pyhi.assign(D, -1);
+    pxlo.assign(D, W); pxhi.assign(D, -1);
+    std::vector<std::thread> ipool;
+    for (int t = 0; t < nthreads; ++t) ipool.emplace_back([&, t]() {
+      for (int y = t; y < H; y += nthreads) {
+        int16_t* r0 = &mx0[size_t(y) * D];
+        int16_t* r1 = &mx1[size_t(y) * D];
+        const float* pr = &prior[size_t(y) * W];
+        for (int x = 0; x < W; ++x) {
+          // ONE band center per pixel, deliberately. A second band around the
+          // coarse runner-up was built and measured -- the idea being that a thin
+          // structure vanishes at half resolution and the runner-up is the other
+          // surface -- and it made every scene WORSE (pooled 10.6% -> 11.2%,
+          // teddy 7.1 -> 8.0, Laundry 20.2 -> 21.9): where the coarse level is
+          // ambiguous its runner-up is usually the wrong period of a repetitive
+          // texture, and a band around it hands the fine solver a wrong surface
+          // it can aggregate into a confident answer. The thin-structure loss is
+          // real (Art 12.7 -> 14.9) but the cure was worse than the disease.
+          const int dc = int(std::lround(pr[x]));
+          const int klo = std::max(cfg.dmin, dc - cfg.band) - cfg.dmin;
+          const int khi = std::min(cfg.dmax, dc + cfg.band) - cfg.dmin;
+          for (int k = klo; k <= khi; ++k) {
+            if (x < r0[k]) r0[k] = int16_t(x);
+            if (x > r1[k]) r1[k] = int16_t(x);
+          }
+        }
+      }
+    });
+    for (auto& th : ipool) th.join();
+    for (int y = 0; y < H; ++y)
+      for (int k = 0; k < D; ++k) {
+        const int a = mx0[size_t(y) * D + k], b = mx1[size_t(y) * D + k];
+        if (b < a) continue;
+        if (y < pylo[k]) pylo[k] = y;
+        if (y > pyhi[k]) pyhi[k] = y;
+        if (a < pxlo[k]) pxlo[k] = a;
+        if (b > pxhi[k]) pxhi[k] = b;
+      }
+  }
+  // How far outside the interval the filter still needs real scores: its influence
+  // decays by exp(-sqrt(2)/sigma_s) per pixel on flat image, 0.89 at sigma_s 12, so
+  // 16 pixels is a factor of ~0.15. Untuned; a sweep belongs to the measurement.
+  const int MPAD = 8;
   {
     const double t = now_ms();
     (void)t;
   }
   const double tpa = now_ms();
   std::vector<float> vol(blockwise ? 0 : WH * size_t(D), -1e30f);
-  tp_alloc = now_ms() - tpa;
+  T->tp_alloc = now_ms() - tpa;
   // The merged-candidate arrays that used to be allocated here are gone: the 2-of-2n
   // selection now happens inside the solve, row by row, where the candidates are
   // consumed. Measured before the change: filling them was 5-15 ms of serial
@@ -1062,7 +1046,7 @@ int main(int argc, char** argv) {
     // the raw bytes, so normalising 407k floats for it was a pure prologue cost.
     const double t = now_ms();
     for (size_t i = 0; i < I.size(); ++i) I[i] = float(L.data[i]) / 255.f;
-    tp_norm = now_ms() - t;
+    T->tp_norm = now_ms() - t;
   }
   // mean_I and var_I exist only for the guided filter. Under the recursive filter
   // they were still being computed -- a downsample, two box filters and a variance
@@ -1081,7 +1065,7 @@ int main(int argc, char** argv) {
     rf_coeffs(L.data.data(), axv.data(), ayv.data(), W, H, cfg.sigma_s,
               cfg.sigma_r, nthreads);
     axp = axv.data(); ayp = ayv.data();
-    tp_coeff = now_ms() - t;
+    T->tp_coeff = now_ms() - t;
   }
   // The per-thread top-2 planes outlive the cost stage: each worker saw a disjoint
   // set of disparities, and the SOLVE now does the 2-of-2n selection per row instead
@@ -1156,6 +1140,7 @@ int main(int argc, char** argv) {
     const size_t GN = simd_grp ? size_t(SIMD_G) * W * H : 0;
     std::unique_ptr<int16_t[]> gbuf(simd_grp ? new int16_t[GN] : nullptr);
     int16_t* const gslice = gbuf.get();
+    (void)gslice;
     std::vector<float> slice(i16 ? 0 : size_t(W) * H), tmp(FN);
     std::vector<float> ip(FN), mp(FN), mip(FN);
     std::vector<float> ab(FN), bb(FN);
@@ -1176,43 +1161,6 @@ int main(int argc, char** argv) {
     std::vector<float> ps(NS), ips(NS), mps(NS), mips(NS), ts(NS);
     std::vector<float> abs_(NS), bbs(NS), mas(NS), mbs(NS);
     ts_alloc[t] += now_ms() - ta0;
-    if (guided_search) {
-      // One plane per offset. Parallel over offsets, which with 2*band+1 of them
-      // and four threads is imbalanced -- 5 planes over 4 workers is two rounds --
-      // and that inefficiency is real and unaddressed. It is still a fifth of the
-      // planes D would need.
-      for (int j = t; j < NJ; j += nthreads) {
-        const int off = j - cfg.band;
-        std::fill(slice.begin(), slice.end(), 0.f);
-        // Score at this offset. The right-image read is now a gather, because d
-        // varies per pixel -- but the prior is piecewise smooth, so x-d stays
-        // locally sequential and it costs far less than the D-fold work it saves.
-        for (int y = 3; y < H - 3; ++y)
-          for (int x = 3; x < W - 3; ++x) {
-            const size_t i = size_t(y) * W + x;
-            const int d = int(std::lround(prior[i])) + off;
-            if (d < cfg.dmin || d > cfg.dmax || x - d < 3) continue;
-            slice[i] = (24.f - float(popcnt64(cl[i] ^ cr[i - size_t(d)]))) * (1.f / 24.f);
-          }
-        rf_filter(slice.data(), axp, ayp, W, H);
-        for (int y = 3; y < H - 3; ++y) {
-          const size_t row = size_t(y) * W;
-          for (int x = 3; x < W - 3; ++x) {
-            const size_t i = row + x;
-            const int d = int(std::lround(prior[i])) + off;
-            if (d < cfg.dmin || d > cfg.dmax || x - d < 3) continue;
-            const float v = slice[i];
-            if (v <= ts1[i]) continue;
-            // Stored as the disparity INDEX, so the solver is unchanged: it still
-            // reconstructs d as dmin + cd.
-            const int16_t kk = int16_t(d - cfg.dmin);
-            if (v > ts0[i]) { ts1[i] = ts0[i]; td1[i] = td0[i]; ts0[i] = v; td0[i] = kk; }
-            else            { ts1[i] = v;      td1[i] = kk; }
-          }
-        }
-      }
-      return;
-    }
     for (int b = next_block.fetch_add(1); b < nblocks;
          b = next_block.fetch_add(1)) {
     const int klo = b * KB, khi = std::min(D, klo + KB);
@@ -1279,8 +1227,27 @@ int main(int argc, char** argv) {
 #endif
     for (int k = klo; k < khi; ++k) {
       const int d = cfg.dmin + k;
+      // Masked: this plane's rectangle, or nothing at all. The score is computed
+      // MPAD beyond the interval so the filter aggregates real neighbours, the
+      // filter runs over the padded rectangle, and the insert stays strictly inside
+      // the interval -- pixels outside it never see d as a candidate.
+      int rylo = 3, ryhi = H - 3, rxlo = 3 + d, rxhi = W - 3;
+      if (mask) {
+        if (pyhi[k] < pylo[k]) continue;             // no pixel wants this plane
+        rylo = std::max(rylo, pylo[k] - MPAD);
+        ryhi = std::min(ryhi, pyhi[k] + 1 + MPAD);
+        rxlo = std::max(rxlo, pxlo[k] - MPAD);
+        rxhi = std::min(rxhi, pxhi[k] + 1 + MPAD);
+        if (ryhi - rylo < 1 || rxhi - rxlo < 2) continue;
+      }
       double tm = now_ms();
-      if (i16) std::fill(islice.begin(), islice.end(), int16_t(0));
+      if (mask && i16) {
+        // Zero the rectangle only: the filter reads nothing outside it.
+        for (int y = rylo; y < ryhi; ++y)
+          std::fill(islice.begin() + size_t(y) * W + rxlo,
+                    islice.begin() + size_t(y) * W + rxhi, int16_t(0));
+      }
+      else if (i16) std::fill(islice.begin(), islice.end(), int16_t(0));
       else std::fill(slice.begin(), slice.end(), 0.f);
       ts_fill[t] += now_ms() - tm; tm = now_ms();
       // Multiply by the reciprocal, do not divide.
@@ -1324,8 +1291,8 @@ int main(int argc, char** argv) {
         if (wq && !cfg.csct) {
           const uint8_t* Ld = L.data.data();
           const uint8_t* Rd = R.data.data();
-          for (int y = 3; y < H - 3; ++y)
-            for (int x = 3 + d; x < W - 3; ++x) {
+          for (int y = rylo; y < ryhi; ++y)
+            for (int x = rxlo; x < rxhi; ++x) {
               const size_t i = size_t(y) * W + x;
               const int32_t c = tbl[popcnt64(cl[i] ^ cr[i - size_t(d)])];
               const int32_t a = adt[std::abs(int(Ld[i]) - int(Rd[i - size_t(d)]))];
@@ -1337,18 +1304,31 @@ int main(int argc, char** argv) {
               islice[size_t(y) * W + x] = tbl[__builtin_popcount(
                   cl32[size_t(y) * W + x] ^ cr32[size_t(y) * W + x - d])];
         } else
-        for (int y = 3; y < H - 3; ++y)
-          for (int x = 3 + d; x < W - 3; ++x)
+        for (int y = rylo; y < ryhi; ++y)
+          for (int x = rxlo; x < rxhi; ++x)
             islice[size_t(y) * W + x] =
                 tbl[popcnt64(cl[size_t(y) * W + x] ^ cr[size_t(y) * W + x - d])];
         ts_score[t] += now_ms() - tm; tm = now_ms();
-        rf_filter_i16(islice.data(), axp, ayp, W, H);
+        if (mask) rf_filter_i16_rect(islice.data(), axp, ayp, W,
+                                     rylo, ryhi, rxlo, rxhi);
+        else      rf_filter_i16(islice.data(), axp, ayp, W, H);
         ts_filt[t] += now_ms() - tm; tm = now_ms();
         const int16_t kk = int16_t(k);
-        for (int y = 3; y < H - 3; ++y) {
+        for (int y = mask ? std::max(rylo, pylo[k]) : rylo;
+             y < (mask ? std::min(ryhi, pyhi[k] + 1) : ryhi); ++y) {
           const size_t row = size_t(y) * W;
-          for (int x = 3 + d; x < W - 3; ++x) {
+          // Strictly inside the interval when masked: a pixel outside it never
+          // sees d as a candidate, however good the padded score looks.
+          const int xa = mask ? std::max(rxlo + 0, int(mx0[size_t(y) * D + k])) : rxlo;
+          const int xb = mask ? std::min(rxhi, int(mx1[size_t(y) * D + k]) + 1) : rxhi;
+          for (int x = xa; x < xb; ++x) {
             const size_t i = row + x;
+            // Deliberately NO per-pixel membership test: the row interval is the
+            // union over pixels, so a pixel between two band regions can receive
+            // candidates its own band would exclude. Tightening this to strict
+            // |d - prior| <= band was measured at a full point worse (10.6% ->
+            // 11.6% pooled): the slack admits extra candidates, and everything
+            // measured on this matcher says candidates decide the outcome.
             const int16_t v = islice[i];
             if (v <= ts1[i]) continue;
             if (v > ts0[i]) {
@@ -1481,9 +1461,9 @@ int main(int argc, char** argv) {
     g_pool_join = now_ms();
 
   }
-  const double t_cost = now_ms() - tc0;
-  const double t_prologue = g_pool_spawn - tc0;
-  const double t_merge = now_ms() - g_pool_join;
+  T->cost = now_ms() - tc0;
+  T->prologue = g_pool_spawn - tc0;
+  T->after = now_ms() - g_pool_join;
   double c_fill = 0, c_score = 0, c_filt = 0, c_ins = 0, c_alloc = 0;
   double c_span = 0, span_max = 0;
   for (int t = 0; t < nthreads; ++t) {
@@ -1584,7 +1564,261 @@ int main(int argc, char** argv) {
     });
   }
   for (auto& th : pool) th.join();
-  const double t_solve = now_ms() - t1;
+  T->solve = now_ms() - t1;
+  disp_out->swap(disp);
+  margin_out->swap(margin);
+  for (int t = 0; t < nthreads; ++t) {
+    T->c_alloc += ts_alloc[t]; T->c_fill += ts_fill[t]; T->c_score += ts_score[t];
+    T->c_filt += ts_filt[t];   T->c_ins += ts_ins[t];
+    T->c_span += ts_span[t];
+    T->span_max = std::max(T->span_max, ts_span[t]);
+  }
+}
+
+int main(int argc, char** argv) {
+  if (argc < 5) {
+    std::fprintf(stderr,
+        "usage: %s LEFT.y8 RIGHT.y8 W H [--dmax N] [--iters N] [--threads N]\n"
+        "          [--min-margin F] [--out disp.f32] [--simd]\n"
+        "  --simd  NEON score kernel, AArch64 only, bit-identical, off by default:\n"
+        "          1.6x on the score loop and 0.92x on the stage at D=60. See\n"
+        "          doc/09-matching.md.\n", argv[0]);
+    return 2;
+  }
+  const std::string lp = argv[1], rp = argv[2];
+  const int W = std::atoi(argv[3]), H = std::atoi(argv[4]);
+  Cfg cfg;
+  std::string outp, volp, priorp;
+  for (int i = 5; i < argc; ++i) {
+    const std::string a = argv[i];
+    const bool has = i + 1 < argc;
+    if (a == "--dmax" && has) cfg.dmax = std::atoi(argv[++i]);
+    else if (a == "--iters" && has) cfg.iters = std::atoi(argv[++i]);
+    else if (a == "--agg" && has) cfg.agg = std::atoi(argv[++i]);
+    else if (a == "--subpixel") cfg.subpixel = true;
+    else if (a == "--box") cfg.guided = false;
+    else if (a == "--rf") cfg.rf = true;
+    else if (a == "--guided") cfg.rf = false;
+    else if (a == "--sigma-s" && has) cfg.sigma_s = float(std::atof(argv[++i]));
+    else if (a == "--sigma-r" && has) cfg.sigma_r = float(std::atof(argv[++i]));
+    else if (a == "--eps" && has) cfg.eps = float(std::atof(argv[++i]));
+    else if (a == "--fgf" && has) cfg.fgf = std::max(1, std::atoi(argv[++i]));
+    else if (a == "--threads" && has) cfg.threads = std::atoi(argv[++i]);
+    else if (a == "--min-margin" && has) cfg.min_margin = float(std::atof(argv[++i]));
+    else if (a == "--out" && has) outp = argv[++i];
+    else if (a == "--dump-vol" && has) volp = argv[++i];
+    else if (a == "--topk" && has) cfg.topk = std::atoi(argv[++i]);
+    else if (a == "--band" && has) cfg.band = std::atoi(argv[++i]);
+    else if (a == "--csct") cfg.csct = true;
+    else if (a == "--ad" && has) cfg.ad = float(std::atof(argv[++i]));
+    else if (a == "--ad-trunc" && has) cfg.ad_trunc = std::atoi(argv[++i]);
+    else if (a == "--prior" && has) priorp = argv[++i];
+    else if (a == "--simd") cfg.simd = true;
+    else if (a == "--c2f") cfg.c2f = true;
+  }
+  Image8 L, R;
+  if (!load_raw_y8(lp, W, H, &L) || !load_raw_y8(rp, W, H, &R)) {
+    std::fprintf(stderr, "failed to load %s / %s at %dx%d\n",
+                 lp.c_str(), rp.c_str(), W, H);
+    return 1;
+  }
+  // --- optional prior, for a coarse-to-fine search ---------------------------
+  //
+  // The volume is indexed by OFFSET FROM THE PRIOR rather than by absolute
+  // disparity, so there are 2*band+1 whole planes instead of D. That is what keeps
+  // the recursive filter usable: it still sees one plane per index and aggregates
+  // at constant offset, which inside a smooth region is constant disparity -- the
+  // assumption window aggregation already makes. At a prior discontinuity the plane
+  // does mix disparities, but the filter is edge-aware and prior discontinuities
+  // sit on intensity edges, so it is better aligned here than a fixed-disparity
+  // plane is, not worse.
+  //
+  // Holes must already be filled by the caller. A hole means no search band at
+  // all, and measuring the ceiling with holes left in understated it by 13 points
+  // (see 09-matching.md) -- so this refuses a prior it cannot use rather than
+  // silently scoring one.
+  std::vector<float> prior;
+  if (!priorp.empty()) {
+    FILE* f = std::fopen(priorp.c_str(), "rb");
+    if (!f) { std::fprintf(stderr, "cannot open prior %s\n", priorp.c_str()); return 1; }
+    std::fseek(f, 0, SEEK_END);
+    const long bytes = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    const size_t n = size_t(bytes) / sizeof(float);
+    std::vector<float> raw(n);
+    if (std::fread(raw.data(), sizeof(float), n, f) != n) {
+      std::fprintf(stderr, "short read on prior %s\n", priorp.c_str());
+      std::fclose(f); return 1;
+    }
+    std::fclose(f);
+    prior.assign(size_t(W) * H, std::nanf(""));
+    if (n == size_t(W) * H) {
+      prior = raw;
+    } else if (n == size_t(W / 2) * (H / 2)) {
+      // Half resolution: nearest upsample, and a disparity of d at half scale is
+      // 2d at full scale.
+      const int W2 = W / 2, H2 = H / 2;
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+          prior[size_t(y) * W + x] =
+              2.f * raw[size_t(std::min(H2 - 1, y / 2)) * W2 + std::min(W2 - 1, x / 2)];
+    } else {
+      std::fprintf(stderr,
+                   "prior %s has %zu floats, expected %zu (full) or %zu (half)\n",
+                   priorp.c_str(), n, size_t(W) * H, size_t(W / 2) * (H / 2));
+      return 1;
+    }
+    size_t holes = 0;
+    for (float v : prior) if (!std::isfinite(v)) ++holes;
+    if (holes) {
+      std::fprintf(stderr, "prior has %zu holes of %zu; fill them first\n",
+                   holes, prior.size());
+      return 1;
+    }
+    if (cfg.topk != 2) {
+      std::fprintf(stderr, "--prior requires --topk 2\n");
+      return 1;
+    }
+  }
+
+  if ((cfg.c2f || !priorp.empty()) &&
+      !(cfg.rf && cfg.topk == 2 && volp.empty() && !cfg.csct && !cfg.simd)) {
+    // The mask is wired through exactly one path: recursive filter, top-2,
+    // blockwise, scalar graded cost. Everything else refuses rather than silently
+    // running a full sweep under a flag that says otherwise.
+    std::fprintf(stderr, "--c2f/--prior require the default path (--rf, --topk 2, "
+                         "no --dump-vol, no --csct, no --simd)\n");
+    return 1;
+  }
+  if (cfg.c2f && !priorp.empty()) {
+    std::fprintf(stderr, "--c2f computes its own prior; drop --prior\n");
+    return 1;
+  }
+  if (cfg.csct && !(cfg.rf && cfg.topk == 2 && volp.empty())) {
+    // The other paths still read the 64-bit descriptors, which are not built in
+    // this mode. Refusing beats reading an empty vector.
+    std::fprintf(stderr, "--csct requires the default path (--rf, --topk 2, no "
+                         "--dump-vol)\n");
+    return 1;
+  }
+
+  // --simd refuses rather than falling back. A flag that silently does nothing is
+  // indistinguishable downstream from one that did something and bought nothing,
+  // which is the whole of rule 1 -- and this flag exists to be timed.
+  if (cfg.simd) {
+#ifndef DE_HAVE_NEON
+    std::fprintf(stderr, "--simd is the AArch64 NEON kernel; this is not an "
+                         "aarch64 build\n");
+    return 1;
+#else
+    if (cfg.csct) {
+      std::fprintf(stderr, "--simd reads the 64-bit descriptors; not --csct\n");
+      return 1;
+    }
+    if (!(cfg.rf && cfg.topk == 2 && volp.empty() && priorp.empty())) {
+      std::fprintf(stderr, "--simd requires the default path (--rf, --topk 2, no "
+                           "--dump-vol, no --prior)\n");
+      return 1;
+    }
+    if (cfg.ad_trunc < 1 || cfg.ad_trunc > 63) {
+      std::fprintf(stderr, "--simd needs 1 <= --ad-trunc <= 63 so the clamped "
+                           "difference is a legal 64-entry table index (got %d)\n",
+                   cfg.ad_trunc);
+      return 1;
+    }
+#endif
+  }
+
+  const int D = cfg.dmax - cfg.dmin + 1;
+  int nthreads = cfg.threads > 0 ? cfg.threads
+                                 : int(std::thread::hardware_concurrency());
+  if (nthreads < 1) nthreads = 1;
+
+  // --- the coarse pass: half resolution, half the disparities, UNGATED ------------
+  //
+  // D/2 over a quarter of the pixels is D/8 of the work, and the result is only a
+  // search band, so it is run with min_margin 0: the first ceiling measurement was
+  // wrong by 13 points precisely because a gated prior leaves holes, and a hole is
+  // a pixel with no search band at all (09-matching.md). Holes that remain because
+  // the solver was undecided are filled from row neighbours, then columns.
+  LevelTimes TC, TF;
+  double t_prep = 0;
+  if (cfg.c2f) {
+    const double tt0 = now_ms();
+    const int W2 = W / 2, H2 = H / 2;
+    Image8 L2, R2;
+    L2.width = R2.width = W2; L2.height = R2.height = H2;
+    L2.data.resize(size_t(W2) * H2); R2.data.resize(size_t(W2) * H2);
+    for (int y = 0; y < H2; ++y)
+      for (int x = 0; x < W2; ++x) {
+        const size_t a = size_t(2 * y) * W + 2 * x;
+        L2.data[size_t(y) * W2 + x] = uint8_t((int(L.data[a]) + L.data[a + 1] +
+                                               L.data[a + W] + L.data[a + W + 1] + 2) / 4);
+        R2.data[size_t(y) * W2 + x] = uint8_t((int(R.data[a]) + R.data[a + 1] +
+                                               R.data[a + W] + R.data[a + W + 1] + 2) / 4);
+      }
+    Cfg cc = cfg;
+    cc.c2f = false;
+    cc.dmin = std::max(1, cfg.dmin / 2);
+    cc.dmax = (cfg.dmax + 1) / 2;
+    cc.min_margin = 0.f;
+    // One iteration, not cfg.iters: the coarse answer only needs to land within
+    // +-band of the truth, not converge. Measured: pooled accuracy moves < 0.1
+    // either way, and the coarse solve is the third-largest item on the TX2.
+    cc.iters = 1;
+    t_prep += now_ms() - tt0;
+    std::vector<float> dh, mh;
+    run_dense(L2, R2, cc, nthreads, {}, "", &dh, &mh, &TC);
+    const double tt1 = now_ms();
+    // Row-nearest hole fill, then column-nearest for rows with nothing at all.
+    for (int y = 0; y < H2; ++y) {
+      float* r = &dh[size_t(y) * W2];
+      float last = std::nanf("");
+      for (int x = 0; x < W2; ++x) {
+        if (std::isfinite(r[x])) last = r[x];
+        else if (std::isfinite(last)) r[x] = last;
+      }
+      last = std::nanf("");
+      for (int x = W2 - 1; x >= 0; --x) {
+        if (std::isfinite(r[x])) last = r[x];
+        else if (std::isfinite(last)) r[x] = last;
+      }
+    }
+    for (int x = 0; x < W2; ++x) {
+      float last = std::nanf("");
+      for (int y = 0; y < H2; ++y) {
+        float& v = dh[size_t(y) * W2 + x];
+        if (std::isfinite(v)) last = v;
+        else if (std::isfinite(last)) v = last;
+      }
+      last = std::nanf("");
+      for (int y = H2 - 1; y >= 0; --y) {
+        float& v = dh[size_t(y) * W2 + x];
+        if (std::isfinite(v)) last = v;
+        else if (std::isfinite(last)) v = last;
+      }
+    }
+    size_t holes = 0;
+    for (float v : dh) if (!std::isfinite(v)) ++holes;
+    if (holes) {
+      // A whole image with no finite coarse disparity. Nothing to mask with, so
+      // fall back to the full sweep rather than deliver an empty answer.
+      std::fprintf(stderr, "c2f: coarse level empty (%zu holes), full sweep\n",
+                   holes);
+    } else {
+      prior.assign(size_t(W) * H, 0.f);
+      // Nearest upsample; a disparity of d at half scale is 2d at full scale.
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+          prior[size_t(y) * W + x] =
+              2.f * dh[size_t(std::min(H2 - 1, y / 2)) * W2 +
+                       std::min(W2 - 1, x / 2)];
+    }
+    t_prep += now_ms() - tt1;
+  }
+
+  std::vector<float> disp, margin;
+  run_dense(L, R, cfg, nthreads, prior, volp, &disp, &margin, &TF);
 
   size_t filled = 0;
   for (float v : disp) if (std::isfinite(v)) ++filled;
@@ -1594,27 +1828,32 @@ int main(int argc, char** argv) {
               g_cen_clear, g_cen_cmp, g_cen_pack);
   std::printf("  cost breakdown (thread-summed): alloc %.1f  clear %.1f  score %.1f  "
               "filter %.1f  insert %.1f ms\n",
-              c_alloc, c_fill, c_score, c_filt, c_ins);
+              TF.c_alloc, TF.c_fill, TF.c_score, TF.c_filt, TF.c_ins);
   {
-    const double busy = c_alloc + c_fill + c_score + c_filt + c_ins;
+    const double busy = TF.c_alloc + TF.c_fill + TF.c_score + TF.c_filt + TF.c_ins;
     std::printf("  occupancy: busy %.1f ms / spans %.1f ms = %.2f of %d threads busy "
                 "while alive; longest span %.1f of %.1f ms stage wall\n",
-                busy, c_span, c_span > 0 ? busy / c_span * nthreads : 0.0,
-                nthreads, span_max, t_cost);
+                busy, TF.c_span, TF.c_span > 0 ? busy / TF.c_span * nthreads : 0.0,
+                nthreads, TF.span_max, TF.cost);
     std::printf("  outside the pool: prologue %.1f ms (alloc %.1f, normalize %.1f, "
                 "rf_coeffs %.1f, spawn %.1f) + after-pool %.1f ms of %.1f stage wall\n",
-                t_prologue, tp_alloc, tp_norm, tp_coeff,
-                t_prologue - tp_alloc - tp_norm - tp_coeff, t_merge, t_cost);
-    std::printf("  per-thread  ");
-    for (int t = 0; t < nthreads; ++t) {
-      const double b = ts_alloc[t] + ts_fill[t] + ts_score[t] + ts_filt[t] + ts_ins[t];
-      std::printf("[%d busy %.0f span %.0f] ", t, b, ts_span[t]);
-    }
-    std::printf("\n");
+                TF.prologue, TF.tp_alloc, TF.tp_norm, TF.tp_coeff,
+                TF.prologue - TF.tp_alloc - TF.tp_norm - TF.tp_coeff, TF.after,
+                TF.cost);
   }
+  if (cfg.c2f)
+    // "sum", not "total": dense_bench and tx2_ab take the LAST line containing
+    // "total" as the whole run, and this line is one level of it.
+    std::printf("  coarse %dx%d D=%d: census %.1f  cost %.1f  solve %.1f  "
+                "prior prep %.1f ms, sum %.1f\n",
+                W / 2, H / 2, (cfg.dmax + 1) / 2 - std::max(1, cfg.dmin / 2) + 1,
+                TC.census, TC.cost, TC.solve, t_prep,
+                TC.census + TC.cost + TC.solve + t_prep);
   std::printf("census %.1f ms  cost %.1f ms  solve %.1f ms  total %.1f ms  "
               "agg=%d iters=%d  filled %.1f%%\n",
-              t_census, t_cost, t_solve, t_census + t_cost + t_solve,
+              TF.census, TF.cost, TF.solve,
+              TC.census + TC.cost + TC.solve + t_prep +
+                  TF.census + TF.cost + TF.solve,
               cfg.agg, cfg.iters,
               100.0 * double(filled) / double(disp.size()));
   if (!outp.empty()) {
