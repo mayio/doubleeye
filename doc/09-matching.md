@@ -1690,3 +1690,47 @@ boundaries, so the halo is paid once per stripe (4 stripes x 20 rows = 21% of H)
 rather than once per band. That is a two-level streaming pipeline through ring
 buffers and is genuinely intricate — the reason to do it is the 162 MB, and the thing
 to measure first is how much of the 1.4x scaling that traffic actually explains.
+
+### The cost stage is bound by pass count, and that is measurable
+
+Two cheap tests, both diagnostic, neither needing a profiler (`perf` is locked down
+here at `perf_event_paranoid=4`).
+
+**A 15x larger window is free.** The box filter is O(N) regardless of radius, so if
+time were going into the aggregation *work* it would still be flat, but if it were
+going into arithmetic per element it would not be:
+
+| agg radius | 1 | 3 | 5 | 9 | 15 |
+|---|---|---|---|---|---|
+| cost stage | 127.2 ms | 127.7 | 125.7 | 125.7 | **124.8** |
+
+**Threads saturate at two.** Guided cost stage: 187.3 ms at one thread, 142.3 at two
+(1.32x), 130.7 at four (**1.09x**). A shared resource is exhausted before the third
+core arrives.
+
+Counting the traffic explains both. The guided filter touches **29 whole planes per
+disparity slice** — 675 KB each, so 19.6 MB per slice and 1.17 GB over the volume:
+
+| step | plane touches |
+|---|---|
+| `ips = Is * slice` | 3 |
+| `box(slice)`, `box(ips)` | 4 + 4 |
+| coefficients `a`, `b` from four inputs | 6 |
+| `box(a)`, `box(b)` | 4 + 4 |
+| combine into the block buffer | 4 |
+
+Plus ~204 MB for scoring (both 1.35 MB census planes re-read per slice) and 80 MB for
+the staging-and-transpose. About 1.45 GB in 125 ms — 11.6 GB/s against the 18.9 GB/s
+this machine sustains, and the plateau says the effective ceiling is lower than that
+under four threads.
+
+**The consequence is a change of target.** The aggregation's *radius* is free and its
+*pass count* is everything, so the lever is a filter with fewer passes, not a cheaper
+inner loop. A box is 4 touches and costs 12.9 ms; the guided filter is 29 and costs
+73.6 ms — the relationship is linear in passes, which is the prediction this makes.
+
+**And it supersedes the int16 deferral.** That was parked because the cost stage
+achieved 2.5 GB/s of 18.9, so traffic looked irrelevant. Measured properly it is at
+11.6 GB/s and saturating four cores, so halving every one of those 29 touches is
+worth what the original argument said it was not — quite apart from doubling the SIMD
+lanes.
