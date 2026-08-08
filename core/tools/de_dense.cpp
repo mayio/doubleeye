@@ -84,19 +84,19 @@ struct Top2 {
 };
 
 struct Cfg {
-  int dmin = 1, dmax = 60, iters = 12;
+  int dmin = 1, dmax = 60, iters = 2, agg = 3;
+  bool subpixel = false;   // measured: hurts slightly, see below
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
   int threads = 0;
 };
 
 // One image row. Rows share no left or right pixel, so this needs no locking.
 void solve_row(int y, int W, int D, const Cfg& cfg,
-               const uint64_t* cl, const uint64_t* cr,
+               const float* vol,
                float* s, float* beta, float* rho,
                float* out_disp, float* out_margin, int hw,
                float* gath, float* svals, int* idxs, int* k0, int* k1,
                float* best, int* bestk, int* order, char* taken) {
-  const float half = 24.0f;                 // 48 census bits / 2
   const int dmin = cfg.dmin;
   const float keep = 1.f - cfg.damping;
 
@@ -117,9 +117,9 @@ void solve_row(int y, int W, int D, const Cfg& cfg,
     k0[x] = lo; k1[x] = hi;
     Top2 t;
     for (int k = lo; k < hi; ++k) {
-      const float v = (half - float(popcnt64(cl[x] ^ cr[x - dmin - k]))) / half;
+      const float v = vol[size_t(x) * D + k];
       sp[k] = v;
-      t.push(v, k);
+      if (v > -1e29f) t.push(v, k);
     }
     const float alt = (t.b2 < -1e29f) ? cfg.lambda : std::max(t.b2, cfg.lambda);
     out_margin[x] = (t.i1 < 0) ? 0.f : t.b1 - alt;
@@ -192,11 +192,37 @@ void solve_row(int y, int W, int D, const Cfg& cfg,
     out_disp[x] = std::nanf("");
     if (bestk[x] < 0) continue;
     if (cfg.min_margin > 0.f && out_margin[x] < cfg.min_margin) continue;
-    const int d = cfg.dmin + bestk[x];
+    const int k = bestk[x];
+    const int d = cfg.dmin + k;
     const int xr = x - d;
     if (xr < 0 || taken[xr]) continue;
     taken[xr] = 1;
-    out_disp[x] = float(d);
+
+    // Sub-pixel by parabola through the cost at k-1, k, k+1. The output was
+    // integer disparity, which forfeits up to half a pixel before any matching
+    // error -- and the accuracy metric has a one-pixel threshold, so that
+    // quantisation is charged directly against the score. SGM interpolates to
+    // 1/16 px for exactly this reason.
+    //
+    // Clamped to +-0.5 and skipped where the three samples are not a maximum.
+    //
+    // OFF BY DEFAULT: measured, it makes things slightly WORSE -- 8.8% bad
+    // against 8.6% at matched coverage. The window-aggregated Census cost is a
+    // mean of 49-level Hamming scores over a 7x7 block, which is not locally
+    // parabolic enough for a three-point fit to find a real vertex. The theory
+    // that integer quantisation was costing accuracy was reasonable and wrong.
+    float off = 0.f;
+    const float* sp2 = s + size_t(x) * D;
+    if (cfg.subpixel && k > k0[x] && k + 1 < k1[x]) {
+      const float cm = sp2[k - 1], c0 = sp2[k], cp = sp2[k + 1];
+      const float den = 2.f * c0 - cm - cp;
+      if (den > 1e-6f) {
+        off = 0.5f * (cp - cm) / den;
+        if (off > 0.5f) off = 0.5f;
+        if (off < -0.5f) off = -0.5f;
+      }
+    }
+    out_disp[x] = float(d) + off;
   }
   (void)y;
 }
@@ -219,6 +245,8 @@ int main(int argc, char** argv) {
     const bool has = i + 1 < argc;
     if (a == "--dmax" && has) cfg.dmax = std::atoi(argv[++i]);
     else if (a == "--iters" && has) cfg.iters = std::atoi(argv[++i]);
+    else if (a == "--agg" && has) cfg.agg = std::atoi(argv[++i]);
+    else if (a == "--subpixel") cfg.subpixel = true;
     else if (a == "--threads" && has) cfg.threads = std::atoi(argv[++i]);
     else if (a == "--min-margin" && has) cfg.min_margin = float(std::atof(argv[++i]));
     else if (a == "--out" && has) outp = argv[++i];
@@ -239,6 +267,60 @@ int main(int argc, char** argv) {
   const std::vector<uint64_t> cr = census_image(R, 3, 3);
   const double t_census = now_ms() - t0;
 
+  // --- cost volume, aggregated over a window ---
+  //
+  // A single Census comparison is 48 binary tests quantised to 49 Hamming levels.
+  // Measured against SGM, that -- not the absence of a smoothness prior -- is
+  // where the accuracy goes: SGM stripped of smoothness AND post-filtering still
+  // reaches 12.7% bad against this matcher's 28.1%, and its cost is an absolute
+  // difference aggregated over a 5x5 block.
+  //
+  // So aggregate. Summing the score over a window at fixed disparity is the same
+  // trick, costs two separable passes, and turns 49 levels into a graded score.
+  // Built disparity-major so each slice is a contiguous H*W plane the box filter
+  // can walk, then transposed once into the [x][k] layout the solver wants.
+  const double tc0 = now_ms();
+  std::vector<float> vol(size_t(W) * H * D, -1e30f);
+  {
+    std::vector<float> slice(size_t(W) * H), tmp(size_t(W) * H);
+    const int r = std::max(0, cfg.agg);
+    for (int k = 0; k < D; ++k) {
+      const int d = cfg.dmin + k;
+      std::fill(slice.begin(), slice.end(), 0.f);
+      for (int y = 3; y < H - 3; ++y)
+        for (int x = 3 + d; x < W - 3; ++x)
+          slice[size_t(y) * W + x] =
+              (24.f - float(popcnt64(cl[size_t(y) * W + x] ^
+                                     cr[size_t(y) * W + x - d]))) / 24.f;
+      if (r > 0) {
+        // separable box, running sum
+        for (int y = 0; y < H; ++y) {
+          float acc = 0.f;
+          const float* in = &slice[size_t(y) * W];
+          float* out = &tmp[size_t(y) * W];
+          for (int x = 0; x < W; ++x) {
+            acc += in[x];
+            if (x > 2 * r) acc -= in[x - 2 * r - 1];
+            out[std::max(0, x - r)] = acc;
+          }
+        }
+        for (int x = 0; x < W; ++x) {
+          float acc = 0.f;
+          for (int y = 0; y < H; ++y) {
+            acc += tmp[size_t(y) * W + x];
+            if (y > 2 * r) acc -= tmp[size_t(y - 2 * r - 1) * W + x];
+            slice[size_t(std::max(0, y - r)) * W + x] = acc;
+          }
+        }
+      }
+      const float norm = 1.f / float((2 * r + 1) * (2 * r + 1));
+      for (int y = 3; y < H - 3; ++y)
+        for (int x = 3 + d; x < W - 3; ++x)
+          vol[(size_t(y) * W + x) * D + k] = slice[size_t(y) * W + x] * norm;
+    }
+  }
+  const double t_cost = now_ms() - tc0;
+
   std::vector<float> disp(size_t(W) * H, std::nanf(""));
   std::vector<float> margin(size_t(W) * H, 0.f);
 
@@ -253,7 +335,7 @@ int main(int argc, char** argv) {
       std::vector<float> best(W);
       std::vector<char> taken(W);
       for (int y = t; y < H; y += nthreads) {
-        solve_row(y, W, D, cfg, &cl[size_t(y) * W], &cr[size_t(y) * W],
+        solve_row(y, W, D, cfg, &vol[size_t(y) * W * D],
                   s.data(), beta.data(), rho.data(),
                   &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
                   gath.data(), svals.data(), idxs.data(), k0.data(), k1.data(),
@@ -267,8 +349,10 @@ int main(int argc, char** argv) {
   size_t filled = 0;
   for (float v : disp) if (std::isfinite(v)) ++filled;
   std::printf("%dx%d  D=%d  iters=%d  threads=%d\n", W, H, D, cfg.iters, nthreads);
-  std::printf("census %.1f ms   solve %.1f ms   total %.1f ms   filled %.1f%%\n",
-              t_census, t_solve, t_census + t_solve,
+  std::printf("census %.1f ms  cost %.1f ms  solve %.1f ms  total %.1f ms  "
+              "agg=%d iters=%d  filled %.1f%%\n",
+              t_census, t_cost, t_solve, t_census + t_cost + t_solve,
+              cfg.agg, cfg.iters,
               100.0 * double(filled) / double(disp.size()));
   if (!outp.empty()) {
     FILE* f = std::fopen(outp.c_str(), "wb");

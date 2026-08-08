@@ -1022,3 +1022,61 @@ de_dense is float32 with a top-2 whose index tracking resists autovectorisation.
 **Corrected default: 2 iterations.** 12 was inherited from the sparse keypoint
 problem, where the candidate set is small and iteration helps. On the dense problem
 it costs 3x the time to make the answer worse.
+
+## Acting on it: window-aggregated cost closes most of the gap
+
+The diagnosis said the matching cost, not the prior. Acting on it directly: sum the
+Census score over a window at fixed disparity, which is the same thing SGM's
+`blockSize` does, built as two separable box-filter passes over a disparity-major
+cost volume.
+
+| aggregation radius | coverage | bad-1.0 |
+|---|---|---|
+| 0 (single pixel, as before) | 77.2% | 26.6% |
+| 1 | 84.6% | 12.4% |
+| 2 | 85.7% | 11.0% |
+| **3** | **86.1%** | **10.6%** |
+| 4 | 86.3% | 10.7% |
+
+**26.6% to 10.6%, and coverage rises from 77% to 86%** — better on both axes at
+once, from one change. It also confirms the diagnosis: the score was the problem.
+
+### Against SGM, at matched coverage
+
+SGM trades coverage for error too, via `uniquenessRatio`, so a single point is not a
+comparison. Its curve runs 75.6%/5.4% to 81.9%/8.6%. Interpolating it to our
+operating point:
+
+| | coverage | bad-1.0 |
+|---|---|---|
+| MASDA (agg 3, 2 iters, margin 0.02) | 77.4% | 8.6% |
+| SGM at the same coverage | 77.4% | **6.2%** |
+
+**Not there yet.** But the gap went from 3.5x worse (28.1% against 8.1%) to 1.4x
+worse in one change, and MASDA ungated now has *higher* coverage than SGM at any of
+its settings — 86.1% against a maximum of 81.9%.
+
+### Sub-pixel interpolation does not help here
+
+The obvious next candidate was quantisation: the dense output was integer disparity
+while SGM interpolates to 1/16 px, and bad-1.0 has a one-pixel threshold. Fitting a
+parabola to the cost at k-1, k, k+1 made it slightly **worse**, 8.8% against 8.6% at
+matched coverage.
+
+The reason is the aggregation that just helped so much: the cost is now a mean of
+49-level Hamming scores over a 7x7 window, which is not locally parabolic enough for
+a three-point fit to locate a real vertex. Left in behind `--subpixel`, off by
+default. Sub-pixel on the *sparse* matcher works well (median inlier error 0.196 ->
+0.167 px) because there the fit is on a SAD cost between two intensity windows,
+which is smooth.
+
+### What is left, in order
+
+1. **A graded cost.** Census gives 49 levels and buys illumination invariance; SGM's
+   Birchfield-Tomasi absolute difference is continuous. Combining the two -- Census
+   for invariance, AD for gradation -- is the standard move and is untried here.
+2. **Runtime.** 280 ms against SGM's 16 ms, and the cost-volume build now dominates
+   rather than the solver. It recomputes a popcount per pixel per disparity with
+   poor locality; hoisting the XOR into the slice loop and blocking over disparity
+   would help.
+3. Smoothness, which the measurements put last rather than first.
