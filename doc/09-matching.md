@@ -1080,3 +1080,84 @@ which is smooth.
    poor locality; hoisting the XOR into the slice loop and blocking over disparity
    would help.
 3. Smoothness, which the measurements put last rather than first.
+
+## What PatchMatch Stereo and AGAP have that we do not
+
+Two methods worth reading against our measurements, because each attacks something
+we have now measured as a limit.
+
+> M. Bleyer, C. Rhemann and C. Rother (2011). *PatchMatch Stereo — Stereo Matching
+> with Slanted Support Windows.* BMVC.
+> [doi:10.5244/C.25.14](https://doi.org/10.5244/C.25.14)
+
+> P. Yao, H. Zhang, Y. Xue and S. Chen (2019). *As-global-as-possible stereo
+> matching with adaptive smoothness prior.* IET Image Processing.
+> [doi:10.1049/iet-ipr.2018.5801](https://doi.org/10.1049/iet-ipr.2018.5801)
+
+### 1. Slanted support windows — and this one could put us *ahead*
+
+Our window aggregation assumes the disparity is constant across the window. It is
+not. Teddy's floor is a slanted plane and Cones is a field of cones; averaging the
+cost over a 7x7 block on a surface with a disparity gradient blurs the very signal
+being aggregated, and the blur grows with window size — which is exactly why our
+sweep flattened at radius 3-4 instead of continuing to improve.
+
+PatchMatch Stereo estimates a **3D plane per pixel** — disparity *and* normal —
+instead of a single fronto-parallel disparity, so the support window is warped to
+the surface before the cost is summed.
+
+The reason to care is strategic rather than incremental: **SGM has the same
+fronto-parallel bias.** Its block cost and its P1/P2 penalties both assume
+neighbouring pixels share a disparity, which is wrong on every slanted surface. So
+this is not a way to catch up with SGM, it is a place where SGM is weak. Our current
+gap at matched coverage is 8.6% against 6.2%, and slanted surfaces are a large part
+of both scenes.
+
+### 2. Propagation instead of an exhaustive disparity search
+
+Our cost volume is O(W·H·D) and, since aggregation was added, **building it now
+dominates runtime** — 280 ms of which the solver is a minority. Every pixel is
+scored against all 60 disparities whether or not any of them is plausible.
+
+PatchMatch does not enumerate. It seeds random hypotheses, **propagates good ones to
+neighbours**, and refines by random search in a shrinking window. Cost becomes
+independent of the disparity range, which is the single largest structural saving
+available to us and attacks the one number where SGM is comfortably ahead.
+
+There is also a natural fit with MASDA that is worth noticing. Our measurements kept
+saying the *candidate set* is what decides the outcome — the 30.3% of errors where
+the answer was never offered, and the semi-dense experiment where offering more
+helped once the margin could filter. PatchMatch is precisely a method for
+*generating good candidates cheaply*. MASDA supplies what PatchMatch lacks: a
+principled one-to-one constraint and a confidence measure. Candidate generation by
+propagation, arbitration by max-sum, is a coherent combination and neither paper
+does it.
+
+### 3. AGAP: the support region should follow the image, not a square
+
+AGAP aggregates cost over a **minimum spanning tree of the whole image** rather than
+along SGM's eight fixed 1-D paths, with an adaptive smoothness term. Support then
+follows image structure: pixels connected through low-contrast regions aggregate
+together, and an edge stops the smoothing.
+
+Set against our numbers this is more promising than it first looks. We measured
+SGM's *penalty-based* smoothness (P1/P2) as worth only a few points, and I have been
+treating that as "smoothness does not matter here". But the box aggregation — which
+is a support-region choice, not a penalty — was worth **16 points**. Those are
+different mechanisms, and the evidence says the support region matters enormously
+while the penalty does not. A box is the crudest possible support. Edge-aware or
+tree-based support is the obvious next step, and MST filtering is O(N) and
+non-iterative, so it is cheap.
+
+### Ranked for this project
+
+1. **Slanted support windows.** Attacks a weakness SGM shares, so it is a route to
+   outperforming rather than matching. Also explains why our aggregation sweep
+   plateaued.
+2. **PatchMatch-style propagation for candidate generation.** Removes the O(D) cost
+   volume that now dominates runtime, and fits what we already measured about
+   candidate sets mattering more than inference.
+3. **Edge-aware support instead of a box.** The box was worth 16 points; a better
+   support region should be worth more, and it is cheap.
+4. **Continuous disparity.** Comes free with a plane-based formulation, and would
+   sidestep the sub-pixel parabola that measurably did not work here.
