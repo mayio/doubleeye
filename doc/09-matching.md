@@ -2418,3 +2418,40 @@ instructions.
 stated reason: halving the element width buys 8 lanes against 4 exactly where the
 platform is weakest. It also means the desktop is now actively misleading as a proxy --
 a change that is neutral there is worth a fifth of the runtime on the target.
+
+## Centre-symmetric census: does exactly what it promises, in both directions
+
+CS-CT compares each pixel against its point reflection through the centre rather than
+against the centre itself. A 7x7 window has 24 symmetric pairs instead of 48 neighbours,
+so the descriptor halves to 24 bits and fits `uint32`.
+
+The saving was never expected in the transform -- that is 2.3 ms and already vectorised
+-- but in the **score loop**, which reads both descriptor planes once per disparity
+slice and is the second largest item on the TX2.
+
+| | coverage | bad-1.0 | desktop | TX2 |
+|---|---|---|---|---|
+| classic, 48 bits | **75.7%** | **10.3%** | 39 ms | 89.9 |
+| CS-CT, 24 bits | 73.2% | 11.5% | 40 ms | **81.2** |
+
+TX2 score stage: **57.5 -> 37.2 ms** of CPU, 1.55x, precisely the predicted effect of
+halving the descriptor traffic and doubling the NEON lanes per register. And no gain at
+all on the desktop, the same asymmetry int16 showed.
+
+**But it costs 1.2 points of bad-1.0 and 2.5 of coverage** -- 67.9% to 64.8% of known
+pixels correct. That is the other half of the prediction: halving the Hamming range from
+49 levels to 25 hurts, and this file already recorded coarse quantisation as the
+likeliest cause of the residual error in flat regions. Fewer levels is the wrong
+direction for the weakness we already have.
+
+**Not worth it at the current operating point**, and the reason is specific rather than
+general: dense MASDA is presently *ahead* of SGM on accuracy, 10.3% against 10.9%, and
+CS-CT would trade that lead away (11.5%) for 10% of the runtime. Kept behind `--csct`,
+default off, because the trade reverses if the accuracy budget ever loosens -- for a
+lower-resolution or higher-frame-rate mode it is 10% for accuracy that is still
+competitive.
+
+The graded-cost idea points the other way: Census plus an absolute difference *adds*
+levels. That remains the untried lever on the half of the error that sits in
+near-fronto-parallel regions, and CS-CT is evidence for the mechanism behind it -- moving
+the level count down measurably hurts, so moving it up is worth testing.

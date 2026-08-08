@@ -113,6 +113,61 @@ void census_rows(const Image8& img, uint64_t* out, int t, int nth) {
   }
 }
 
+// Centre-symmetric census: compare each pixel against its point reflection through
+// the centre rather than against the centre itself. A 7x7 window has 24 symmetric
+// pairs instead of 48 neighbours, so the descriptor halves to 24 bits and fits
+// uint32.
+//
+// The saving is NOT in the transform, which is already 2.3 ms and vectorised. It is
+// in the score loop, which reads both descriptor planes once per disparity slice and
+// is the second largest item on the TX2 at 57.5 ms: halving the descriptor halves
+// those loads and doubles the NEON lanes per register.
+//
+// The risk is the opposite direction, and is the reason this is measured rather than
+// assumed: it halves the Hamming range from 49 levels to 25, and 09-matching already
+// records Census's coarse quantisation as the likeliest cause of the residual error
+// in flat regions. Fewer levels is the wrong way for that. It also removes the
+// centre pixel as a single point of failure, which is the usual argument in its
+// favour.
+template <int HW, int HH>
+void census_cs_rows(const Image8& img, uint32_t* out, int t, int nth) {
+  const int W = img.width, H = img.height;
+  const int nbits = ((2 * HW + 1) * (2 * HH + 1) - 1) / 2;
+  const int ngroups = (nbits + 7) / 8;
+  std::vector<uint8_t> g(size_t(ngroups) * W);
+  for (int y = HH + t; y < H - HH; y += nth) {
+    std::fill(g.begin(), g.end(), 0);
+    int bit = 0;
+    for (int dy = -HH; dy <= HH; ++dy)
+      for (int dx = -HW; dx <= HW; ++dx) {
+        if (dy < 0 || (dy == 0 && dx <= 0)) continue;   // each pair once
+        const uint8_t* a = img.data.data() + size_t(y + dy) * W + dx;
+        const uint8_t* b = img.data.data() + size_t(y - dy) * W - dx;
+        uint8_t* acc = &g[size_t(bit >> 3) * W];
+        const uint8_t one = uint8_t(1u << (bit & 7));
+        for (int x = HW; x < W - HW; ++x)
+          acc[x] |= a[x] < b[x] ? one : uint8_t(0);
+        ++bit;
+      }
+    uint32_t* o = out + size_t(y) * W;
+    for (int x = HW; x < W - HW; ++x) {
+      uint32_t v = 0;
+      for (int j = 0; j < ngroups; ++j)
+        v |= uint32_t(g[size_t(j) * W + x]) << (8 * j);
+      o[x] = v;
+    }
+  }
+}
+
+std::vector<uint32_t> census_cs(const Image8& img, int nth) {
+  std::vector<uint32_t> out(size_t(img.width) * img.height, 0);
+  std::vector<std::thread> pool;
+  for (int t = 0; t < nth; ++t)
+    pool.emplace_back([&, t]() { census_cs_rows<3, 3>(img, out.data(), t, nth); });
+  for (auto& th : pool) th.join();
+  return out;
+}
+
 std::vector<uint64_t> census_image(const Image8& img, int hw, int hh, int nth) {
   const int W = img.width, H = img.height;
   std::vector<uint64_t> out(size_t(W) * H, 0);
@@ -446,6 +501,7 @@ struct Cfg {
   int fgf = 1;             // fast guided filter: measured NOT worth it, see below
   int topk = 2;                // candidates per pixel; 2 measured best, 0 = dense
   int band = 2;                // prior-guided: search +-band around the prior
+  bool csct = false;           // centre-symmetric census: 24 bits instead of 48
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
   int threads = 0;
 };
@@ -763,6 +819,7 @@ int main(int argc, char** argv) {
     else if (a == "--dump-vol" && has) volp = argv[++i];
     else if (a == "--topk" && has) cfg.topk = std::atoi(argv[++i]);
     else if (a == "--band" && has) cfg.band = std::atoi(argv[++i]);
+    else if (a == "--csct") cfg.csct = true;
     else if (a == "--prior" && has) priorp = argv[++i];
   }
   Image8 L, R;
@@ -830,14 +887,24 @@ int main(int argc, char** argv) {
     }
   }
 
+  if (cfg.csct && !(cfg.rf && cfg.topk == 2 && volp.empty())) {
+    // The other paths still read the 64-bit descriptors, which are not built in
+    // this mode. Refusing beats reading an empty vector.
+    std::fprintf(stderr, "--csct requires the default path (--rf, --topk 2, no "
+                         "--dump-vol)\n");
+    return 1;
+  }
+
   const int D = cfg.dmax - cfg.dmin + 1;
   int nthreads = cfg.threads > 0 ? cfg.threads
                                  : int(std::thread::hardware_concurrency());
   if (nthreads < 1) nthreads = 1;
 
   const double t0 = now_ms();
-  const std::vector<uint64_t> cl = census_image(L, 3, 3, nthreads);
-  const std::vector<uint64_t> cr = census_image(R, 3, 3, nthreads);
+  std::vector<uint64_t> cl, cr;
+  std::vector<uint32_t> cl32, cr32;
+  if (cfg.csct) { cl32 = census_cs(L, nthreads); cr32 = census_cs(R, nthreads); }
+  else { cl = census_image(L, 3, 3, nthreads); cr = census_image(R, 3, 3, nthreads); }
   const double t_census = now_ms() - t0;
 
   // --- cost volume, aggregated over a window ---
@@ -1050,8 +1117,15 @@ int main(int argc, char** argv) {
         // 49 possible Hamming distances, so the scale conversion is a table
         // lookup rather than an integer divide per pixel-disparity.
         int16_t tbl[49];
-        for (int h = 0; h <= 48; ++h)
-          tbl[h] = int16_t(((24 - h) * SCORE_ONE) / 24);
+        const int half = cfg.csct ? 12 : 24;
+        for (int h = 0; h <= 2 * half; ++h)
+          tbl[h] = int16_t(((half - h) * SCORE_ONE) / half);
+        if (cfg.csct) {
+          for (int y = 3; y < H - 3; ++y)
+            for (int x = 3 + d; x < W - 3; ++x)
+              islice[size_t(y) * W + x] = tbl[__builtin_popcount(
+                  cl32[size_t(y) * W + x] ^ cr32[size_t(y) * W + x - d])];
+        } else
         for (int y = 3; y < H - 3; ++y)
           for (int x = 3 + d; x < W - 3; ++x)
             islice[size_t(y) * W + x] =
