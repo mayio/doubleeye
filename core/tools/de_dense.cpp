@@ -87,9 +87,39 @@ struct Top2 {
   inline float excl(int i) const { return i == i1 ? b2 : b1; }
 };
 
+
+// Separable box filter with running sums: O(N) regardless of radius.
+void box_filter(const float* in, float* out, float* tmp, int W, int H, int r) {
+  if (r <= 0) { std::copy(in, in + size_t(W) * H, out); return; }
+  for (int y = 0; y < H; ++y) {
+    float acc = 0.f;
+    const float* ip = in + size_t(y) * W;
+    float* op = tmp + size_t(y) * W;
+    for (int x = 0; x < W; ++x) {
+      acc += ip[x];
+      if (x > 2 * r) acc -= ip[x - 2 * r - 1];
+      op[std::max(0, x - r)] = acc;
+    }
+    for (int x = std::max(0, W - r); x < W; ++x) op[x] = acc;
+  }
+  for (int x = 0; x < W; ++x) {
+    float acc = 0.f;
+    for (int y = 0; y < H; ++y) {
+      acc += tmp[size_t(y) * W + x];
+      if (y > 2 * r) acc -= tmp[size_t(y - 2 * r - 1) * W + x];
+      out[size_t(std::max(0, y - r)) * W + x] = acc;
+    }
+    for (int y = std::max(0, H - r); y < H; ++y) out[size_t(y) * W + x] = acc;
+  }
+  const float norm = 1.f / float((2 * r + 1) * (2 * r + 1));
+  for (size_t i = 0; i < size_t(W) * H; ++i) out[i] *= norm;
+}
+
 struct Cfg {
   int dmin = 1, dmax = 60, iters = 2, agg = 3;
   bool subpixel = false;   // measured: hurts slightly, see below
+  bool guided = true;      // edge-aware aggregation
+  float eps = 0.0025f;     // guided-filter regularisation, I in [0,1]
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
   int threads = 0;
 };
@@ -251,6 +281,8 @@ int main(int argc, char** argv) {
     else if (a == "--iters" && has) cfg.iters = std::atoi(argv[++i]);
     else if (a == "--agg" && has) cfg.agg = std::atoi(argv[++i]);
     else if (a == "--subpixel") cfg.subpixel = true;
+    else if (a == "--box") cfg.guided = false;
+    else if (a == "--eps" && has) cfg.eps = float(std::atof(argv[++i]));
     else if (a == "--threads" && has) cfg.threads = std::atoi(argv[++i]);
     else if (a == "--min-margin" && has) cfg.min_margin = float(std::atof(argv[++i]));
     else if (a == "--out" && has) outp = argv[++i];
@@ -295,11 +327,35 @@ int main(int argc, char** argv) {
   // what makes the whole thing a GPU kernel later rather than a rewrite.
   const double tc0 = now_ms();
   std::vector<float> vol(size_t(W) * H * D, -1e30f);
+  //
+  // Guided-filter aggregation instead of a box.
+  //
+  // A box averages the cost over a square regardless of what is in it, so at a
+  // depth discontinuity it mixes two surfaces. Measured, that is where the error
+  // is: bad-1.0 is 6.7% on near-fronto-parallel pixels and 50%+ where the
+  // ground-truth disparity gradient exceeds 0.6 px/px.
+  //
+  // The guided filter weights the support by agreement with the LEFT IMAGE, so a
+  // strong intensity edge stops the aggregation. It is still O(N) -- box filters
+  // all the way down -- and the guidance statistics (mean_I, var_I) do not depend
+  // on disparity, so they are computed once for the whole volume.
+  std::vector<float> I(size_t(W) * H), mI(size_t(W) * H), vI(size_t(W) * H);
+  {
+    std::vector<float> t1(size_t(W) * H), t2(size_t(W) * H), II(size_t(W) * H);
+    for (size_t i = 0; i < I.size(); ++i) I[i] = float(L.data[i]) / 255.f;
+    for (size_t i = 0; i < I.size(); ++i) II[i] = I[i] * I[i];
+    box_filter(I.data(), mI.data(), t1.data(), W, H, cfg.agg);
+    box_filter(II.data(), vI.data(), t2.data(), W, H, cfg.agg);
+    for (size_t i = 0; i < vI.size(); ++i) vI[i] -= mI[i] * mI[i];
+  }
   {
     const int r = std::max(0, cfg.agg);
     std::vector<std::thread> cpool;
     for (int t = 0; t < nthreads; ++t) cpool.emplace_back([&, t]() {
     std::vector<float> slice(size_t(W) * H), tmp(size_t(W) * H);
+    std::vector<float> ip(size_t(W) * H), mp(size_t(W) * H), mip(size_t(W) * H);
+    std::vector<float> ab(size_t(W) * H), bb(size_t(W) * H);
+    std::vector<float> ma(size_t(W) * H), mb(size_t(W) * H);
     for (int k = t; k < D; k += nthreads) {
       const int d = cfg.dmin + k;
       std::fill(slice.begin(), slice.end(), 0.f);
@@ -308,31 +364,28 @@ int main(int argc, char** argv) {
           slice[size_t(y) * W + x] =
               (24.f - float(popcnt64(cl[size_t(y) * W + x] ^
                                      cr[size_t(y) * W + x - d]))) / 24.f;
-      if (r > 0) {
-        // separable box, running sum
-        for (int y = 0; y < H; ++y) {
-          float acc = 0.f;
-          const float* in = &slice[size_t(y) * W];
-          float* out = &tmp[size_t(y) * W];
-          for (int x = 0; x < W; ++x) {
-            acc += in[x];
-            if (x > 2 * r) acc -= in[x - 2 * r - 1];
-            out[std::max(0, x - r)] = acc;
-          }
+      if (r > 0 && cfg.guided) {
+        // q = mean_a * I + mean_b, the standard guided filter with the left
+        // image as guidance. Four box filters per slice; the guidance moments
+        // were done once above.
+        for (size_t i = 0; i < ip.size(); ++i) ip[i] = I[i] * slice[i];
+        box_filter(slice.data(), mp.data(), tmp.data(), W, H, r);
+        box_filter(ip.data(), mip.data(), tmp.data(), W, H, r);
+        for (size_t i = 0; i < ab.size(); ++i) {
+          const float cov = mip[i] - mI[i] * mp[i];
+          ab[i] = cov / (vI[i] + cfg.eps);
+          bb[i] = mp[i] - ab[i] * mI[i];
         }
-        for (int x = 0; x < W; ++x) {
-          float acc = 0.f;
-          for (int y = 0; y < H; ++y) {
-            acc += tmp[size_t(y) * W + x];
-            if (y > 2 * r) acc -= tmp[size_t(y - 2 * r - 1) * W + x];
-            slice[size_t(std::max(0, y - r)) * W + x] = acc;
-          }
-        }
+        box_filter(ab.data(), ma.data(), tmp.data(), W, H, r);
+        box_filter(bb.data(), mb.data(), tmp.data(), W, H, r);
+        for (size_t i = 0; i < slice.size(); ++i) slice[i] = ma[i] * I[i] + mb[i];
+      } else if (r > 0) {
+        box_filter(slice.data(), mp.data(), tmp.data(), W, H, r);
+        slice.swap(mp);
       }
-      const float norm = 1.f / float((2 * r + 1) * (2 * r + 1));
       for (int y = 3; y < H - 3; ++y)
         for (int x = 3 + d; x < W - 3; ++x)
-          vol[(size_t(y) * W + x) * D + k] = slice[size_t(y) * W + x] * norm;
+          vol[(size_t(y) * W + x) * D + k] = slice[size_t(y) * W + x];
     }
     });
     for (auto& th : cpool) th.join();

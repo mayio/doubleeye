@@ -1264,3 +1264,52 @@ the smaller half of the high-gradient error. The ranking that follows from these
 numbers is edge-aware support first, slanted planes second, since the discontinuity
 population is two to three times larger than the slanted one on both scenes. That is
 the opposite of the order I proposed from reading the papers.
+
+## Edge-aware aggregation: level with SGM, not ahead of it
+
+The measurement said discontinuities carry most of the high-gradient error and a box
+filter mixes two surfaces across them. Replacing the box with a **guided filter** —
+support weighted by agreement with the left image, so an intensity edge stops the
+aggregation — is the direct fix and is still O(N), since the guidance moments do not
+depend on disparity and are computed once for the whole volume.
+
+On teddy, at radius 5: **10.6% -> 8.8% bad-1.0** at slightly higher coverage. Gated
+at margin 0.01 it reached 81.9% coverage / 7.7% bad against SGM's 81.9% / 8.6% —
+same coverage, lower error.
+
+**That did not survive contact with the other seven scenes.**
+
+| scene | MASDA cov | MASDA bad | SGM cov | SGM bad |
+|---|---|---|---|---|
+| teddy | 81.9% | **7.7%** | 81.1% | 8.1% |
+| cones | 83.8% | 6.1% | 81.7% | **5.5%** |
+| Art | 71.0% | 16.1% | 70.3% | **14.5%** |
+| Books | 75.4% | **8.3%** | 80.7% | 9.7% |
+| Dolls | 76.9% | **7.8%** | 79.9% | 9.3% |
+| Laundry | 70.7% | 20.8% | 77.6% | **17.7%** |
+| Moebius | 78.0% | **11.0%** | 78.1% | 11.5% |
+| Reindeer | 75.8% | **10.5%** | 74.9% | 11.1% |
+| **mean** | **76.7%** | **11.0%** | **78.0%** | **10.9%** |
+
+11.0% against 10.9% at 76.7% coverage against 78.0%. That is a tie, and since SGM
+carries slightly more coverage it is arguably a shade ahead at matched coverage.
+
+**So: level, not better.** Which is still the day's result — dense MASDA started at
+28.1% bad against SGM's 8.1%, a factor of 3.5, and is now indistinguishable on
+average. The three changes that did it were window aggregation (the largest),
+guided-filter support, and the margin gate.
+
+Worth naming the near-miss. Teddy alone said "beats SGM" and I nearly reported it.
+Eight scenes said tie. That is the same single-scene trap as the ordering factor,
+caught this time because checking cost two minutes.
+
+### Where it stands, and what is left
+
+- **Quality: level with SGM**, from 3.5x behind.
+- **Runtime: 226 ms against 16 ms.** Now the gap. The guided filter is four box
+  passes per disparity slice on top of the scoring, and the work is
+  memory-bandwidth bound, so the levers are traffic rather than arithmetic: uint16
+  cost volume, fusing passes, or not materialising the volume at all.
+- **Untried and still promising:** slanted planes for the genuinely-slanted
+  population, and a graded cost (Census plus absolute difference) for the ~50% of
+  error that sits in flat regions and is untouched by anything done today.
