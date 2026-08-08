@@ -34,6 +34,7 @@ TESTBIN := $(BUILD)/test_preproc
 TESTMAT := $(BUILD)/test_match
 # Header-only kernel, so no object to link; reports SKIPPED off AArch64.
 TESTSIMD := $(BUILD)/test_simd_score
+TESTTOP2 := $(BUILD)/test_top2_merge
 # CUDA tool: built only where nvcc exists (the TX2). sm_62 is the TX2's Pascal;
 # the desktop has no toolkit, so its build is untouched. If a desktop toolkit ever
 # appears, sm_61 is the GTX 1050 -- adjust or use -arch there.
@@ -82,12 +83,17 @@ $(DENSECU): tools/de_dense_cuda.cu include/doubleeye/dense_solve.hpp $(OBJS)
 $(TESTSIMD): tests/test_simd_score.cpp include/doubleeye/simd_score.hpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $< -o $@
 
-test: $(TESTBIN) $(TESTMAT) $(TESTSIMD)
+$(TESTTOP2): tests/test_top2_merge.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $< -o $@
+
+test: $(TESTBIN) $(TESTMAT) $(TESTSIMD) $(TESTTOP2)
 	@$(TESTBIN)
 	@echo
 	@$(TESTMAT)
 	@echo
 	@$(TESTSIMD)
+	@echo
+	@$(TESTTOP2)
 
 clean:
 	rm -rf $(BUILD)

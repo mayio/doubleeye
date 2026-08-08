@@ -24,6 +24,7 @@
 
 #include <cuda_runtime.h>
 
+#include <pthread.h>
 #include <time.h>
 
 #include <algorithm>
@@ -96,175 +97,224 @@ __global__ void k_rf_coeffs(const uint8_t* raw, uint16_t* ax, uint16_t* ay,
   ay[i] = y > 0 ? c_rf[abs(int(raw[i]) - int(raw[i - size_t(W)]))] : c_rf[0];
 }
 
-// --- graded cost: one thread per pixel, ALL disparities, transposed output ------
+// --- the k-minor volume: vol[y][x][k], Dpad = 64 so every pixel's disparity run
+// is one 128-byte-aligned line ------------------------------------------------------
 //
-// The grid.z-per-disparity version re-read every census descriptor D times --
-// 195 MB of the 450 MB the kernel moved -- and was measured at 15 ms. One thread
-// per pixel keeps cl[i] and Ld[i] in registers and walks cr/Rd backwards through
-// memory the warp has just used, so the reads collapse to one pass over each
-// input.
+// This is the [x][d] layout the CPU work rejected three times, and on the GPU it is
+// the right answer -- the resolution of that whole saga is that the two machines
+// want OPPOSITE layouts. Every access below is either a coalesced k-run (32
+// consecutive disparities per warp) or a warp broadcast, and the score fuses with
+// the horizontal-forward pass so the scored-but-unfiltered volume never makes a
+// round trip through DRAM.
 //
-// It writes the volume TRANSPOSED ([k][x][y]): the store at fixed k is consecutive
-// in y for consecutive threads if threads map warp-major along y, and producing
-// the transposed layout here deletes the 93 MB pre-transpose the filter otherwise
-// needs before its horizontal passes. Outside the valid window the plane holds 0,
-// exactly the value the CPU's plane clear leaves, because the filter propagates
-// whatever it finds.
-__global__ void k_score_all(const uint64_t* cl, const uint64_t* cr,
-                            const uint8_t* Ld, const uint8_t* Rd,
-                            int16_t* volT, int W, int H, int D, int dmin,
-                            int32_t wq) {
-  // 32x32 tile per plane, staged through shared memory like k_transpose: the
-  // census/image reads are coalesced along x, the transposed volume writes are
-  // coalesced along y, and neither the first version of this kernel (grid.z per
-  // plane, reads coalesced, re-reads cl D times) nor the second (thread per
-  // pixel, transposed writes, reads strided) had both -- measured 15 and 21 ms
-  // against ~2 of raw traffic. The tile has both.
-  __shared__ int16_t tile[32][33];
-  const int k = blockIdx.z;
+// A warp is 32 DISPARITIES of one image row (ReS2tAC's lane assignment, third
+// appearance in this project). The census reads for 32 consecutive d form one
+// 256-byte window that slides one element per x step, so it lives in L1; cl and
+// ax are the same address for every lane, a hardware broadcast.
+//
+// The alternative that was measured first and recorded as a negative: a
+// warp-serial shuffle scan of the recurrence (lanes take turns) is bit-exact and
+// coalesced and 55.7 ms, WORSE than the transposed thread-per-row version,
+// because 31 of 32 lanes burn issue slots on every serial step. Instruction
+// throughput, not bandwidth. Block-parallel reassociation (Nehab et al.) fixes
+// that for float filters and cannot be bit-exact for this integer recurrence.
+//
+// The recurrences themselves are exactly rf_horiz_i16 / rf_filter_i16: int32
+// carry, int16 store, +-(1<<14) rounding, backward coefficient at +1.
+
+// The k-run padding is RUNTIME: Dpad = D rounded up to 64, so a warp of k-pairs
+// covers each 64-wide group and a pixel's run stays line-aligned. The first
+// version hard-coded 64 and was caught by the eight-scene identity check: six of
+// the eight Middlebury scenes have D > 64, their upper disparities were never
+// scored, and the top-2 read into the next pixel's run. teddy and cones -- the
+// two scenes everything gets tuned on -- happen to have D = 60 and passed.
+
+// score + horizontal FORWARD pass, fused. Grid: (H, D/32). Warp w of a block
+// covers row y = blockIdx.x * (blockDim.x/32/...) -- one row per block of 2 warps.
+__global__ void k_score_hfwd(const uint64_t* cl, const uint64_t* cr,
+                             const uint8_t* Ld, const uint8_t* Rd,
+                             const uint16_t* ax,
+                             int16_t* vol, int W, int H, int D, int Dpad,
+                             int dmin, int32_t wq) {
+  // The tables are indexed DIVERGENTLY -- 32 different Hamming distances per
+  // warp -- and constant memory serializes on divergent access: one replay per
+  // distinct address. Shared memory has no such rule; copying the tables once
+  // per block was measured at 11.2 -> 6.0 ms for this kernel.
+  __shared__ int16_t stbl[64];
+  __shared__ int16_t sadt[256];
+  for (int t = threadIdx.x; t < 64; t += blockDim.x) stbl[t] = c_tbl[t];
+  for (int t = threadIdx.x; t < 256; t += blockDim.x) sadt[t] = c_adt[t];
+  __syncthreads();
+  const int lane = threadIdx.x & 31;
+  const int kg = threadIdx.x >> 5;          // k-group within this 64-wide block
+  const int y = blockIdx.x;
+  const int k = blockIdx.y * 64 + kg * 32 + lane;
   const int d = dmin + k;
-  const size_t WH = size_t(W) * H;
-  int x = blockIdx.x * 32 + threadIdx.x;
-  int y = blockIdx.y * 32 + threadIdx.y;
-  for (int j = 0; j < 32; j += 8) {
-    const int yy = y + j;
-    int16_t v = 0;
-    if (x < W && yy < H && yy >= 3 && yy < H - 3 && x >= 3 + d && x < W - 3) {
-      const size_t i = size_t(yy) * W + x;
-      const int32_t c = c_tbl[__popcll(cl[i] ^ cr[i - size_t(d)])];
-      const int32_t a = c_adt[abs(int(Ld[i]) - int(Rd[i - size_t(d)]))];
-      v = int16_t((c * (1024 - wq) + a * wq) >> 10);
+  const bool live = k < D;
+  const bool row_ok = y >= 3 && y < H - 3;
+  const uint64_t* clr = cl + size_t(y) * W;
+  const uint64_t* crr = cr + size_t(y) * W;
+  const uint8_t* Lr = Ld + size_t(y) * W;
+  const uint8_t* Rr = Rd + size_t(y) * W;
+  const uint16_t* ar = ax + size_t(y) * W;
+  int16_t* out = vol + size_t(y) * W * Dpad + k;
+  int32_t f = 0;                             // x = 0 score is 0 by the window
+  for (int x = 0; x < W; ++x) {
+    int32_t v = 0;
+    if (live && row_ok && x >= 3 + d && x < W - 3) {
+      const int32_t c = stbl[__popcll(__ldg(clr + x) ^ __ldg(crr + x - d))];
+      const int32_t a = sadt[abs(int(__ldg(Lr + x)) - int(__ldg(Rr + x - d)))];
+      v = (c * (1024 - wq) + a * wq) >> 10;
     }
-    tile[threadIdx.y + j][threadIdx.x] = v;
+    // forward recurrence, seeded with the x = 0 value exactly like the CPU
+    if (x == 0) f = v;
+    else        f = v + ((int32_t(ar[x]) * (f - v) + (1 << 14)) >> 15);
+    if (live) out[size_t(x) * Dpad] = int16_t(f);
   }
-  __syncthreads();
-  x = blockIdx.y * 32 + threadIdx.x;                     // transposed coordinates
-  y = blockIdx.x * 32 + threadIdx.y;
-  int16_t* dst = volT + size_t(k) * WH;
-  for (int j = 0; j < 32; j += 8)
-    if (x < H && y + j < W) dst[size_t(y + j) * H + x] = tile[threadIdx.x][threadIdx.y + j];
 }
 
-// --- the recursive filter's horizontal passes, via transposition ----------------
-//
-// A thread per row is the natural mapping and it was measured at 403 ms: a warp of
-// threads on consecutive rows strides W*2 bytes per lane, so every access is its
-// own transaction and the sequential reuse thrashes out of the TX2's 512 KB L2
-// before it pays. Transposing costs two extra passes of pure data movement -- no
-// arithmetic, so bit-identity is untouched -- and turns the horizontal recurrence
-// into the coalesced column-parallel form the vertical passes already have.
-//
-// The recurrence itself is exactly rf_horiz_i16: the carry is the int32, NOT a
-// reload of the int16 store, and the backward pass reads the coefficient at i+1 --
-// which in the transposed frame is one row down.
-template <typename T>
-__global__ void k_transpose(const T* in, T* out, int W, int H) {
-  // 32x32 tiles through shared memory, +1 column to dodge bank conflicts.
-  __shared__ T tile[32][33];
-  const int k = blockIdx.z;
-  const T* src = in + size_t(k) * W * H;
-  T* dst = out + size_t(k) * W * H;
-  int x = blockIdx.x * 32 + threadIdx.x;
-  int y = blockIdx.y * 32 + threadIdx.y;
-  for (int j = 0; j < 32; j += 8)
-    if (x < W && y + j < H)
-      tile[threadIdx.y + j][threadIdx.x] = src[size_t(y + j) * W + x];
-  __syncthreads();
-  x = blockIdx.y * 32 + threadIdx.x;   // transposed coordinates
-  y = blockIdx.x * 32 + threadIdx.y;
-  for (int j = 0; j < 32; j += 8)
-    if (x < H && y + j < W)
-      dst[size_t(y + j) * H + x] = tile[threadIdx.x][threadIdx.y + j];
-}
-
-// Runs on the TRANSPOSED volume: plane layout is [x][y], threads walk x (the
-// original row direction) with consecutive threads on consecutive y -- coalesced.
-__global__ void k_rf_horizT(int16_t* volT, const uint16_t* axT, int W, int H,
-                            int ncols) {
-  const int c0 = blockIdx.x * blockDim.x + threadIdx.x;
-  if (c0 >= ncols) return;
-  const int y = c0 % H;          // original row, now the minor axis
-  const int k = c0 / H;
-  int16_t* C = volT + size_t(k) * W * H;
-  int32_t f = C[y];              // original (y, x = 0)
-  for (int x = 1; x < W; ++x) {
-    const size_t i = size_t(x) * H + y;
-    const int32_t c = C[i];
-    f = c + ((int32_t(axT[i]) * (f - c) + (1 << 14)) >> 15);
-    C[i] = int16_t(f);
-  }
-  f = C[size_t(W - 1) * H + y];
+// horizontal BACKWARD pass over the forward result. Same warp shape.
+__global__ void k_hbwd(int16_t* vol, const uint16_t* ax, int W, int H,
+                       int Dpad) {
+  // A k-pair per lane: one int32 load/store per step covers a 64-wide k group
+  // per warp -- full 128-byte transactions. grid.y walks the groups.
+  const int lane = threadIdx.x & 31;
+  const int y = blockIdx.x;
+  const int k2 = blockIdx.y * 64 + lane * 2;
+  const uint16_t* ar = ax + size_t(y) * W;
+  int32_t* row = (int32_t*)(vol + size_t(y) * W * Dpad + k2);
+  const size_t xs = size_t(Dpad) / 2;        // x stride in int32 units
+  int32_t packed = row[size_t(W - 1) * xs];
+  int16_t f0 = int16_t(packed & 0xFFFF), f1 = int16_t(packed >> 16);
   for (int x = W - 2; x >= 0; --x) {
-    const size_t i = size_t(x) * H + y;
-    const int32_t c = C[i];
-    f = c + ((int32_t(axT[i + size_t(H)]) * (f - c) + (1 << 14)) >> 15);
-    C[i] = int16_t(f);
+    const int32_t cc = row[size_t(x) * xs];
+    const int32_t a = ar[x + 1];
+    const int32_t c0 = int16_t(cc & 0xFFFF), c1 = int16_t(cc >> 16);
+    f0 = int16_t(c0 + ((a * (int32_t(f0) - c0) + (1 << 14)) >> 15));
+    f1 = int16_t(c1 + ((a * (int32_t(f1) - c1) + (1 << 14)) >> 15));
+    row[size_t(x) * xs] = (int32_t(uint16_t(f1)) << 16) | uint16_t(f0);
   }
 }
 
-// --- vertical passes: one thread per (column, plane), coalesced -----------------
-//
-// The CPU's vertical pass reads the PREVIOUS row's already-updated int16 value,
-// so the carry here is through the stored int16, not an int32 register. Copied
-// faithfully; this is the kind of half-truth that would survive a visual check
-// and die under cmp.
-__global__ void k_rf_vert(int16_t* vol, const uint16_t* ay, int W, int H,
-                          int ncols) {
-  const int c0 = blockIdx.x * blockDim.x + threadIdx.x;   // column within all planes
-  if (c0 >= ncols) return;
-  const int x = c0 % W;
-  const int k = c0 / W;
-  int16_t* C = vol + size_t(k) * W * H;
-  // The CPU reads the previous row's already-stored int16 -- but that value is
-  // this thread's own previous store, so carrying it in a register is the SAME
-  // int16, verified by cmp. It also removes a dependent global load per step, so
-  // the recurrence's latency chain is arithmetic instead of memory: this one
-  // change took the filter block from 37 ms to what the timing line now shows.
-  int16_t prev = C[x];
+// vertical passes: thread per (x, k), warp = 32 consecutive k of one x. The
+// coefficient ay[y][x] is one address for the whole warp -- a broadcast -- and the
+// volume access is a coalesced k-run. Register carry, exactly like the CPU's
+// stored-int16 carry in value.
+// vertical FORWARD: a thread owns a PAIR of adjacent k (one int32 load/store), a
+// warp owns all 64 padded k of one x -- full 128-byte transactions.
+template <int G>                             // 64-wide k groups; 1 covers D <= 64
+__global__ void k_vert_fwd(int16_t* vol, const uint16_t* ay, int W, int H,
+                           int Dpad, int nthreads_total) {
+  const int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t >= nthreads_total) return;
+  const int lane = t & 31;
+  const int x = t >> 5;
+  const size_t rs = size_t(W) * Dpad / 2;    // row stride in int32 units
+  int32_t* col0 = (int32_t*)(vol + size_t(x) * Dpad) + lane;
+  int16_t p0[4], p1[4];
+  for (int g = 0; g < G; ++g) {
+    const int32_t packed = col0[g * 32];
+    p0[g] = int16_t(packed & 0xFFFF);
+    p1[g] = int16_t(packed >> 16);
+  }
   for (int y = 1; y < H; ++y) {
-    const size_t i = size_t(y) * W + x;
-    const int32_t c = C[i];
-    prev = int16_t(c + ((int32_t(ay[i]) * (int32_t(prev) - c) + (1 << 14)) >> 15));
-    C[i] = prev;
+    const int32_t a = ay[size_t(y) * W + x];   // one address per warp: broadcast
+    for (int g = 0; g < G; ++g) {
+      const int32_t cc = col0[size_t(y) * rs + g * 32];
+      const int32_t c0 = int16_t(cc & 0xFFFF), c1 = int16_t(cc >> 16);
+      p0[g] = int16_t(c0 + ((a * (int32_t(p0[g]) - c0) + (1 << 14)) >> 15));
+      p1[g] = int16_t(c1 + ((a * (int32_t(p1[g]) - c1) + (1 << 14)) >> 15));
+      col0[size_t(y) * rs + g * 32] =
+          (int32_t(uint16_t(p1[g])) << 16) | uint16_t(p0[g]);
+    }
+  }
+}
+
+// vertical BACKWARD with the top-2 fused in as a warp reduction, and NO stores of
+// the filtered values: after this pass nothing reads the volume again, so the
+// only output is the candidates. This deleted a separate 10.9 ms top-2 kernel
+// whose per-pixel k-runs strided 128 bytes across the warp, plus ~50 MB of
+// backward stores.
+//
+// A warp holds ALL of pixel (y, x)'s disparities (32 lanes x 2 each), so the
+// exact sequential top-2 -- ascending k, strictly greater displaces, first of
+// equals kept -- is reproduced by a lane-local top-2 in k order followed by a
+// shuffle merge that prefers the smaller k on equal values. Top-2 of a multiset
+// with stable-by-k tie order is associative, which is what makes the reduction
+// exact rather than approximately right; cmp against the CPU is the referee.
+template <int G>
+__global__ void k_vert_bwd_top2(const int16_t* vol, const uint16_t* ay,
+                                float* cs, int* cd, int* cn,
+                                int W, int H, int D, int Dpad, int dmin,
+                                int nthreads_total) {
+  const int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t >= nthreads_total) return;
+  const int lane = t & 31;
+  const int x = t >> 5;
+  const int32_t* col0 = (const int32_t*)(vol + size_t(x) * Dpad) + lane;
+  const size_t rs = size_t(W) * Dpad / 2;
+  const float q = 1.f / float(SCORE_ONE);
+  // rows the backward pass never visits still need cn = 0 for the solver
+  if (lane == 0) cn[size_t(H - 1) * W + x] = 0;
+  int16_t p0[4], p1[4];
+  for (int g = 0; g < G; ++g) {
+    const int32_t packed = col0[size_t(H - 1) * rs + g * 32];
+    p0[g] = int16_t(packed & 0xFFFF);
+    p1[g] = int16_t(packed >> 16);
   }
   for (int y = H - 2; y >= 0; --y) {
-    const size_t i = size_t(y) * W + x;
-    const int32_t c = C[i];
-    prev = int16_t(c + ((int32_t(ay[i + size_t(W)]) * (int32_t(prev) - c) +
-                         (1 << 14)) >> 15));
-    C[i] = prev;
-  }
-}
-
-// --- top-2 per pixel over the filtered volume ------------------------------------
-//
-// Ascending k with strictly-greater displacement: the exact insertion order and
-// tie rule of the CPU's single-threaded plane loop, which is what makes this
-// deterministic where the CPU's six-thread version is not. Reads are coalesced
-// (consecutive pixels, same plane). The window test mirrors the CPU insert:
-// a pixel only ever sees disparities with x - d >= 3.
-__global__ void k_top2(const int16_t* vol, float* cs, int* cd, int* cn,
-                       int W, int H, int D, int dmin) {
-  const size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-  const size_t WH = size_t(W) * H;
-  if (i >= WH) return;
-  const int x = int(i % W), y = int(i / W);
-  int16_t b0 = -32768, b1 = -32768;
-  int i0 = -1, i1 = -1;
-  if (y >= 3 && y < H - 3 && x >= 3 + dmin && x < W - 3) {
-    const int kmax = min(D - 1, x - 3 - dmin);
-    for (int k = 0; k <= kmax; ++k) {
-      const int16_t v = vol[size_t(k) * WH + i];
-      if (v <= b1) continue;
-      if (v > b0) { b1 = b0; i1 = i0; b0 = v; i0 = k; }
-      else        { b1 = v;  i1 = k; }
+    const int32_t a = ay[size_t(y + 1) * W + x];
+    const int kmax = (y >= 3 && y < H - 3 && x >= 3 + dmin && x < W - 3)
+                         ? min(D - 1, x - 3 - dmin) : -1;
+    // lane-local top-2 as packed (value, k) ints: value+32768 in the high bits,
+    // 255-k in the low 8, so plain integer > is (value desc, k asc) and the
+    // whole reduction is order-independent. 8 bits of k because D can reach 220.
+    int32_t pk0 = 0, pk1 = 0;
+    for (int g = 0; g < G; ++g) {
+      const int32_t cc = col0[size_t(y) * rs + g * 32];
+      const int32_t c0 = int16_t(cc & 0xFFFF), c1 = int16_t(cc >> 16);
+      p0[g] = int16_t(c0 + ((a * (int32_t(p0[g]) - c0) + (1 << 14)) >> 15));
+      p1[g] = int16_t(c1 + ((a * (int32_t(p1[g]) - c1) + (1 << 14)) >> 15));
+      const int k2 = g * 64 + lane * 2;
+      if (k2 <= kmax) {
+        const int32_t c = ((int32_t(p0[g]) + 32768) << 8) | (255 - k2);
+        if (c > pk0)      { pk1 = pk0; pk0 = c; }
+        else if (c > pk1) { pk1 = c; }
+      }
+      if (k2 + 1 <= kmax) {
+        const int32_t c = ((int32_t(p1[g]) + 32768) << 8) | (255 - k2 - 1);
+        if (c > pk0)      { pk1 = pk0; pk0 = c; }
+        else if (c > pk1) { pk1 = c; }
+      }
+    }
+    // The merge order across the shfl_down tree is arbitrary -- lane 0 merges
+    // lane 16 before lane 1 -- which is exactly why the comparison carries k
+    // explicitly in the packing: the first version assumed "other side has
+    // larger k", produced 10 wrong pixels in 407k (all exact ties), and a
+    // 5-million-run host simulation of the tree pinned it (top2sim). Packed,
+    // the merge is order-independent and 2 shuffles per round.
+    for (int off = 16; off > 0; off >>= 1) {
+      const int32_t o0 = __shfl_down_sync(0xffffffffu, pk0, off);
+      const int32_t o1 = __shfl_down_sync(0xffffffffu, pk1, off);
+      if (o0 > pk0) {
+        pk1 = pk0 > o1 ? pk0 : o1;
+        pk0 = o0;
+      } else if (o0 > pk1) {
+        pk1 = o0;
+      }
+    }
+    const int16_t b0 = int16_t((pk0 >> 8) - 32768);
+    const int i0 = pk0 ? 255 - (pk0 & 255) : -1;
+    const int16_t b1 = int16_t((pk1 >> 8) - 32768);
+    const int i1 = pk1 ? 255 - (pk1 & 255) : -1;
+    if (lane == 0) {
+      const size_t i = size_t(y) * W + x;
+      int n = 0;
+      if (i0 >= 0) { cs[i * 2] = float(b0) * q; cd[i * 2] = i0; n = 1; }
+      if (i1 >= 0) { cs[i * 2 + 1] = float(b1) * q; cd[i * 2 + 1] = i1; n = 2; }
+      cn[i] = n;
     }
   }
-  const float q = 1.f / float(SCORE_ONE);
-  int n = 0;
-  if (i0 >= 0) { cs[i * 2] = float(b0) * q; cd[i * 2] = i0; n = 1; }
-  if (i1 >= 0) { cs[i * 2 + 1] = float(b1) * q; cd[i * 2 + 1] = i1; n = 2; }
-  cn[i] = n;
 }
 
 float event_ms(cudaEvent_t a, cudaEvent_t b) {
@@ -348,17 +398,16 @@ int main(int argc, char** argv) {
 
   uint8_t *dL, *dR;
   uint64_t *dcl, *dcr;
-  uint16_t *dax, *day, *daxT;
-  int16_t *dvol, *dvolT;
+  uint16_t *dax, *day;
+  int16_t* dvol;
   CK(cudaMalloc(&dL, WH));
   CK(cudaMalloc(&dR, WH));
   CK(cudaMalloc(&dcl, WH * 8));
   CK(cudaMalloc(&dcr, WH * 8));
   CK(cudaMalloc(&dax, WH * 2));
   CK(cudaMalloc(&day, WH * 2));
-  CK(cudaMalloc(&daxT, WH * 2));
-  CK(cudaMalloc(&dvol, WH * size_t(D) * 2));
-  CK(cudaMalloc(&dvolT, WH * size_t(D) * 2));
+  const int Dpad = (D + 63) & ~63;             // k-run padding, 64-aligned
+  CK(cudaMalloc(&dvol, WH * size_t(Dpad) * 2));   // k-minor, padded runs
   // The candidates the CPU solver reads must be ORDINARY PAGEABLE MEMORY. The TX2
   // has no I/O coherency, so every cudaHostAlloc flavour -- Mapped AND Default --
   // is CPU-uncached there, and the solver on uncached candidates was measured
@@ -402,27 +451,44 @@ int main(int argc, char** argv) {
   k_rf_coeffs<<<g2, b2>>>(dL, dax, day, W, H);
   CK(cudaEventRecord(e1));
 
-  const dim3 bs(32, 8);
-  const dim3 gs((W + 31) / 32, (H + 31) / 32, D);
-  k_score_all<<<gs, bs>>>(dcl, dcr, dL, dR, dvolT, W, H, D, cfg.dmin, wq);
+  k_score_hfwd<<<dim3(H, Dpad / 64), 64>>>(dcl, dcr, dL, dR, dax, dvol, W, H, D,
+                                           Dpad, cfg.dmin, wq);
   CK(cudaEventRecord(e2));
 
+  cudaEvent_t f1;
+  CK(cudaEventCreate(&f1));
+  const int vthreads = W * 32;               // one warp per x, k pairs per lane
+  const int vblocks = (vthreads + 255) / 256;
+  // G as a template parameter so the per-y group loop unrolls; the runtime
+  // version cost 1.3 ms/frame of the 30 Hz margin at G = 1.
+  auto vert_fwd = [&]() {
+    switch (Dpad >> 6) {
+      case 1: k_vert_fwd<1><<<vblocks, 256>>>(dvol, day, W, H, Dpad, vthreads); break;
+      case 2: k_vert_fwd<2><<<vblocks, 256>>>(dvol, day, W, H, Dpad, vthreads); break;
+      case 3: k_vert_fwd<3><<<vblocks, 256>>>(dvol, day, W, H, Dpad, vthreads); break;
+      default: k_vert_fwd<4><<<vblocks, 256>>>(dvol, day, W, H, Dpad, vthreads);
+    }
+  };
+  auto vert_bwd_top2 = [&]() {
+    switch (Dpad >> 6) {
+      case 1: k_vert_bwd_top2<1><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, W, H,
+                                                   D, Dpad, cfg.dmin, vthreads); break;
+      case 2: k_vert_bwd_top2<2><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, W, H,
+                                                   D, Dpad, cfg.dmin, vthreads); break;
+      case 3: k_vert_bwd_top2<3><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, W, H,
+                                                   D, Dpad, cfg.dmin, vthreads); break;
+      default: k_vert_bwd_top2<4><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, W, H,
+                                                    D, Dpad, cfg.dmin, vthreads);
+    }
+  };
   {
-    const dim3 tb(32, 8);
-    k_transpose<uint16_t><<<dim3((W + 31) / 32, (H + 31) / 32, 1), tb>>>(dax, daxT,
-                                                                         W, H);
-    const int colsT = H * D;
-    k_rf_horizT<<<(colsT + 127) / 128, 128>>>(dvolT, daxT, W, H, colsT);
-    // transpose back: the source is now H x W per plane
-    k_transpose<int16_t><<<dim3((H + 31) / 32, (W + 31) / 32, D), tb>>>(dvolT, dvol,
-                                                                        H, W);
-    const int cols = W * D;
-    k_rf_vert<<<(cols + 127) / 128, 128>>>(dvol, day, W, H, cols);
+    k_hbwd<<<dim3(H, Dpad / 64), 32>>>(dvol, dax, W, H, Dpad);
+    CK(cudaEventRecord(f1));
+    vert_fwd();
   }
   CK(cudaEventRecord(e3));
 
-  const size_t px = WH;
-  k_top2<<<int((px + 255) / 256), 256>>>(dvol, dcs, dcd, dcn, W, H, D, cfg.dmin);
+  vert_bwd_top2();
   CK(cudaEventRecord(e4));
   CK(cudaMemcpy(cs[0].data(), dcs, WH * 2 * sizeof(float),
                 cudaMemcpyDeviceToHost));
@@ -434,9 +500,18 @@ int main(int argc, char** argv) {
 
   // --- the CPU keeps the graph -----------------------------------------------------
   std::vector<float> disp(WH, std::nanf("")), margin(WH, 0.f);
+  // Solve threads are PINNED to the A57 cluster (cores 0, 3, 4, 5 on the TX2).
+  // Unpinned, the scheduler mixes in the two Denver cores and the solve wanders
+  // 30-45 ms run to run; pinned it sits near its minimum. The Denvers are left
+  // to the CUDA driver and the fetch thread.
+  static const int A57[] = {0, 3, 4, 5};
   auto solve_all = [&](const float* pcs, const int* pcd, const int* pcn) {
     std::vector<std::thread> pool;
     for (int t = 0; t < nthreads; ++t) pool.emplace_back([&, t]() {
+      cpu_set_t set;
+      CPU_ZERO(&set);
+      CPU_SET(A57[t & 3], &set);
+      pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
       const int K = 2;
       std::vector<float> sbeta(size_t(W) * K), srho(size_t(W) * K);
       std::vector<int> bstart(size_t(W) + 1), bitems(size_t(W) * K), cursor(W);
@@ -477,18 +552,11 @@ int main(int argc, char** argv) {
       k_census<<<g2, b2>>>(dL, dcl, W, H);
       k_census<<<g2, b2>>>(dR, dcr, W, H);
       k_rf_coeffs<<<g2, b2>>>(dL, dax, day, W, H);
-      k_score_all<<<gs, bs>>>(dcl, dcr, dL, dR, dvolT, W, H, D, cfg.dmin, wq);
-      const dim3 tb(32, 8);
-      k_transpose<uint16_t><<<dim3((W + 31) / 32, (H + 31) / 32, 1), tb>>>(
-          dax, daxT, W, H);
-      const int colsT = H * D;
-      k_rf_horizT<<<(colsT + 127) / 128, 128>>>(dvolT, daxT, W, H, colsT);
-      k_transpose<int16_t><<<dim3((H + 31) / 32, (W + 31) / 32, D), tb>>>(
-          dvolT, dvol, H, W);
-      const int cols = W * D;
-      k_rf_vert<<<(cols + 127) / 128, 128>>>(dvol, day, W, H, cols);
-      k_top2<<<int((WH + 255) / 256), 256>>>(dvol, dcs, dcd, dcn, W, H, D,
-                                             cfg.dmin);
+      k_score_hfwd<<<dim3(H, Dpad / 64), 64>>>(dcl, dcr, dL, dR, dax, dvol, W,
+                                               H, D, Dpad, cfg.dmin, wq);
+      k_hbwd<<<dim3(H, Dpad / 64), 32>>>(dvol, dax, W, H, Dpad);
+      vert_fwd();
+      vert_bwd_top2();
     };
     auto fetch = [&](int buf) {
       CK(cudaMemcpy(cs[buf].data(), dcs, WH * 2 * sizeof(float),
@@ -502,9 +570,14 @@ int main(int argc, char** argv) {
     fetch(0);                                // implicit sync: pageable D2H
     for (int f = 1; f < frames; ++f) {
       gpu_pass();                            // async: GPU works on frame f
+      // The fetch runs on ITS OWN thread: cudaMemcpy serializes with the stream,
+      // so it waits out frame f's kernels and copies while the solve of frame
+      // f-1 is still on the A57s -- the 4 ms staged copy disappears into the
+      // solve instead of sitting serially in the loop.
+      std::thread fetcher([&, f]() { fetch(f % 2); });
       solve_all(cs[(f - 1) % 2].data(), cd[(f - 1) % 2].data(),
                 cn[(f - 1) % 2].data());     // CPU solves frame f-1 meanwhile
-      fetch(f % 2);                          // syncs the stream, then copies
+      fetcher.join();
     }
     solve_all(cs[(frames - 1) % 2].data(), cd[(frames - 1) % 2].data(),
               cn[(frames - 1) % 2].data());
@@ -516,9 +589,11 @@ int main(int argc, char** argv) {
   std::printf("%dx%d  D=%d  iters=%d  threads=%d  (GPU cost, CPU solve)\n",
               W, H, D, cfg.iters, nthreads);
   std::printf("  gpu breakdown: upload+readback %.1f  census+coeffs %.1f  "
-              "score %.1f  filter %.1f  top2 %.1f ms   (alloc %.1f, once)\n",
+              "score+hfwd %.1f  hbwd+vfwd %.1f (hbwd %.1f, vfwd %.1f)  "
+              "vbwd+top2 %.1f ms   (alloc %.1f, once)\n",
               t_gpu - event_ms(e0, e4), event_ms(e0, e1), event_ms(e1, e2),
-              event_ms(e2, e3), event_ms(e3, e4), t_alloc);
+              event_ms(e2, e3), event_ms(e2, f1), event_ms(f1, e3),
+              event_ms(e3, e4), t_alloc);
   if (frames > 1)
     std::printf("  pipelined over %d frames: %.1f ms/frame steady state (%.1f Hz)\n",
                 frames, t_pipe, 1000.0 / t_pipe);
