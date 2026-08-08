@@ -276,6 +276,59 @@ scored against a fitted plane without any external ground truth, and (b) a scene
 with the emitter off, where texture is scarce and the constraint should matter most.
 That is a real answer to "are we better", and it is a day's work.
 
+### What others found when they replaced the ASIC
+
+The question "can a custom matcher on the raw IR pair beat the on-board pipeline"
+has been asked before, and the answer in the literature is consistently yes. That
+does not mean *this* matcher will, but it does mean the ceiling is not the ASIC.
+
+**Learned active stereo beats it, clearly.** ActiveStereoNet trains end-to-end on
+the raw IR pair with no ground truth at all, using a self-supervised reconstruction
+loss, and reports **1/30th of a pixel** subpixel precision along with explicit
+prediction of invalid regions such as occlusions. It is the reference point for
+what the raw streams can support, and it is a Google/Princeton result on this class
+of hardware.
+
+> Y. Zhang, S. Khamis, C. Rhemann, J. Valentin et al. (2018). *ActiveStereoNet:
+> End-to-End Self-supervised Learning for Active Stereo Systems.* ECCV.
+> [doi:10.1007/978-3-030-01237-3_48](https://doi.org/10.1007/978-3-030-01237-3_48)
+
+> R. Liu, S. Yang, A. Tao et al. (2022). *ActiveZero: Mixed Domain Learning for
+> Active Stereovision with Zero Annotation.* CVPR.
+> [doi:10.1109/CVPR52688.2022.01269](https://doi.org/10.1109/CVPR52688.2022.01269)
+
+**Classical methods beat it too**, which matters more to us because we are also
+classical. A custom infrared SGM on a RealSense IR pair reports depth maps with
+greater completeness, higher quality and longer range than the camera's own
+algorithm.
+
+> S. Zhong, M. Li, X. Liao, L. Qin (2020). *A Real-Time Infrared Stereo Matching
+> Algorithm for RGB-D Cameras' Indoor 3D Perception.* ISPRS Int. J. Geo-Inf. 9(8).
+> [doi:10.3390/ijgi9080472](https://doi.org/10.3390/ijgi9080472)
+
+Two things make this plausible rather than surprising. The ASIC runs a fixed
+Census-based pipeline chosen for silicon area and latency, not accuracy, and it
+leaves uncertain pixels invalid rather than reasoning about them. Both are exactly
+the kind of constraint a software matcher does not have.
+
+**What this predicts for us, and what it does not.** Every result above is *dense*
+and most are *learned*. None of them is a sparse matcher with a uniqueness
+constraint, so none of them is evidence that MASDA specifically wins. What they do
+establish:
+
+- The on-board pipeline is a beatable baseline, so the comparison is worth running
+  rather than assumed lost.
+- Sub-pixel precision is where the headroom is. 1/30 px is roughly five times better
+  than our current 0.167 px median inlier error, and our refinement is a
+  three-point parabola on a SAD cost -- the cheapest thing that works.
+- The invalid-pixel handling the ASIC skips is the same territory as our score
+  margin. Knowing which matches to distrust is a recognised axis, not a private
+  hobby-horse.
+
+The direct comparison against the ASIC is queued in [TODO.md](TODO.md) 0.5, and it
+should now be read as "where do we sit on a scale others have already climbed",
+which is a better question than "are we better".
+
 ## Would adding the RGB camera help the matcher?
 
 The geometry says yes and the photometry says no, and the photometry wins.
