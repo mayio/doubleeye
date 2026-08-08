@@ -1454,3 +1454,61 @@ Two ways out, and they are the same two already on the list for other reasons:
 That is now the third independent argument for propagation — accuracy on slanted
 surfaces, candidate generation, and runtime — which is a reasonable point to stop
 tuning and change the structure.
+
+## What SGM does that makes it 12x faster
+
+Worth understanding before restructuring, because two of the four reasons change what
+the restructuring should be.
+
+**1. It never materialises the volume.** OpenCV's SGBM streams: it keeps a few rows of
+cost in a buffer and accumulates the aggregated cost in place, so its working set is
+O(W·D) rather than O(W·H·D). Ours is 40 MB; SGM's is a few hundred kilobytes and stays
+in cache. That is the same conclusion the attribution above reached independently, and
+it is worth noting that SGM's design already embodies it.
+
+**2. Its inner loop vectorises over disparity; ours does not.** The SGM recurrence
+
+    L(p,d) = C(p,d) + min( L(p-r,d), L(p-r,d±1)+P1, min_k L(p-r,k)+P2 ) - min_k L(p-r,k)
+
+is **elementwise in d** apart from one shared scalar (`min_k`). So all D values for a
+pixel are updated in parallel with SIMD.
+
+Our message updates are the opposite shape: "max over this pixel's other disparities"
+is a **reduction with an argmax**, which does not vectorise. The `Top2` struct is
+O(1) per element and still strictly serial.
+
+**3. The layout follows from that, and ours is backwards.** SGM stores cost per row as
+`[d][x]`. We store `[x][d]`, chosen so the rho reduction reads a contiguous run of D.
+Contiguity was the wrong thing to optimise for: with `[d][x]`, a loop over d with x
+inside is contiguous **and independent across x**, so the reduction vectorises across
+*pixels* even though it cannot vectorise across disparities. Eight pixels' reductions
+proceed in eight SIMD lanes.
+
+That is the lesson I would not have found by profiling our own code: the fix for a
+non-vectorisable reduction is not to vectorise the reduction, it is to run many
+independent reductions side by side.
+
+**4. Integer arithmetic.** int16 costs, so twice the lanes and cheaper operations —
+which is where the deferred uint16 item earns its place, as a multiplier on lanes
+rather than a saving on bandwidth.
+
+### What the restructuring should therefore be
+
+Not just "fuse the solver into a row band". The band fusion removes the 40 MB of
+traffic, which is 45% of the cost stage, but it leaves the serial reductions in place.
+The full change is:
+
+1. Process a band of rows with an r-row halo; the volume never exists.
+2. Store band cost as `[d][x]`, not `[x][d]`.
+3. Rewrite both reductions as loops over d with x inside, so they vectorise across
+   pixels. The beta reduction becomes a diagonal walk in this layout and may want its
+   own copy — measure rather than assume.
+4. Then int16, for the lanes.
+
+Steps 1 and 2 are cheap and independently verifiable against the current output.
+Step 3 is where the 12x mostly lives, and step 4 multiplies it.
+
+**Not implemented yet.** This is the design that the SGM comparison produced, and it
+is a larger change than the ones above; writing it half-done and unverified would be
+worse than leaving it. The current state is 202 ms, quality level with SGM, with every
+number in this document reproducible from `core/tools/de_dense.cpp` as committed.

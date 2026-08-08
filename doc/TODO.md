@@ -75,7 +75,13 @@ guided filter is that they must not touch the cost values:
    is ample. So this is a scheduling decision, not a rejection — measure the
    achieved bandwidth again after the SIMD box filter lands, and if it has moved
    toward 18 GB/s, do it.
-   **Do this first: vectorise the box filter across rows.** Its running sum
+   **Superseded — see 09-matching.md, "What SGM does that makes it 12x faster".**
+   The box filter is 37% of the cost stage; scoring and moving the volume are 45%,
+   and the serial reductions are the rest. The ordered restructuring is: band-fuse
+   so the volume never exists, switch the band layout to `[d][x]`, rewrite both
+   reductions as loops over d with x inside so they vectorise across *pixels*
+   (SGM's trick — the fix for a non-vectorisable reduction is to run many
+   independent ones side by side), then int16 for the lanes. Its running sum
    (`acc += in[x]; acc -= in[x-2r-1]`) is a serial dependency chain that cannot
    vectorise and is limited by add latency — four passes per slice, sixty slices.
    Processing several rows at once with one SIMD lane per row makes the chains
