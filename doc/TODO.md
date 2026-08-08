@@ -41,7 +41,7 @@ first-class output with one producer.
 
 ---
 
-## 0.4 Smoothness as a factor — worth doing, but it will not reach SGM
+## 0.4 Semi-dense candidates + margin gate — reaches SGM's precision, needs to get fast
 
 Dense SGM beats MASDA **at MASDA's own keypoints**, 0.858 against 0.616 precision,
 pooled over the eight Middlebury scenes, while also filling 78% of the image in
@@ -55,10 +55,17 @@ And a semi-dense variant that offers every right pixel — so the answer is alwa
 available — gets *worse*, 0.587, because Census plus uniqueness cannot pick the
 right one out of 71 candidates.
 
-So a smoothness factor is worth roughly +8 points, not +24, and reaching SGM needs
-semi-dense candidates **and** smoothness together, which costs 68 ms per 450x375
-scene for the solver alone: three times the Jetson budget at a fifth of the pixels.
-That is a research direction, not the on-vehicle matcher. See 09-matching.md.
+A smoothness factor is worth roughly +8 points on the current candidate set, not
++24. But smoothness turned out not to be the route anyway: **semi-dense candidates
+plus the existing margin gate reach SGM's precision without it** — 0.840 at gate
+0.10, 0.882 at 0.15, against SGM's 0.858, and +459 correct with +0.147 precision
+over the sparse baseline at gate 0.05.
+
+**The open problem is cost, not quality.** 68 ms per 450x375 scene for the solver,
+three times the Jetson budget at a fifth of the pixels. The gate discards most of
+the 71 candidates per keypoint, so generating fewer and better candidates — a
+coarse-to-fine pass, or a disparity prior from the previous frame — is the obvious
+avenue and has not been tried. See 09-matching.md.
 
 Uniqueness and smoothness are orthogonal — SGM has no uniqueness constraint and
 needs a left-right check bolted on to reach 78% coverage. A factor graph with both

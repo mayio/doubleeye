@@ -759,28 +759,55 @@ kept.
 | **semi-dense, keypoint-to-pixel** | **71** | **0.587** | **68 ms** |
 | dense SGM | every pixel | 0.858 | 17 ms |
 
-**It gets worse, not better.** With the answer always available and 14x the
-candidates, Census plus uniqueness cannot pick it out. That is the same crowding
-effect measured everywhere else in this project, at its logical extreme.
+**That 0.587 is a precision, and reading it alone was a mistake.** The two rows have
+different denominators: semi-dense matched 5486 scorable keypoints against 2916, so
+it produced **3221 correct matches against 1796 — 79% more**. I first wrote this up
+as "it gets worse", which is the precision-versus-count trap this document warns
+about elsewhere, committed here.
+
+**And with the margin gate it is better on both axes at once.** With 71 candidates
+instead of 5 the margin becomes far more informative — a candidate that clearly
+beats 70 others is almost certainly right, where beating 4 others means little:
+
+| margin gate | matches | correct | precision |
+|---|---|---|---|
+| keypoint-to-keypoint baseline | 2916 | 1796 | 0.616 |
+| semi-dense, no gate | 5486 | 3221 | 0.587 |
+| **semi-dense, gate 0.05** | 2956 | **2255** | **0.763** |
+| semi-dense, gate 0.10 | 2058 | 1728 | 0.840 |
+| semi-dense, gate 0.15 | 1465 | 1292 | **0.882** |
+
+At gate 0.05 that is **+459 correct matches and +0.147 precision** over the sparse
+baseline. At gate 0.10 it reaches 0.840, and at 0.15 it reaches 0.882 — **past SGM's
+0.858** at the cost of fewer points.
 
 ### What the two together say
 
-The gap to SGM is not the candidate set and it is not the inference. Both are
-excluded by measurement. It is the **prior**: SGM decides a pixel's disparity partly
-from its neighbours, and a per-keypoint descriptor comparison has no access to that
-information no matter how the candidates are arranged.
+**Yes, it reaches SGM — on precision, and without a smoothness factor.** Semi-dense
+candidates plus the margin gate gives 0.840 at gate 0.10 and 0.882 at 0.15, against
+SGM's 0.858. Uniqueness and Census are enough, provided the correct answer is
+actually offered *and* the confidence measure is used to discard the cases where the
+descriptor could not decide.
 
-So the honest answer to "can we get as far as SGM" is **not with uniqueness and
-Census alone**, and that is now measured from both directions rather than argued.
+That is a better result than the one this section originally reached, and it was
+hidden by two mistakes of mine in the same afternoon. First, comparing precisions
+across different denominators and concluding semi-dense was worse when it produced
+79% more correct matches. Second, evaluating it ungated, when the whole point of the
+margin is that it becomes *more* informative as candidates multiply: winning against
+70 rivals means something that winning against 4 does not.
 
-The configuration that could is semi-dense candidates *plus* a smoothness factor:
-the first so the answer is available, the second so it can be found. That is
-approximately SGM with a uniqueness constraint added, which is a genuinely
-interesting object — SGM has no uniqueness and pays for it with a left-right check
-and 78% coverage.
+Two honest qualifications:
 
-But note the arithmetic before starting: the semi-dense solver alone is 68 ms per
-450x375 scene, three times the Jetson's entire current frame budget at a fifth of
-the pixels, before any smoothness term exists. Whatever this becomes, it is not the
-30 Hz on-vehicle matcher. That is a research direction, and the thing that ships is
-the sparse matcher with its confidence measure.
+- The comparison is not perfectly like-for-like. SGM's 0.858 is measured at MASDA's
+  2916 keypoints; the gated semi-dense numbers are over its own surviving matches,
+  which is a smaller and self-selected set. Matching SGM's precision on fewer points
+  is a real result, but it is not the same statement as beating it everywhere.
+- It stays sparse. SGM still fills 78% of the image, and no gating of keypoint
+  matches produces a depth map.
+
+**The cost is the real obstacle.** The semi-dense solver is 68 ms per 450x375 scene,
+three times the Jetson's whole frame budget at a fifth of the pixels. So this is not
+the 30 Hz on-vehicle matcher as written — but it is now a quality ceiling worth
+optimising towards, rather than a direction excluded on principle. The candidate set
+is 71 per keypoint of which the gate discards most; generating fewer, better
+candidates is an obvious avenue and has not been tried.
