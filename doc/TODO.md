@@ -59,10 +59,16 @@ recorded in 09-matching.md with mechanisms.
 **Runtime is now the whole gap.** Two levers left, and the lesson from the fast
 guided filter is that they must not touch the cost values:
 
-1. **uint16 cost volume** instead of float32. Halves 40 MB of traffic; 65536 levels
-   is far more than a 49-level Census aggregate needs, so it should be lossless in
-   practice. Measure the traffic hypothesis first — three runtime attributions today
-   were each partly wrong.
+1. ~~uint16 cost volume~~ — **measured and dropped.** The machine sustains
+   18.9 GB/s at four threads; the cost stage achieves 2.5 GB/s, 13% of that. We are
+   not bandwidth-bound and shrinking the volume buys almost nothing.
+   **Do this instead: vectorise the box filter across rows.** Its running sum
+   (`acc += in[x]; acc -= in[x-2r-1]`) is a serial dependency chain that cannot
+   vectorise and is limited by add latency — four passes per slice, sixty slices.
+   Processing several rows at once with one SIMD lane per row makes the chains
+   independent. Rows are already independent, so it is loop restructuring, not an
+   algorithm change. This also explains the hyperthread regression better than
+   bandwidth did.
 2. **PatchMatch propagation.** Avoids materialising the volume at all. Now supported
    by three independent arguments: slanted surfaces (accuracy), candidate generation
    (what every measurement here says decides the outcome), and runtime.

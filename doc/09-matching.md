@@ -1375,3 +1375,38 @@ upsample machinery would cost a redundant copy and two bilinear passes for nothi
 **So the runtime item is still open**, and the obvious remaining levers are the ones
 that do not touch the cost values: a uint16 volume instead of float32 to halve the
 traffic, and PatchMatch-style propagation to avoid materialising a volume at all.
+
+### We are not bandwidth-bound, and the uint16 plan was based on a false premise
+
+Before implementing a uint16 cost volume to halve memory traffic, I measured whether
+traffic is actually the limit. It is not.
+
+A streaming read benchmark on this machine sustains **18.9 GB/s at four threads** and
+22.1 GB/s at eight. The cost stage moves about 405 MB per image pair — score writes,
+four box passes reading and writing a W×H plane each, and the scatter — in 159 ms,
+which is **2.5 GB/s: 13% of what the machine will give.**
+
+So the earlier conclusion in this document, that the work is memory-bandwidth bound
+because eight threads are slower than four, is **wrong**. Eight threads being slower
+has a different cause, and shrinking the cost volume would buy very little.
+
+The likely real cause is the box filter's **serial dependency chain**:
+
+    acc += in[x];
+    if (x > 2*r) acc -= in[x - 2*r - 1];
+
+Every iteration depends on the previous one, so this cannot vectorise and its rate is
+set by add latency, not by memory or by throughput. Four box passes per slice times
+sixty slices is a great many strictly serial accumulate steps. That also explains the
+hyperthread regression: two threads sharing one core's execution ports contend for
+the same latency-bound chain rather than overlapping usefully.
+
+**Which redirects the work.** The fix is not a smaller data type, it is to break the
+dependency: run the horizontal pass over **several rows at once**, one SIMD lane per
+row, so the serial chain per lane is independent. Rows are already independent here,
+so this is a loop restructuring rather than an algorithm change. A summed-area table
+is the other standard option, trading the running sum for four loads per query.
+
+Recording the correction rather than quietly fixing it: this is the fifth mechanism I
+attributed confidently and wrongly today. The measurement cost two minutes and saved
+implementing a uint16 volume that would have bought almost nothing.
