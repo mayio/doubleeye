@@ -467,10 +467,14 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
 
   // --- select the top K per pixel, sorted best first ---
   //
+  // Skipped entirely when vol is null: the blockwise cost stage has already
+  // produced the candidates, because with K = 2 the running top-2 IS the volume
+  // and there is nothing left to reduce.
+  //
   // One pass over D holding a sorted list of K by insertion. The alternative,
   // K selection passes over D, is 8x60 comparisons per pixel; this is 60 plus
   // the few insertions that actually beat the running Kth best.
-  for (int x = 0; x < W; ++x) {
+  if (vol) for (int x = 0; x < W; ++x) {
     float* S = cs + size_t(x) * KS;
     int* Dd = cd + size_t(x) * KS;
     int n = 0;
@@ -495,8 +499,13 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
       }
     }
     cn[x] = n;
-    // Identical to the dense margin: best minus the better of the runner-up and
-    // lambda, which for K >= 2 sees the same two values it did before.
+  }
+
+  // Identical to the dense margin: best minus the better of the runner-up and
+  // lambda, which for K >= 2 sees the same two values it did before.
+  for (int x = 0; x < W; ++x) {
+    const float* S = cs + size_t(x) * KS;
+    const int n = cn[x];
     const float alt = (n < 2) ? cfg.lambda : std::max(S[1], cfg.lambda);
     out_margin[x] = (n == 0) ? 0.f : S[0] - alt;
   }
@@ -640,7 +649,21 @@ int main(int argc, char** argv) {
   // the work with no sharing: disparity here, rows in the solver. That is also
   // what makes the whole thing a GPU kernel later rather than a rewrite.
   const double tc0 = now_ms();
-  std::vector<float> vol(size_t(W) * H * D, -1e30f);
+  // With K = 2 the running top-2 per pixel IS the reduced volume, so the 40 MB
+  // array is never allocated. It is still needed for --dump-vol and for the k
+  // sweep, which is why both paths exist.
+  //
+  // Why this is a traffic win and not a cache-capacity one, which was measured:
+  // staging plus transposing the volume moved ~120 MB, and the solver then read
+  // 40 MB back. The blockwise form reads each filtered slice once (40 MB total)
+  // and compares against a 675 KB runner-up plane that stays resident across all
+  // D slices, so the common path is one streaming read and a cached compare.
+  const bool blockwise = (cfg.topk == 2) && volp.empty();
+  const size_t WH = size_t(W) * H;
+  std::vector<float> vol(blockwise ? 0 : WH * size_t(D), -1e30f);
+  // Merged candidates, [pixel][2]: what the solver consumes in blockwise mode.
+  std::vector<float> gcs(blockwise ? WH * 2 : 0, -1e30f);
+  std::vector<int> gcd(blockwise ? WH * 2 : 0, -1), gcn(blockwise ? WH : 0, 0);
   //
   // Guided-filter aggregation instead of a box.
   //
@@ -696,13 +719,27 @@ int main(int argc, char** argv) {
     // 64-byte line exactly.
     const int KB = 16;
     const int nblocks = (D + KB - 1) / KB;
+    // Outside the pool so the per-thread top-2 survives the join for merging.
+    std::vector<std::vector<float>> as0(nthreads), as1(nthreads);
+    std::vector<std::vector<int16_t>> ad0(nthreads), ad1(nthreads);
     std::vector<std::thread> cpool;
     for (int t = 0; t < nthreads; ++t) cpool.emplace_back([&, t]() {
     std::vector<float> slice(size_t(W) * H), tmp(size_t(W) * H);
     std::vector<float> ip(size_t(W) * H), mp(size_t(W) * H), mip(size_t(W) * H);
     std::vector<float> ab(size_t(W) * H), bb(size_t(W) * H);
     std::vector<float> ma(size_t(W) * H), mb(size_t(W) * H);
-    std::vector<float> blk(size_t(KB) * W * H);
+    std::vector<float> blk(blockwise ? 0 : size_t(KB) * W * H);
+    // Thread-local running top-2, structure of arrays so the reject test touches
+    // ONE plane. Separate arrays matter: a packed struct would pull 12 bytes per
+    // pixel to answer a question that needs 4, and the reject is the common case.
+    if (blockwise) {
+      as0[t].assign(WH, -1e30f); as1[t].assign(WH, -1e30f);
+      ad0[t].assign(WH, -1);     ad1[t].assign(WH, -1);
+    }
+    float* ts0 = blockwise ? as0[t].data() : nullptr;
+    float* ts1 = blockwise ? as1[t].data() : nullptr;
+    int16_t* td0 = blockwise ? ad0[t].data() : nullptr;
+    int16_t* td1 = blockwise ? ad1[t].data() : nullptr;
     const size_t NS = (F == 1) ? size_t(W) * H : size_t(Ws) * Hs;
     std::vector<float> ps(NS), ips(NS), mps(NS), mips(NS), ts(NS);
     std::vector<float> abs_(NS), bbs(NS), mas(NS), mbs(NS);
@@ -731,8 +768,8 @@ int main(int argc, char** argv) {
       // The block buffer is filled here, before the filter, so the filter's
       // final combine can write into it directly instead of writing a full
       // plane and having it copied straight back out again.
-      float* dst = &blk[size_t(k - klo) * W * H];
-      std::fill(dst, dst + size_t(W) * H, -1e30f);
+      float* dst = blockwise ? nullptr : &blk[size_t(k - klo) * W * H];
+      if (dst) std::fill(dst, dst + size_t(W) * H, -1e30f);
       bool staged = false;
       if (cfg.rf) {
         rf_filter(slice.data(), axp, ayp, W, H);
@@ -757,12 +794,16 @@ int main(int argc, char** argv) {
         // the volume, for values that were already in registers. Only the valid
         // window is ever read downstream, so computing it straight into place is
         // the same arithmetic on the same elements.
-        for (int y = 3; y < H - 3; ++y)
-          for (int x = 3 + d; x < W - 3; ++x) {
-            const size_t i = size_t(y) * W + x;
-            dst[i] = ma[i] * I[i] + mb[i];
-          }
-        staged = true;
+        if (dst) {
+          for (int y = 3; y < H - 3; ++y)
+            for (int x = 3 + d; x < W - 3; ++x) {
+              const size_t i = size_t(y) * W + x;
+              dst[i] = ma[i] * I[i] + mb[i];
+            }
+          staged = true;
+        } else {
+          for (size_t i = 0; i < slice.size(); ++i) slice[i] = ma[i] * I[i] + mb[i];
+        }
       } else if (r > 0 && cfg.guided) {
         // Fast variant. Measured: 2.4 points of bad-1.0 worse at F=4 for 84 ms,
         // because a stereo cost slice is not smooth the way an image is.
@@ -784,6 +825,31 @@ int main(int argc, char** argv) {
         box_filter(slice.data(), mp.data(), tmp.data(), W, H, r);
         slice.swap(mp);
       }
+      if (blockwise) {
+        // Insert this disparity into the running top-2, valid window only.
+        //
+        // The first test rejects almost everything and reads only ts1, which is
+        // the same 675 KB plane on every one of the D slices and therefore stays
+        // in cache. So the common cost per pixel is one streaming slice read plus
+        // one cached compare -- which is what replaces staging and transposing
+        // 120 MB through a 40 MB volume.
+        const int16_t kk = int16_t(k);
+        for (int y = 3; y < H - 3; ++y) {
+          const size_t row = size_t(y) * W;
+          for (int x = 3 + d; x < W - 3; ++x) {
+            const size_t i = row + x;
+            const float v = slice[i];
+            if (v <= ts1[i]) continue;
+            if (v > ts0[i]) {
+              ts1[i] = ts0[i]; td1[i] = td0[i];
+              ts0[i] = v;      td0[i] = kk;
+            } else {
+              ts1[i] = v;      td1[i] = kk;
+            }
+          }
+        }
+        continue;
+      }
       // The other filter paths still produce a plane, so they stage as before.
       if (!staged)
         for (int y = 3; y < H - 3; ++y)
@@ -791,14 +857,37 @@ int main(int argc, char** argv) {
             dst[size_t(y) * W + x] = slice[size_t(y) * W + x];
     }
     // Blocked transpose: KB consecutive k values per output cache line.
-    const int kn = khi - klo;
-    for (size_t px = 0; px < size_t(W) * H; ++px) {
-      float* out = &vol[px * D + klo];
-      for (int j = 0; j < kn; ++j) out[j] = blk[size_t(j) * W * H + px];
+    if (!blockwise) {
+      const int kn = khi - klo;
+      for (size_t px = 0; px < size_t(W) * H; ++px) {
+        float* out = &vol[px * D + klo];
+        for (int j = 0; j < kn; ++j) out[j] = blk[size_t(j) * W * H + px];
+      }
     }
     }
     });
     for (auto& th : cpool) th.join();
+
+    // Merge the per-thread top-2 lists. Each thread saw a disjoint set of
+    // disparities, so this is a 2-of-2n selection per pixel: ~675 K comparisons
+    // for the whole image, against the 40 MB the transpose used to move.
+    if (blockwise) {
+      for (size_t i = 0; i < WH; ++i) {
+        float b0 = -1e30f, b1 = -1e30f;
+        int i0 = -1, i1 = -1;
+        for (int t = 0; t < nthreads; ++t) {
+          const float v0 = as0[t][i], v1 = as1[t][i];
+          if (v0 > b0)      { b1 = b0; i1 = i0; b0 = v0; i0 = ad0[t][i]; }
+          else if (v0 > b1) { b1 = v0; i1 = ad0[t][i]; }
+          if (v1 > b0)      { b1 = b0; i1 = i0; b0 = v1; i0 = ad1[t][i]; }
+          else if (v1 > b1) { b1 = v1; i1 = ad1[t][i]; }
+        }
+        int n = 0;
+        if (i0 >= 0) { gcs[i * 2] = b0; gcd[i * 2] = i0; n = 1; }
+        if (i1 >= 0) { gcs[i * 2 + 1] = b1; gcd[i * 2 + 1] = i1; n = 2; }
+        gcn[i] = n;
+      }
+    }
   }
   const double t_cost = now_ms() - tc0;
 
@@ -833,8 +922,11 @@ int main(int argc, char** argv) {
       std::vector<int> cursor(W);
       for (int y = t; y < H; y += nthreads) {
         if (K > 0) {
-          solve_row_sparse(W, D, K, cfg, &vol[size_t(y) * W * D],
-                           cs.data(), cd.data(), cn.data(),
+          solve_row_sparse(W, D, K, cfg,
+                           blockwise ? nullptr : &vol[size_t(y) * W * D],
+                           blockwise ? &gcs[size_t(y) * W * 2] : cs.data(),
+                           blockwise ? &gcd[size_t(y) * W * 2] : cd.data(),
+                           blockwise ? &gcn[size_t(y) * W] : cn.data(),
                            sbeta.data(), srho.data(),
                            &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
                            bstart.data(), bitems.data(), cursor.data(),

@@ -1912,3 +1912,56 @@ Per scene, teddy is 7.6% against SGM's 8.1% and cones 5.5% against 5.5%. **On
 accuracy this is now ahead rather than level**, at 2.4 points less coverage and 7.5x
 the runtime. Over the session: 246 -> 120 ms mean and 11.0 -> 10.3% bad-1.0, so the
 whole of it was speed and accuracy together rather than a trade.
+
+## Blockwise: the volume stops existing
+
+The 40 MB cost volume only ever existed to be reduced to two candidates per pixel, so
+with k=2 it can be skipped: each thread keeps a running top-2 over the disparities it
+owns, and the four lists are merged once at the end.
+
+**Why this is a traffic win, and not the cache-capacity win it looks like.** Staging
+and transposing moved ~120 MB and the solver read 40 MB back. Blockwise reads each
+filtered slice once and compares against a runner-up plane that is the *same* 675 KB on
+every one of the D slices, so it stays resident: the common path is one streaming read
+plus a cached compare. The earlier crop experiment already showed cache capacity alone
+is worth only 35% here, and that has not changed -- what changed is how much memory
+gets moved.
+
+The top-2 state is a **structure of arrays**, not an array of structs, for the same
+reason: the reject test needs one float, and a packed 12-byte record would pull three
+times what the question requires. Rejection is the common case.
+
+| stage, teddy | before | after |
+|---|---|---|
+| cost | 75 ms | **54 ms** |
+| solve | 12 ms | **4.1 ms** |
+| total | 94-105 ms | **66 ms** |
+
+**Eight scenes: 120 -> 83 ms mean, quality unchanged** at 75.6% coverage / 10.3%
+bad-1.0. The solve is now 4.1 ms -- from 46 ms at the start of the day, 11x, and it has
+stopped being a stage worth optimising.
+
+**Verified two ways, both of which could have failed.** The output is bit-identical to
+the volume path (`--dump-vol` forces it, so the two run side by side), and it is
+identical across 1, 2, 4 and 8 threads -- which is a genuine race check rather than a
+reassuring one, because thread count changes which disparities each worker owns and
+therefore the order the merge sees. A racy merge or a tie broken by arrival order shows
+up as a difference.
+
+The volume path is retained for `--dump-vol` and for the k sweep, both of which need
+all D per pixel.
+
+### Where this leaves it
+
+| | coverage | bad-1.0 | runtime |
+|---|---|---|---|
+| SGM | 78.0% | 10.9% | 16 ms |
+| dense MASDA | 75.6% | **10.3%** | **83 ms** |
+
+Over the session: **246 -> 83 ms, 3.0x, and bad-1.0 11.0 -> 10.3%** -- speed and
+accuracy together rather than traded. The gap to SGM is 5.2x, down from 15x, and MASDA
+is ahead on accuracy at 2.4 points less coverage.
+
+The stage split is now census ~8-13 ms, cost ~54 ms, solve ~4 ms. **Census has become
+12-16% of the total** without anyone looking at it, and it is a fixed cost paid twice
+per pair independent of D -- the first time it has been large enough to matter.
