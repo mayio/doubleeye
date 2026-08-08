@@ -959,3 +959,66 @@ of it. It does not make dense MASDA competitive with SGM on quality — that lim
 the missing smoothness prior and no amount of optimisation touches it.
 
 Not yet measured on the Jetson: the board was unreachable when this was written.
+
+## Why SGM is better and faster — decomposed, and not what I said
+
+I attributed the gap to the missing smoothness prior. Measured, that is mostly
+wrong.
+
+### Better: it is the cost function, not the smoothness
+
+Turning SGM's smoothness penalties off (P1 = P2 = 0) degenerates its path
+aggregation to plain winner-take-all on the block cost. If smoothness were the
+explanation, that should collapse. It does not:
+
+| SGM variant | coverage | bad-1.0 |
+|---|---|---|
+| full | 81.1% | 8.1% |
+| no post-filters (speckle / LR / uniqueness off) | 82.8% | 9.5% |
+| **no smoothness (P1=P2=0), filters on** | 74.5% | **7.5%** |
+| **no smoothness and no filters** | 80.9% | **12.7%** |
+| dense MASDA, 2 iterations | 78.9% | **28.1%** |
+
+Smoothness is worth a few points at most on these scenes. Stripped of both
+smoothness and post-filtering, SGM still reaches 12.7% against MASDA's 28.1%.
+
+So the bulk of the gap is the **matching cost**. OpenCV aggregates a
+Birchfield-Tomasi absolute difference over a 5x5 block, producing a graded,
+sub-pixel-capable score. MASDA compares one 48-bit Census descriptor and gets a
+Hamming distance quantised to 49 levels. Census buys invariance to gain and offset,
+which matters on a real stereo rig, and pays for it in discriminative power.
+
+That reinstates what the article's section 10 ranked first and I had talked myself
+out of: **better scores are the highest-value change**, ahead of smoothness. It also
+explains why the sparse matcher does so well by comparison — at keypoints the Census
+score is discriminative, and it is the textureless majority where 48 bits are not
+enough.
+
+### Faster: fewer passes, cheaper arithmetic, and no iteration
+
+MASDA is iterative and SGM is not. SGM makes one forward and one backward sweep per
+path direction; MASDA needs several message-passing rounds over the whole cost
+volume, each with a top-2 reduction and a damped update in float.
+
+And more iterations make MASDA *worse*, which was not obvious:
+
+| iterations | solve | coverage | bad-1.0 |
+|---|---|---|---|
+| 1 | 40 ms | 56.2% | 30.5% |
+| **2** | **45 ms** | 78.9% | **28.1%** |
+| 4 | 81 ms | 82.9% | 30.1% |
+| 12 | 183 ms | 86.9% | 33.8% |
+| 20 | 283 ms | 87.8% | 34.8% |
+
+Iterations buy coverage and spend accuracy: the extra matches are the ones
+uniqueness forces onto ambiguous pixels that early rounds correctly left alone. At
+two iterations MASDA is **58 ms total against SGM's 16 ms** — 3.6x, not the 8x
+implied by running 12 iterations that were making it worse.
+
+The rest is arithmetic width and tuning: SGM works in integer cost volumes, several
+elements per SIMD lane, hand-written intrinsics, and decades of optimisation;
+de_dense is float32 with a top-2 whose index tracking resists autovectorisation.
+
+**Corrected default: 2 iterations.** 12 was inherited from the sparse keypoint
+problem, where the candidate set is small and iteration helps. On the dense problem
+it costs 3x the time to make the answer worse.
