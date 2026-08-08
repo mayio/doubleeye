@@ -2151,3 +2151,65 @@ third is the least obvious and the microbenchmark is exactly where it hides, bec
 bench is where constants are most convenient to write. **A microbenchmark measures the
 code the compiler could generate for it, not the code in the program** -- so the loop
 that will ship has to be the loop that was timed, parameters included.
+
+## Coarse-to-fine: the ceiling was real and this construction cannot reach it
+
+Built as planned. The cost volume is indexed by **offset from the prior** rather than
+absolute disparity, so the fine pass needs 2B+1 whole planes instead of D and the
+recursive filter still sees one plane per index. Coarse pass ungated with holes filled,
+exactly as the ceiling experiment validated.
+
+| | coverage | bad-1.0 | correct/known | runtime |
+|---|---|---|---|---|
+| single level | 75.6% | **10.3%** | **67.9%** | 77 ms |
+| coarse-to-fine, B=2 | 75.6% | 14.6% | 64.7% | 50 ms |
+| B=4 | 75.4% | 14.4% | 64.7% | 52 ms |
+| B=8 | 75.3% | 14.2% | 64.7% | 60 ms |
+| B=14 | 75.2% | 14.1% | 64.7% | 70 ms |
+
+**Correct-over-known is 64.7% at every band from +-2 to +-14**, against a measured
+ceiling of 81.5% to 88.3% over that range. A quantity that does not move when the thing
+it should depend on is varied sevenfold is not a tuning problem.
+
+Two hypotheses tested and discarded. A nearest x2 upsample makes the prior blocky with
+a 1-2 px step at every 2x2 boundary, which would misalign the aggregation everywhere --
+but bilinear upsampling made it *slightly worse* (63.9%). And widening the band, which
+would fix any pure range limitation, does nothing.
+
+### The controlled test: it is the parametrisation
+
+At B=30 the band covers essentially the whole disparity range, so the search space
+matches single-level and **the only remaining difference is how the planes are
+indexed**:
+
+| | bad-1.0 | correct/known |
+|---|---|---|
+| single level, absolute-disparity planes | **10.3%** | **67.9%** |
+| B=30, offset-from-prior planes | 14.1% | 63.8% |
+
+**Aggregation requires constant-disparity planes.** An offset-indexed plane holds the
+cost at `d(x) = prior(x) + j`, so the filter averages neighbours whose absolute
+disparities differ by however much the prior varies locally -- everywhere the surface
+slopes, and wildly at every depth discontinuity. Aggregation is what takes this matcher
+from 26.6% to 10.3%, so degrading it costs about 4 points, and no band width recovers
+that because the band was never the constraint.
+
+**Third time today that the measured bound was not the operative constraint.** Top-k
+measured availability when competition decided it. The first coarse ceiling measured a
+gated prior. And now the ceiling is right -- 81.5% of truths really are inside the band
+-- but reaching it requires an aggregation this parametrisation cannot provide. The
+ceiling bounds what a *perfect* refinement could do and says nothing about whether a
+refinement compatible with the rest of the pipeline exists.
+
+### What would actually work
+
+Keep **absolute-disparity planes** and use the prior as a *mask* rather than a
+reparametrisation: for each absolute d, evaluate only where `|d - prior| <= B`. The
+filter then aggregates at constant disparity, which is correct. The saving is smaller,
+because each of the D planes still needs a filter pass -- but the prior is smooth, so
+the pixels needing a given d form a compact region, and rows where nothing needs d can
+be skipped outright. Bounding-box filtering per plane is the form to measure.
+
+`--prior` is kept: it is the vehicle for this measurement, and a temporal prior from the
+previous frame is planned (see 3.1 in TODO.md). Anything using it must not use offset
+indexing, for the reason above.

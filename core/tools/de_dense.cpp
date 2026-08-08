@@ -375,6 +375,7 @@ struct Cfg {
   float eps = 0.0025f;     // guided-filter regularisation, I in [0,1]
   int fgf = 1;             // fast guided filter: measured NOT worth it, see below
   int topk = 2;                // candidates per pixel; 2 measured best, 0 = dense
+  int band = 2;                // prior-guided: search +-band around the prior
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
   int threads = 0;
 };
@@ -671,7 +672,7 @@ int main(int argc, char** argv) {
   const std::string lp = argv[1], rp = argv[2];
   const int W = std::atoi(argv[3]), H = std::atoi(argv[4]);
   Cfg cfg;
-  std::string outp, volp;
+  std::string outp, volp, priorp;
   for (int i = 5; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has = i + 1 < argc;
@@ -691,6 +692,8 @@ int main(int argc, char** argv) {
     else if (a == "--out" && has) outp = argv[++i];
     else if (a == "--dump-vol" && has) volp = argv[++i];
     else if (a == "--topk" && has) cfg.topk = std::atoi(argv[++i]);
+    else if (a == "--band" && has) cfg.band = std::atoi(argv[++i]);
+    else if (a == "--prior" && has) priorp = argv[++i];
   }
   Image8 L, R;
   if (!load_raw_y8(lp, W, H, &L) || !load_raw_y8(rp, W, H, &R)) {
@@ -698,6 +701,65 @@ int main(int argc, char** argv) {
                  lp.c_str(), rp.c_str(), W, H);
     return 1;
   }
+  // --- optional prior, for a coarse-to-fine search ---------------------------
+  //
+  // The volume is indexed by OFFSET FROM THE PRIOR rather than by absolute
+  // disparity, so there are 2*band+1 whole planes instead of D. That is what keeps
+  // the recursive filter usable: it still sees one plane per index and aggregates
+  // at constant offset, which inside a smooth region is constant disparity -- the
+  // assumption window aggregation already makes. At a prior discontinuity the plane
+  // does mix disparities, but the filter is edge-aware and prior discontinuities
+  // sit on intensity edges, so it is better aligned here than a fixed-disparity
+  // plane is, not worse.
+  //
+  // Holes must already be filled by the caller. A hole means no search band at
+  // all, and measuring the ceiling with holes left in understated it by 13 points
+  // (see 09-matching.md) -- so this refuses a prior it cannot use rather than
+  // silently scoring one.
+  std::vector<float> prior;
+  if (!priorp.empty()) {
+    FILE* f = std::fopen(priorp.c_str(), "rb");
+    if (!f) { std::fprintf(stderr, "cannot open prior %s\n", priorp.c_str()); return 1; }
+    std::fseek(f, 0, SEEK_END);
+    const long bytes = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    const size_t n = size_t(bytes) / sizeof(float);
+    std::vector<float> raw(n);
+    if (std::fread(raw.data(), sizeof(float), n, f) != n) {
+      std::fprintf(stderr, "short read on prior %s\n", priorp.c_str());
+      std::fclose(f); return 1;
+    }
+    std::fclose(f);
+    prior.assign(size_t(W) * H, std::nanf(""));
+    if (n == size_t(W) * H) {
+      prior = raw;
+    } else if (n == size_t(W / 2) * (H / 2)) {
+      // Half resolution: nearest upsample, and a disparity of d at half scale is
+      // 2d at full scale.
+      const int W2 = W / 2, H2 = H / 2;
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+          prior[size_t(y) * W + x] =
+              2.f * raw[size_t(std::min(H2 - 1, y / 2)) * W2 + std::min(W2 - 1, x / 2)];
+    } else {
+      std::fprintf(stderr,
+                   "prior %s has %zu floats, expected %zu (full) or %zu (half)\n",
+                   priorp.c_str(), n, size_t(W) * H, size_t(W / 2) * (H / 2));
+      return 1;
+    }
+    size_t holes = 0;
+    for (float v : prior) if (!std::isfinite(v)) ++holes;
+    if (holes) {
+      std::fprintf(stderr, "prior has %zu holes of %zu; fill them first\n",
+                   holes, prior.size());
+      return 1;
+    }
+    if (cfg.topk != 2) {
+      std::fprintf(stderr, "--prior requires --topk 2\n");
+      return 1;
+    }
+  }
+
   const int D = cfg.dmax - cfg.dmin + 1;
   int nthreads = cfg.threads > 0 ? cfg.threads
                                  : int(std::thread::hardware_concurrency());
@@ -741,6 +803,8 @@ int main(int argc, char** argv) {
   // and compares against a 675 KB runner-up plane that stays resident across all
   // D slices, so the common path is one streaming read and a cached compare.
   const bool blockwise = (cfg.topk == 2) && volp.empty();
+  const bool guided_search = !prior.empty();
+  const int NJ = 2 * cfg.band + 1;
   const size_t WH = size_t(W) * H;
   std::vector<float> vol(blockwise ? 0 : WH * size_t(D), -1e30f);
   // Merged candidates, [pixel][2]: what the solver consumes in blockwise mode.
@@ -825,6 +889,43 @@ int main(int argc, char** argv) {
     const size_t NS = (F == 1) ? size_t(W) * H : size_t(Ws) * Hs;
     std::vector<float> ps(NS), ips(NS), mps(NS), mips(NS), ts(NS);
     std::vector<float> abs_(NS), bbs(NS), mas(NS), mbs(NS);
+    if (guided_search) {
+      // One plane per offset. Parallel over offsets, which with 2*band+1 of them
+      // and four threads is imbalanced -- 5 planes over 4 workers is two rounds --
+      // and that inefficiency is real and unaddressed. It is still a fifth of the
+      // planes D would need.
+      for (int j = t; j < NJ; j += nthreads) {
+        const int off = j - cfg.band;
+        std::fill(slice.begin(), slice.end(), 0.f);
+        // Score at this offset. The right-image read is now a gather, because d
+        // varies per pixel -- but the prior is piecewise smooth, so x-d stays
+        // locally sequential and it costs far less than the D-fold work it saves.
+        for (int y = 3; y < H - 3; ++y)
+          for (int x = 3; x < W - 3; ++x) {
+            const size_t i = size_t(y) * W + x;
+            const int d = int(std::lround(prior[i])) + off;
+            if (d < cfg.dmin || d > cfg.dmax || x - d < 3) continue;
+            slice[i] = (24.f - float(popcnt64(cl[i] ^ cr[i - size_t(d)]))) * (1.f / 24.f);
+          }
+        rf_filter(slice.data(), axp, ayp, W, H);
+        for (int y = 3; y < H - 3; ++y) {
+          const size_t row = size_t(y) * W;
+          for (int x = 3; x < W - 3; ++x) {
+            const size_t i = row + x;
+            const int d = int(std::lround(prior[i])) + off;
+            if (d < cfg.dmin || d > cfg.dmax || x - d < 3) continue;
+            const float v = slice[i];
+            if (v <= ts1[i]) continue;
+            // Stored as the disparity INDEX, so the solver is unchanged: it still
+            // reconstructs d as dmin + cd.
+            const int16_t kk = int16_t(d - cfg.dmin);
+            if (v > ts0[i]) { ts1[i] = ts0[i]; td1[i] = td0[i]; ts0[i] = v; td0[i] = kk; }
+            else            { ts1[i] = v;      td1[i] = kk; }
+          }
+        }
+      }
+      return;
+    }
     for (int b = t; b < nblocks; b += nthreads) {
     const int klo = b * KB, khi = std::min(D, klo + KB);
     for (int k = klo; k < khi; ++k) {
