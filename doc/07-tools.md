@@ -129,7 +129,12 @@ is small against the spread rather than leaving a 1.03× looking like a result.
 
 Standard-library Python only, so it runs under system `python3` with no `.venv`.
 
-Note: `de_dense` itself is still not documented on this page.
+`de_dense` itself is **deliberately not documented here yet.** Its flag set is still
+moving -- `--simd` landed off by default and may be reverted, and the next ranked item
+is the recursive filter, which will likely add its own -- so a twenty-flag reference
+written now would document a moving target and need redoing. Until then
+[09-matching.md](09-matching.md) carries the measurement behind every flag, and
+`./build/de_dense` with no arguments prints usage. See TODO.md 2.5.
 
 ## Desktop side — `desktop/`, Python 3.12 in `.venv`
 

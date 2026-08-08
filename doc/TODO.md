@@ -41,7 +41,89 @@ first-class output with one producer.
 
 ---
 
-## 0.3 Dense MASDA: ahead of SGM on accuracy, ~3x behind on runtime
+## 0.3 Dense MASDA: **the goal is real time on the TX2**, and it is 6x away
+
+**Mario's stated priority, 2026-08-08.** Everything in this section is ranked against
+that goal and not against SGM's accuracy any more.
+
+**Measured at the real resolution, which changes the picture.** Every dense number
+below and in 09-matching.md is Middlebury at 450x375. The sensor is 848x480 -- 2.4x the
+pixels -- and rule 2 says a number measured in one context is not a measurement in
+another, so it was measured rather than scaled. TX2, six threads, `--agg 5`, a real
+rectified IR pair from `bags/full_on`, best of 5:
+
+| | D=60 | D=64 | D=96 |
+|---|---|---|---|
+| total | **200 ms** | 184 | 219 |
+| spread over 5 runs | 16% | 17% | 13% |
+
+(The D=64 figure below D=60 is noise; the spreads overlap almost completely. Do not
+read an ordering into it.)
+
+| budget | need |
+|---|---|
+| 30 Hz, 33.3 ms | **6.0x** |
+| 15 Hz, 66.7 ms | **3.0x** |
+
+**Preprocessing is not competing for that budget -- dense MASDA replaces it.** The
+26.28 ms figure in 06-preprocessing.md is FAST plus NMS, and detection is 21 of it.
+Dense MASDA needs neither; it computes its own census (16 ms of the 200). So the
+budget really is most of the frame.
+
+**Where the 200 ms is**, D=60, thread-summed CPU except the last row:
+
+| | ms | share |
+|---|---|---|
+| census | 16 | 8% |
+| **cost stage** | **159 wall** | **77%** |
+| — score | 199 | |
+| — filter | 195 | |
+| — insert | 179 | |
+| — alloc | 34 | |
+| solve (the MASDA part) | 31 | 15% |
+| cost stage occupancy | 613 CPU / 159 wall | **3.85 of 6 cores** |
+
+**The thing that makes this MASDA is 15% of the runtime.** The other 85% is the cost
+volume and its aggregation, which is shared with every window-based matcher. So this is
+not a "make MASDA faster" problem, and effort spent on the solver cannot pay.
+
+### The 6x, and where each piece of it comes from
+
+Two measured levers multiply to more than enough. Neither is SIMD.
+
+1. **Stop computing all D planes — 5.2x, and it is not a speed/accuracy trade.** Our own
+   ceiling experiment: 81.5% correct-over-known is *available* against 67.9% delivered,
+   at 5.2x less arithmetic. The offset-indexed construction failed for a known reason
+   (aggregation needs constant-disparity planes) and two published constructions avoid
+   that failure mode: **ELAS** sparse support points chosen by the first-to-second-minimum
+   ratio — which is `Match::margin`, already exported and already measured — triangulated
+   into a prior; and **ESPReSSo** PatchMatch hypotheses shared across tiles, so the plane
+   is constant within a tile and a recursive edge-aware filter stays legal. See
+   09-matching.md.
+2. **Occupancy — 1.56x for free.** 3.85 of 6 cores in the cost stage. No arithmetic
+   changes, no accuracy risk, and the failure mode is now mapped: the `--simd` work
+   showed a coarser work quantum hands back more than a vectorised inner loop wins.
+
+5.2 x 1.56 = **8.1x**, against 6.0x needed for 30 Hz. That is the plan, with margin for
+the two levers underdelivering — which they will.
+
+Held in reserve, in order: **the filter** (32% of stage CPU, vertical passes have no
+recurrence in x), **`--simd`** (exists, 11% stage ceiling, off by default), and
+**resolution** (640x480 is 0.75x the pixels).
+
+### The deferral in section 0 is now on the critical path
+
+Section 0 defers the GPU/CPU decision, and its stated reason is *"No CUDA yet, because
+there is 10 ms of slack and four idle cores."* **That premise was measured against the
+sparse pipeline.** For dense at 848x480 there is no slack — it is 6x over — and the GPU
+is still at load 0. Dense stereo is the canonical CUDA workload; ReS2tAC's own CUDA path
+and libSGM both do VGA on Jetson hardware at rates the CPU cannot approach.
+
+So if real time is the goal, section 0 is not deferrable any longer: either the answer is
+CUDA, or the CPU plan above has to deliver its 8.1x. That is a decision, not a
+measurement, and it should be made before either path is built.
+
+## Reference: where it stands against SGM at 450x375
 
 State end of 2026-08-08. `core/tools/de_dense.cpp`, eight Middlebury scenes:
 
@@ -214,9 +296,11 @@ a different thing, and `dense_baseline.py` is now the yardstick.
 
 ## 0.5 Quick wins now that the live view works
 
-- **Benchmark `de_dense` on the Jetson.** All dense numbers are desktop-only; the
-  board was unreachable when they were taken. The memory-bandwidth finding matters
-  more there, since the TX2 has far less of it.
+- ~~**Benchmark `de_dense` on the Jetson.**~~ Done. The dense numbers in 0.3 are TX2
+  numbers, taken with `tools/tx2_ab.py`, and the desktop has since been shown not to
+  be a proxy for the board in either direction. The memory-bandwidth premise this
+  bullet rested on turned out to be false on both machines — see 09-matching.md,
+  "We are not bandwidth-bound".
 - **Compare against the D4 ASIC's own depth.** Nobody has checked whether this
   matcher beats the silicon it is replacing. Needs `rs_ir_capture` to also record
   the `Depth` stream, then compare disparities at our matched keypoints on (a) a
@@ -352,6 +436,18 @@ The coarse-to-fine path times detection plus matching; the single-level MASDA fi
 times matching only. The two are not comparable. The coarse-to-fine conclusion does
 not depend on it (it rests on match counts), but the numbers should not be left
 side by side as if they were.
+
+### 2.5 Document `de_dense` in 07-tools.md — deferred until the flags settle
+
+The tool the last two sessions were entirely about, and the only one missing from a
+page whose stated job is *every tool and how to run it*. Deferred by decision, not
+oversight: `--simd` is off by default and may be reverted, and the recursive filter is
+next on the ranked list in 0.3, so the flag set is still moving. Write it once it is
+not.
+
+Everything needed is already recorded — the measurement behind each flag is in
+09-matching.md and the usage string lists them — so this is transcription, not
+recovery.
 
 ### 2.4 Re-measure preprocessing under realistic load
 
