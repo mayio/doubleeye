@@ -316,44 +316,105 @@ void upsample(const float* in, float* out, int W, int H, int Ws, int Hs, int f) 
 // independent chains. The vertical passes carry a whole row and vectorise over x
 // with no help.
 template <int L>
-inline void rf_horiz(float* C, const float* ax, int W, int y, int n) {
+inline void rf_horiz(float* C, const uint16_t* ax, int W, int y, int n) {
   float f[L];
   for (int l = 0; l < n; ++l) f[l] = C[size_t(y + l) * W];
   for (int x = 1; x < W; ++x)
     for (int l = 0; l < n; ++l) {
       const size_t i = size_t(y + l) * W + x;
-      f[l] = C[i] + ax[i] * (f[l] - C[i]);
+      f[l] = C[i] + float(ax[i]) * (1.f / 32768.f) * (f[l] - C[i]);
       C[i] = f[l];
     }
   for (int l = 0; l < n; ++l) f[l] = C[size_t(y + l) * W + W - 1];
   for (int x = W - 2; x >= 0; --x)
     for (int l = 0; l < n; ++l) {
       const size_t i = size_t(y + l) * W + x;
-      f[l] = C[i] + ax[i + 1] * (f[l] - C[i]);
+      f[l] = C[i] + float(ax[i + 1]) * (1.f / 32768.f) * (f[l] - C[i]);
       C[i] = f[l];
     }
 }
 
-void rf_filter(float* C, const float* ax, const float* ay, int W, int H) {
+// Q14 fixed point: the score is (24 - popcount)/24 in [-1,1], which maps exactly
+// onto +-16384 and leaves a factor of two of headroom in int16. The intermediate is
+// int32 -- the largest product is 32767 * 32768, just inside it -- and the shift
+// rounds to nearest rather than truncating, because four passes of a downward bias
+// would walk the whole plane.
+//
+// Why int16 here specifically: the filter is four passes of pure float work and is
+// 33% of the cost stage on the desktop and ~50% on the TX2. NEON is 128-bit against
+// AVX2's 256, so halving the element width buys 8 lanes against 4 exactly where the
+// platform that matters is weakest.
+static const int SCORE_Q = 14;
+static const int SCORE_ONE = 1 << SCORE_Q;
+
+template <int L>
+inline void rf_horiz_i16(int16_t* C, const uint16_t* ax, int W, int y, int n) {
+  int32_t f[L];
+  for (int l = 0; l < n; ++l) f[l] = C[size_t(y + l) * W];
+  for (int x = 1; x < W; ++x)
+    for (int l = 0; l < n; ++l) {
+      const size_t i = size_t(y + l) * W + x;
+      const int32_t c = C[i];
+      f[l] = c + ((int32_t(ax[i]) * (f[l] - c) + (1 << 14)) >> 15);
+      C[i] = int16_t(f[l]);
+    }
+  for (int l = 0; l < n; ++l) f[l] = C[size_t(y + l) * W + W - 1];
+  for (int x = W - 2; x >= 0; --x)
+    for (int l = 0; l < n; ++l) {
+      const size_t i = size_t(y + l) * W + x;
+      const int32_t c = C[i];
+      f[l] = c + ((int32_t(ax[i + 1]) * (f[l] - c) + (1 << 14)) >> 15);
+      C[i] = int16_t(f[l]);
+    }
+}
+
+void rf_filter_i16(int16_t* C, const uint16_t* ax, const uint16_t* ay,
+                   int W, int H) {
+  const int CH = 8;
+  for (int y = 0; y < H; y += CH)
+    rf_horiz_i16<CH>(C, ax, W, y, std::min(CH, H - y));
+  for (int y = 1; y < H; ++y) {
+    int16_t* cur = C + size_t(y) * W;
+    const int16_t* prv = C + size_t(y - 1) * W;
+    const uint16_t* a = ay + size_t(y) * W;
+    for (int x = 0; x < W; ++x) {
+      const int32_t c = cur[x];
+      cur[x] = int16_t(c + ((int32_t(a[x]) * (prv[x] - c) + (1 << 14)) >> 15));
+    }
+  }
+  for (int y = H - 2; y >= 0; --y) {
+    int16_t* cur = C + size_t(y) * W;
+    const int16_t* nxt = C + size_t(y + 1) * W;
+    const uint16_t* a = ay + size_t(y + 1) * W;
+    for (int x = 0; x < W; ++x) {
+      const int32_t c = cur[x];
+      cur[x] = int16_t(c + ((int32_t(a[x]) * (nxt[x] - c) + (1 << 14)) >> 15));
+    }
+  }
+}
+
+void rf_filter(float* C, const uint16_t* ax, const uint16_t* ay, int W, int H) {
   const int CH = 8;
   for (int y = 0; y < H; y += CH) rf_horiz<CH>(C, ax, W, y, std::min(CH, H - y));
   for (int y = 1; y < H; ++y) {
     float* cur = C + size_t(y) * W;
     const float* prv = C + size_t(y - 1) * W;
-    const float* a = ay + size_t(y) * W;
-    for (int x = 0; x < W; ++x) cur[x] += a[x] * (prv[x] - cur[x]);
+    const uint16_t* a = ay + size_t(y) * W;
+    for (int x = 0; x < W; ++x)
+      cur[x] += float(a[x]) * (1.f / 32768.f) * (prv[x] - cur[x]);
   }
   for (int y = H - 2; y >= 0; --y) {
     float* cur = C + size_t(y) * W;
     const float* nxt = C + size_t(y + 1) * W;
-    const float* a = ay + size_t(y + 1) * W;
-    for (int x = 0; x < W; ++x) cur[x] += a[x] * (nxt[x] - cur[x]);
+    const uint16_t* a = ay + size_t(y + 1) * W;
+    for (int x = 0; x < W; ++x)
+      cur[x] += float(a[x]) * (1.f / 32768.f) * (nxt[x] - cur[x]);
   }
 }
 
 // The coefficient planes. ax[i] governs the step into pixel i from its left
 // neighbour, ay[i] the step from the row above.
-void rf_coeffs(const float* I, float* ax, float* ay, int W, int H,
+void rf_coeffs(const float* I, uint16_t* ax, uint16_t* ay, int W, int H,
                float sigma_s, float sigma_r, int nth) {
   const float k = -std::sqrt(2.f) / sigma_s;
   const float rs = sigma_s / sigma_r;
@@ -366,8 +427,10 @@ void rf_coeffs(const float* I, float* ax, float* ay, int W, int H,
       const size_t i = size_t(y) * W + x;
       const float gx = x > 0 ? std::fabs(I[i] - I[i - 1]) : 0.f;
       const float gy = y > 0 ? std::fabs(I[i] - I[i - size_t(W)]) : 0.f;
-      ax[i] = std::exp(k * (1.f + rs * gx));
-      ay[i] = std::exp(k * (1.f + rs * gy));
+      const float cx = std::exp(k * (1.f + rs * gx));
+      const float cy = std::exp(k * (1.f + rs * gy));
+      ax[i] = uint16_t(std::min(32767.f, cx * 32768.f + 0.5f));
+      ay[i] = uint16_t(std::min(32767.f, cy * 32768.f + 0.5f));
     }
   });
   for (auto& th : pool) th.join();
@@ -848,8 +911,8 @@ int main(int argc, char** argv) {
   std::vector<float> Is(GS), mIs(GS), vIs(GS);
   // Shared, read-only, disparity-independent: 1.35 MB for both, against the
   // guided filter's eight per-thread temporaries.
-  std::vector<float> axv, ayv;
-  const float *axp = nullptr, *ayp = nullptr;
+  std::vector<uint16_t> axv, ayv;
+  const uint16_t *axp = nullptr, *ayp = nullptr;
   {
     for (size_t i = 0; i < I.size(); ++i) I[i] = float(L.data[i]) / 255.f;
   }
@@ -895,7 +958,7 @@ int main(int argc, char** argv) {
     const int nblocks = (D + KB - 1) / KB;
     std::atomic<int> next_block(0);
     // Outside the pool so the per-thread top-2 survives the join for merging.
-    std::vector<std::vector<float>> as0(nthreads), as1(nthreads);
+    std::vector<std::vector<int16_t>> as0(nthreads), as1(nthreads);
     std::vector<std::vector<int16_t>> ad0(nthreads), ad1(nthreads);
     std::vector<std::thread> cpool;
     for (int t = 0; t < nthreads; ++t) cpool.emplace_back([&, t]() {
@@ -904,7 +967,9 @@ int main(int argc, char** argv) {
     // std::vector zero-fills them, so most of a memset of 46 MB was being paid on
     // the critical path for buffers the recursive filter never touches.
     const size_t FN = cfg.rf ? 0 : size_t(W) * H;
-    std::vector<float> slice(size_t(W) * H), tmp(FN);
+    const bool i16 = cfg.rf && blockwise;
+    std::vector<int16_t> islice(i16 ? size_t(W) * H : 0);
+    std::vector<float> slice(i16 ? 0 : size_t(W) * H), tmp(FN);
     std::vector<float> ip(FN), mp(FN), mip(FN);
     std::vector<float> ab(FN), bb(FN);
     std::vector<float> ma(FN), mb(FN);
@@ -913,11 +978,11 @@ int main(int argc, char** argv) {
     // ONE plane. Separate arrays matter: a packed struct would pull 12 bytes per
     // pixel to answer a question that needs 4, and the reject is the common case.
     if (blockwise) {
-      as0[t].assign(WH, -1e30f); as1[t].assign(WH, -1e30f);
+      as0[t].assign(WH, -32768); as1[t].assign(WH, -32768);
       ad0[t].assign(WH, -1);     ad1[t].assign(WH, -1);
     }
-    float* ts0 = blockwise ? as0[t].data() : nullptr;
-    float* ts1 = blockwise ? as1[t].data() : nullptr;
+    int16_t* ts0 = blockwise ? as0[t].data() : nullptr;
+    int16_t* ts1 = blockwise ? as1[t].data() : nullptr;
     int16_t* td0 = blockwise ? ad0[t].data() : nullptr;
     int16_t* td1 = blockwise ? ad1[t].data() : nullptr;
     const size_t NS = cfg.rf ? 0 : ((F == 1) ? size_t(W) * H : size_t(Ws) * Hs);
@@ -966,7 +1031,8 @@ int main(int argc, char** argv) {
     for (int k = klo; k < khi; ++k) {
       const int d = cfg.dmin + k;
       double tm = now_ms();
-      std::fill(slice.begin(), slice.end(), 0.f);
+      if (i16) std::fill(islice.begin(), islice.end(), int16_t(0));
+      else std::fill(slice.begin(), slice.end(), 0.f);
       ts_fill[t] += now_ms() - tm; tm = now_ms();
       // Multiply by the reciprocal, do not divide.
       //
@@ -980,6 +1046,37 @@ int main(int argc, char** argv) {
       // Worth having and not the whole story -- what remains in that 59.5 ms is
       // still unattributed, and reasoning about it has a poor record here.
       const float inv_half = 1.f / 24.f;
+      if (i16) {
+        // 49 possible Hamming distances, so the scale conversion is a table
+        // lookup rather than an integer divide per pixel-disparity.
+        int16_t tbl[49];
+        for (int h = 0; h <= 48; ++h)
+          tbl[h] = int16_t(((24 - h) * SCORE_ONE) / 24);
+        for (int y = 3; y < H - 3; ++y)
+          for (int x = 3 + d; x < W - 3; ++x)
+            islice[size_t(y) * W + x] =
+                tbl[popcnt64(cl[size_t(y) * W + x] ^ cr[size_t(y) * W + x - d])];
+        ts_score[t] += now_ms() - tm; tm = now_ms();
+        rf_filter_i16(islice.data(), axp, ayp, W, H);
+        ts_filt[t] += now_ms() - tm; tm = now_ms();
+        const int16_t kk = int16_t(k);
+        for (int y = 3; y < H - 3; ++y) {
+          const size_t row = size_t(y) * W;
+          for (int x = 3 + d; x < W - 3; ++x) {
+            const size_t i = row + x;
+            const int16_t v = islice[i];
+            if (v <= ts1[i]) continue;
+            if (v > ts0[i]) {
+              ts1[i] = ts0[i]; td1[i] = td0[i];
+              ts0[i] = v;      td0[i] = kk;
+            } else {
+              ts1[i] = v;      td1[i] = kk;
+            }
+          }
+        }
+        ts_ins[t] += now_ms() - tm;
+        continue;
+      }
       // Left in index form deliberately. Hoisting row pointers out of this loop --
       // the change that was worth 1.62x in the census transform -- measures 14%
       // SLOWER here (48.4 ms against 42.4, interleaved best-of-6). GCC already
@@ -1106,18 +1203,22 @@ int main(int argc, char** argv) {
       const size_t lo = WH * size_t(mt) / nthreads;
       const size_t hi = WH * size_t(mt + 1) / nthreads;
       for (size_t i = lo; i < hi; ++i) {
-        float b0 = -1e30f, b1 = -1e30f;
+        int16_t b0 = -32768, b1 = -32768;
         int i0 = -1, i1 = -1;
         for (int t = 0; t < nthreads; ++t) {
-          const float v0 = as0[t][i], v1 = as1[t][i];
+          const int16_t v0 = as0[t][i], v1 = as1[t][i];
           if (v0 > b0)      { b1 = b0; i1 = i0; b0 = v0; i0 = ad0[t][i]; }
           else if (v0 > b1) { b1 = v0; i1 = ad0[t][i]; }
           if (v1 > b0)      { b1 = b0; i1 = i0; b0 = v1; i0 = ad1[t][i]; }
           else if (v1 > b1) { b1 = v1; i1 = ad1[t][i]; }
         }
         int n = 0;
-        if (i0 >= 0) { gcs[i * 2] = b0; gcd[i * 2] = i0; n = 1; }
-        if (i1 >= 0) { gcs[i * 2 + 1] = b1; gcd[i * 2 + 1] = i1; n = 2; }
+        // Back to float here: the solver's lambda/gamma comparisons and the
+        // margin stay in float, and it is 4 ms, so there is nothing to win by
+        // quantising it and a real risk in doing so.
+        const float q = 1.f / float(SCORE_ONE);
+        if (i0 >= 0) { gcs[i * 2] = float(b0) * q; gcd[i * 2] = i0; n = 1; }
+        if (i1 >= 0) { gcs[i * 2 + 1] = float(b1) * q; gcd[i * 2 + 1] = i1; n = 2; }
         gcn[i] = n;
       }
       });

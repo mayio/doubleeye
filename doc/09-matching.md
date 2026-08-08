@@ -2389,3 +2389,32 @@ Allocation was a real problem and is now fixed in three places -- cost-stage scr
 solve scratch, and the guided filter's guidance planes -- but nothing further remains:
 what is allocated now is `slice`, the per-thread top-2, the merged candidates and the
 filter coefficients, all of which are read.
+
+## int16: neutral on the desktop, 20% on the Jetson
+
+Q14 fixed point through the score, the recursive filter and the top-2 state. The score
+is `(24 - popcount)/24` in [-1,1], which maps exactly onto +-16384 with a factor of two
+of headroom; the filter's intermediate is int32 and its shift rounds to nearest, because
+four passes of a downward bias would walk the whole plane. The solver stays in float --
+it is 4 ms, its lambda/gamma comparisons are delicate, and there is nothing to win.
+
+| | desktop, 4 threads | TX2, 6 threads |
+|---|---|---|
+| score | 39.7 -> 42.1 ms | 72.6 -> **57.5** |
+| filter | 34.9 -> **45.0** | 175.4 -> **103.4** |
+| insert | 29.9 -> **18.8** | 94.6 -> **75.6** |
+| total, teddy | 46 -> 46 ms | 107.3 -> **85.5** |
+
+**Neutral on the desktop, 20% on the Jetson**, quality unchanged at 75.7% / 10.3%.
+
+The split is the interesting part. The insert improves on both machines -- it is a
+compare against a plane, and halving the plane halves the work. The **filter gets worse
+on the desktop and much better on the TX2**: AVX2 vectorises the float form as a single
+FMA, and the int16 form needs a widening multiply, a shift and a narrowing store, so at
+256 bits the float wins. At NEON's 128 bits the extra lanes more than pay for the extra
+instructions.
+
+**This is the first prediction today that came out right**, and it was right for the
+stated reason: halving the element width buys 8 lanes against 4 exactly where the
+platform is weakest. It also means the desktop is now actively misleading as a proxy --
+a change that is neutral there is worth a fifth of the runtime on the target.
