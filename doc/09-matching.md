@@ -2345,3 +2345,47 @@ runs on this board mean nothing; everything above is interleaved best-of-8.
 **Output is bit-identical between aarch64 and x86-64**, which is worth knowing: no
 change here has introduced a platform-dependent reordering, so desktop scoring remains
 valid for correctness even though it is useless for timing.
+
+## Breaking down the cost stage properly, on both machines
+
+In-situ timers inside the real loops, thread-summed CPU. The ablation this replaces was
+misleading: it measured *wall* time on an occupancy-limited stage, so removing work did
+not shorten the clock proportionally, and it reported the filter as 12% of the stage.
+
+| part | desktop, 4 threads | TX2, 6 threads | TX2 / desktop |
+|---|---|---|---|
+| score | 39.7 ms | 72.6 | 1.8x |
+| **recursive filter** | **34.9** | **175.4** | **5.0x** |
+| top-2 insert | 29.9 | 94.6 | 3.2x |
+| clear slice | 2.2 | 4.0 | 1.8x |
+
+**The filter is 33% of the stage on the desktop and about 50% on the TX2**, not 12%
+anywhere. And the profile is qualitatively different between the two machines: on the
+desktop the three parts are roughly even, on the Jetson the filter dominates.
+
+The reason is arithmetic width. The filter is `cur[x] += a[x]*(nxt[x]-cur[x])`, four
+passes of pure float work, and NEON is 128-bit against AVX2's 256 -- half the lanes --
+on top of 2.03 GHz against 3.36. That predicts ~3.3x and 5.0x is measured, the rest
+presumably scalar FP throughput in the horizontal chains.
+
+**This revives int16 with a target and an argument it never had.** It was deferred on a
+bandwidth premise that turned out false, then aimed at what an ablation wrongly called
+12% of the stage. In fact it targets the *largest* item on the platform that matters, and
+on NEON it buys 8 lanes against 4 -- a factor the desktop numbers understate.
+
+### Two things that were not the problem
+
+**Redundant computation:** the only real duplication found is `std::fill(slice, 0)`
+clearing the whole plane when the score loop immediately overwrites all but the left
+strip and the borders. Measured at 2.2 ms of 107, so 2%, and not worth the bug surface.
+
+**Hoisting row pointers out of the score loop is 14% SLOWER** -- 48.4 ms against 42.4,
+interleaved best-of-6 -- although the identical transformation was worth 1.62x in the
+census transform two functions away. GCC already eliminates the common subexpression
+here and the explicit pointers defeat something it was doing on top. Recorded because
+the natural inference from the census result is exactly wrong.
+
+Allocation was a real problem and is now fixed in three places -- cost-stage scratch,
+solve scratch, and the guided filter's guidance planes -- but nothing further remains:
+what is allocated now is `slice`, the per-thread top-2, the merged candidates and the
+filter coefficients, all of which are read.

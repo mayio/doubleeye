@@ -799,6 +799,11 @@ int main(int argc, char** argv) {
   // Both axes of parallelism in this program are over an index that partitions
   // the work with no sharing: disparity here, rows in the solver. That is also
   // what makes the whole thing a GPU kernel later rather than a rewrite.
+  // In-situ accumulators, summed across threads. Timing the real loops with their
+  // real parameters, because a microbenchmark twice today measured code the
+  // compiler could specialise in ways the shipping function cannot be.
+  std::vector<double> ts_fill(nthreads, 0), ts_score(nthreads, 0);
+  std::vector<double> ts_filt(nthreads, 0), ts_ins(nthreads, 0);
   const double tc0 = now_ms();
   // With K = 2 the running top-2 per pixel IS the reduced volume, so the 40 MB
   // array is never allocated. It is still needed for --dump-vol and for the k
@@ -839,7 +844,8 @@ int main(int argc, char** argv) {
   const int Hs = (F == 1) ? H : std::max(1, H / F);
   const int rs = (F == 1) ? cfg.agg : std::max(1, cfg.agg / F);
   std::vector<float> I(size_t(W) * H);
-  std::vector<float> Is(size_t(Ws) * Hs), mIs(size_t(Ws) * Hs), vIs(size_t(Ws) * Hs);
+  const size_t GS = cfg.rf ? 0 : size_t(Ws) * Hs;   // guided filter's guidance only
+  std::vector<float> Is(GS), mIs(GS), vIs(GS);
   // Shared, read-only, disparity-independent: 1.35 MB for both, against the
   // guided filter's eight per-thread temporaries.
   std::vector<float> axv, ayv;
@@ -959,7 +965,9 @@ int main(int argc, char** argv) {
     const int klo = b * KB, khi = std::min(D, klo + KB);
     for (int k = klo; k < khi; ++k) {
       const int d = cfg.dmin + k;
+      double tm = now_ms();
       std::fill(slice.begin(), slice.end(), 0.f);
+      ts_fill[t] += now_ms() - tm; tm = now_ms();
       // Multiply by the reciprocal, do not divide.
       //
       // This inner loop runs D * H * W times -- 9.6M for a 450x375 pair with 60
@@ -972,11 +980,18 @@ int main(int argc, char** argv) {
       // Worth having and not the whole story -- what remains in that 59.5 ms is
       // still unattributed, and reasoning about it has a poor record here.
       const float inv_half = 1.f / 24.f;
+      // Left in index form deliberately. Hoisting row pointers out of this loop --
+      // the change that was worth 1.62x in the census transform -- measures 14%
+      // SLOWER here (48.4 ms against 42.4, interleaved best-of-6). GCC already
+      // eliminates the common subexpression, and the explicit pointers defeat
+      // something it was doing on top. Same transformation, opposite sign, two
+      // loops apart.
       for (int y = 3; y < H - 3; ++y)
         for (int x = 3 + d; x < W - 3; ++x)
           slice[size_t(y) * W + x] =
               (24.f - float(popcnt64(cl[size_t(y) * W + x] ^
                                      cr[size_t(y) * W + x - d]))) * inv_half;
+      ts_score[t] += now_ms() - tm; tm = now_ms();
       // The block buffer is filled here, before the filter, so the filter's
       // final combine can write into it directly instead of writing a full
       // plane and having it copied straight back out again.
@@ -1037,6 +1052,7 @@ int main(int argc, char** argv) {
         box_filter(slice.data(), mp.data(), tmp.data(), W, H, r);
         slice.swap(mp);
       }
+      ts_filt[t] += now_ms() - tm; tm = now_ms();
       if (blockwise) {
         // Insert this disparity into the running top-2, valid window only.
         //
@@ -1060,6 +1076,7 @@ int main(int argc, char** argv) {
             }
           }
         }
+        ts_ins[t] += now_ms() - tm;
         continue;
       }
       // The other filter paths still produce a plane, so they stage as before.
@@ -1108,6 +1125,11 @@ int main(int argc, char** argv) {
     }
   }
   const double t_cost = now_ms() - tc0;
+  double c_fill = 0, c_score = 0, c_filt = 0, c_ins = 0;
+  for (int t = 0; t < nthreads; ++t) {
+    c_fill += ts_fill[t]; c_score += ts_score[t];
+    c_filt += ts_filt[t]; c_ins += ts_ins[t];
+  }
 
   // The aggregated volume, for measuring how many candidates per pixel are
   // actually needed. Diagnostic only; 40 MB for a 450x375 pair at D=60.
@@ -1176,6 +1198,8 @@ int main(int argc, char** argv) {
   size_t filled = 0;
   for (float v : disp) if (std::isfinite(v)) ++filled;
   std::printf("%dx%d  D=%d  iters=%d  threads=%d\n", W, H, D, cfg.iters, nthreads);
+  std::printf("  cost breakdown (thread-summed): clear %.1f  score %.1f  "
+              "filter %.1f  insert %.1f ms\n", c_fill, c_score, c_filt, c_ins);
   std::printf("census %.1f ms  cost %.1f ms  solve %.1f ms  total %.1f ms  "
               "agg=%d iters=%d  filled %.1f%%\n",
               t_census, t_cost, t_solve, t_census + t_cost + t_solve,
