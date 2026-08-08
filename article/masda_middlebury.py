@@ -408,3 +408,78 @@ def fig_thumbnail(r, fname="thumb_teddy"):
                 bbox_inches="tight")
     plt.close(fig)
     print(f"  wrote {ms.FIG}/{fname}.png")
+
+
+def fig_depth_maps(scenes=("teddy", "cones"), fname="depth_maps"):
+    """Ground truth beside what the matcher actually produced.
+
+    The article reports numbers against ground truth but never shows the output,
+    which makes the reader take the tables on trust. This renders, per scene:
+    the ground-truth disparity, MASDA's disparity, and the error.
+
+    MASDA's disparity is sparse -- a few hundred points -- so it is triangulated
+    over the matched keypoints and interpolated to make a surface. That INVENTS
+    values between matches and the caption says so. The alternative, a few hundred
+    dots on black, shows nothing about whether the geometry is right.
+
+    The error panel is computed only at the matches themselves, not on the
+    interpolated surface, so it measures the matcher rather than the rendering.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from scipy.interpolate import LinearNDInterpolator
+
+    fig, axes = plt.subplots(len(scenes), 3, figsize=(13.5, 4.1 * len(scenes)))
+    if len(scenes) == 1:
+        axes = axes[None, :]
+
+    for r, name in enumerate(scenes):
+        res = run_scene(name, verbose=False)
+        left, right, gt, known, pl, pr, S, a, _ = res["_arrays"]
+        H, W = gt.shape
+        xi = np.clip(np.round(pl[:, 0]).astype(int), 0, W - 1)
+        yi = np.clip(np.round(pl[:, 1]).astype(int), 0, H - 1)
+
+        xs, ys, ds, errs = [], [], [], []
+        for i, j in a.items():
+            d_est = pl[i, 0] - pr[j, 0]
+            xs.append(pl[i, 0]); ys.append(pl[i, 1]); ds.append(d_est)
+            errs.append(abs(d_est - gt[yi[i], xi[i]])
+                        if known[yi[i], xi[i]] else np.nan)
+        xs = np.array(xs); ys = np.array(ys)
+        ds = np.array(ds); errs = np.array(errs)
+
+        vmin, vmax = np.percentile(gt[known], (2, 98))
+        g = np.where(known, gt, np.nan)
+        im0 = axes[r, 0].imshow(g, cmap="viridis", vmin=vmin, vmax=vmax)
+        axes[r, 0].set_title(f"{name}: ground truth")
+        fig.colorbar(im0, ax=axes[r, 0], fraction=0.046, label="disparity (px)")
+
+        # Interpolate the matches into a surface, on the same colour scale.
+        dense = np.full((H, W), np.nan, np.float32)
+        if len(ds) >= 4:
+            f = LinearNDInterpolator(np.stack([xs, ys], 1), ds)
+            gx, gy = np.meshgrid(np.arange(W), np.arange(H))
+            dense = f(gx, gy)
+        im1 = axes[r, 1].imshow(dense, cmap="viridis", vmin=vmin, vmax=vmax)
+        axes[r, 1].set_title(f"MASDA, {len(ds)} matches interpolated")
+        fig.colorbar(im1, ax=axes[r, 1], fraction=0.046, label="disparity (px)")
+
+        ok = np.isfinite(errs)
+        axes[r, 2].imshow(left, cmap="gray", alpha=0.35)
+        sc = axes[r, 2].scatter(xs[ok], ys[ok], c=np.minimum(errs[ok], 3.0),
+                                s=7, cmap="RdYlGn_r", vmin=0, vmax=3.0)
+        axes[r, 2].set_xlim(0, W); axes[r, 2].set_ylim(H, 0)
+        axes[r, 2].set_title(f"error at the matches, median "
+                             f"{np.nanmedian(errs[ok]):.2f} px")
+        fig.colorbar(sc, ax=axes[r, 2], fraction=0.046, label="|error| (px)")
+
+        for c in range(3):
+            axes[r, c].set_xticks([]); axes[r, c].set_yticks([])
+
+    fig.tight_layout()
+    os.makedirs(ms.FIG, exist_ok=True)
+    fig.savefig(f"{ms.FIG}/{fname}.png", dpi=115)
+    plt.close(fig)
+    print(f"  wrote {ms.FIG}/{fname}.png")
