@@ -41,7 +41,22 @@ first-class output with one producer.
 
 ---
 
-## 0.3 Dense MASDA: **the goal is real time on the TX2**, and it is 6x away
+## 0.3 Dense MASDA: real time via the GPU -- 17.5 Hz at 848x480, 40 Hz at 450x375
+
+**State 2026-08-08 late: `core/tools/de_dense_cuda` (TX2-only build) runs the image
+plane on the GPU and the MASDA solve on the CPU, pipelined, at 56.6-57.6 ms/frame
+steady state (17.5 Hz) at 848x480 D=60, and 24.6 ms (40.6 Hz) at 450x375 --
+bit-identical to `de_dense --threads 1`, verified by cmp at both resolutions and
+through 30 pipelined frames.** The remaining gap to 30 Hz at full resolution is the
+GPU filter (34 of the GPU's 54 ms); the solve (20-60 ms CPU) hides inside the
+pipeline. The Tegra lessons that cost time are in the commit and the source: no I/O
+coherency means every cudaHostAlloc flavour is CPU-uncached (~300 ms solve, twice),
+and the filter needed transposition, not clever indexing.
+
+What follows below is the CPU-side record as it stood before the port; its numbers
+remain the CPU baselines.
+
+## 0.3.1 The CPU record: the goal was real time, and the CPU got to 4.7x away
 
 **Mario's stated priority, 2026-08-08.** Everything in this section is ranked against
 that goal and not against SGM's accuracy any more.

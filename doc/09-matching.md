@@ -2855,3 +2855,48 @@ question and the reason it is a design decision rather than a patch.
 
 The other route is the GPU, which is where the frame budget was always going to close;
 see TODO 0.3.
+
+## The GPU port: 17.5 Hz at 848x480, and every step verified by cmp
+
+`de_dense_cuda`, the split 10-architecture.md proposed: GPU owns census, graded cost,
+recursive filter and the running top-2; the CPU keeps the MASDA solve. Every device
+computation replicates the CPU's integer arithmetic exactly, and the GPU's per-pixel
+ascending-k top-2 is deterministic -- so the whole binary is checked with `cmp` against
+`de_dense --threads 1`: **zero bytes differ, at 848x480 and 450x375, including through
+30 pipelined frames.**
+
+| | 848x480 D=60 | 450x375 D=60 |
+|---|---|---|
+| CPU, six cores | 152 ms | 70 |
+| GPU+CPU, single frame | ~90 | ~35 |
+| **GPU+CPU, pipelined** | **56.6-57.6 ms = 17.5 Hz** | **24.6 ms = 40.6 Hz** |
+
+GPU stage breakdown at 848 (cudaEvents): census+coeffs 1.5, score 14, **filter 34**,
+top-2 3, transfers ~7. The filter is the remaining wall to 30 Hz at full resolution.
+
+Four findings with mechanisms, each paid for in a measured wrong version first:
+
+1. **A thread per filter row was 403 ms.** Warp-adjacent rows stride W*2 bytes; nothing
+   coalesces and the reuse thrashes the 512 KB L2. Transposing is pure data movement --
+   bit-identity survives -- and the coalesced form is 43 ms. The pre-transpose then
+   disappears entirely by having the score kernel write the transposed layout.
+2. **The score kernel needs coalesced reads AND transposed writes.** Per-plane grids
+   have the reads (15 ms), per-pixel loops have the writes (21 ms); fusing score and
+   transpose through a 32x32 shared tile has both (14 ms).
+3. **The vertical recurrence's dependent load is unnecessary.** The CPU reloads its own
+   previous int16 store; the register carry is the same value, drops a load per step.
+4. **The TX2 has no I/O coherency: every cudaHostAlloc flavour is CPU-uncached.** The
+   solver on uncached candidates measured ~300 ms against ~40 cached -- found twice,
+   once via Mapped, once via Default, which on Tegra is not the "cached pinned" the
+   documentation's mental model suggests. Candidates travel through ordinary pageable
+   memory: a ~4 ms staged copy at the pipeline's natural sync point.
+
+The pipelined mode (`--frames N`) is measured, not claimed: GPU computes frame t+1
+while the CPU solves frame t, and the LAST frame's output is what `--out` writes, so a
+broken overlap breaks the identity check instead of passing quietly.
+
+**What 30 Hz at 848x480 needs**, in order: the filter's 34 ms (two IIR sweeps plus one
+transpose; candidate ideas are two-plane ILP per thread and fusing the transpose-back
+into the vertical pass), then the score's 14. The solve does not need to get faster
+until the GPU side is under ~30 ms, because the pipeline hides it. And half resolution
+already exceeds 30 Hz today if a use case wants that trade.
