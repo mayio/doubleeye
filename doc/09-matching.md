@@ -2995,3 +2995,31 @@ measurement.
 The meta-lesson closes the series' loop: the desktop was not a proxy for the TX2, the
 TX2's CPU is not a proxy for its GPU, and optimisations are measurements attached to a
 memory system, not portable facts.
+
+## The temporal prior, prototyped: the mask machinery earns its keep
+
+Frame t's solved disparities, holes filled row-then-column, fed as `--prior` to frame
+t+1 (`bags/full_on`, frames one second apart, static scene). This is the configuration
+the mask construction was kept for: the c2f coarse level cost a fixed 43 ms on the TX2,
+and the previous frame is free.
+
+| | desktop | TX2, min of 6 interleaved |
+|---|---|---|
+| full sweep | 85.0 ms | 155.2 |
+| temporal prior, band 2 | **67.4** | **135.0** |
+| filled | 71.1% | -> **72.2%** |
+
+Agreement with the full sweep where both answer: **99.61%** within 1 px. Coverage goes
+UP under the prior -- the mask concentrates candidates where the scene actually is,
+and the margin gate keeps more of them.
+
+Caveats, stated rather than implied: the scene is static and the frames are a second
+apart, so this is the easiest possible case. Under motion the prior needs the IMU
+rotation compensation that TODO 3.1 always planned for temporal work, and the hole
+fill (28.7% of pixels here) is doing real work that a moving scene would stress. The
+1.15x on the TX2 is the same bounded win the c2f measurement predicted -- rectangles
+and the solve do not shrink with the band -- but unlike c2f it costs nothing to
+produce the prior.
+
+The GPU tool does not take a prior and does not need one at 34 Hz; if the CNN ever
+squeezes its budget, this is the lever that composes with it.

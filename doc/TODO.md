@@ -241,6 +241,11 @@ tools/deploy.sh && tools/tx2_ab.py "" "--simd" -n 8
 `tools/tx2_ab.py` interleaves, quotes minima, reports occupancy and spread, and refuses
 to run against unlocked clocks or a binary older than your sources. See 07-tools.md.
 
+**Temporal prior: prototyped and positive** (2026-08-09, see 09-matching.md): frame t's
+disparities as the `--prior` mask for frame t+1 is 1.15x on the TX2 CPU tool with
+HIGHER coverage and 99.6% agreement, on a static scene. Under motion it needs the IMU
+rotation compensation of 3.1.
+
 **And `--csct` need not be paid for SIMD.** ReS2tAC cuts the descriptor to 24 bits so
 sixteen *pixels* fit three registers -- a pixel-major constraint that does not bind once
 disparity is in the lanes. With the `vpaddq_u8` reduction a 24-bit descriptor would save
