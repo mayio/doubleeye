@@ -77,9 +77,12 @@ Depends on no platform library at all, so it builds with plain `make` on both
 machines. That is the plan's portability rule made concrete.
 
 ```sh
-cd core && make && make test          # 24 tests
+cd core && make && make test          # 104 assertions, must stay at 0 failures
 ./build/de_preprocess ../bags/NAME    # keypoints + Census -> keypoints.csv
 ```
+
+16 of those assertions are the NEON score kernel and report **SKIPPED off AArch64**,
+so `make test` on the desktop does not exercise them. Run it on the Jetson too.
 
 `de_preprocess` also times each stage per frame, which is how the "299% of budget
 on the TX2" figure was obtained. Run it on the Jetson for on-vehicle numbers; the
@@ -88,6 +91,45 @@ desktop figure is not the one that matters. Details in
 
 Options: `--census 7x7|9x7`, `--cell`, `--per-cell`, `--min-response`,
 `--min-local-std`, `--limit`, `--dump`.
+
+### `tools/tx2_ab.py` — the only correct way to time a change on the TX2
+
+```sh
+tools/deploy.sh                              # always first; it checks, but do it anyway
+tools/tx2_ab.py "" "--simd"                  # scalar against the NEON kernel
+tools/tx2_ab.py "" "--simd" -n 8             # more repetitions, quieter answer
+tools/tx2_ab.py "--agg 3" "--agg 5"          # any two de_dense flag sets
+tools/tx2_ab.py "--csct"                     # one config, just its spread
+```
+
+**TX2 run-to-run variance is 37%**, so a before-and-after pair of runs is not a
+measurement. This alternates the two configurations within one session and compares
+their minima — the scheduler only ever adds time, so the distribution is one-sided and
+its minimum is the least-disturbed estimate. Three results in
+[09-matching.md](09-matching.md) turned on this, and one conclusion had to be
+withdrawn for lack of it.
+
+A and B are flag strings handed to `de_dense` verbatim, and they are **positional**
+because argparse would claim `--simd` for itself as an option value.
+
+It refuses to measure the things that silently invalidate a timing run, each of which
+has cost a session here:
+
+- the host is not `aarch64` — a desktop number against a Jetson budget was wrong by 3×
+- clocks not locked or `doubleeye-performance.service` inactive; `jetson_clocks` does
+  not survive a reboot and the loss is 34% of frames with no error
+- a **local source newer than the Jetson's binary**, which would time the previous
+  edit while every signal points at the current one (obstacle 10)
+- the Middlebury scenes missing on the board, with the one-line command to copy them;
+  `deploy.sh` does not sync `article/`
+
+It prints occupancy — thread-summed CPU over wall time — because the SIMD work turned
+on that number and not on any per-loop timing, and it says so out loud when the effect
+is small against the spread rather than leaving a 1.03× looking like a result.
+
+Standard-library Python only, so it runs under system `python3` with no `.venv`.
+
+Note: `de_dense` itself is still not documented on this page.
 
 ## Desktop side — `desktop/`, Python 3.12 in `.venv`
 

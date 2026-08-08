@@ -119,7 +119,14 @@ with mechanisms.
 **The desktop is no longer a proxy for the TX2.** int16 was neutral on the desktop and
 worth 20% on the Jetson; `--csct` was worthless on the desktop and worth 10% on the
 Jetson. Time anything new on the target before believing it. TX2 run-to-run variance is
-37%, so use interleaved best-of-N there, never single runs.
+37%, so use interleaved best-of-N there, never single runs:
+
+```sh
+tools/deploy.sh && tools/tx2_ab.py "" "--simd" -n 8
+```
+
+`tools/tx2_ab.py` interleaves, quotes minima, reports occupancy and spread, and refuses
+to run against unlocked clocks or a binary older than your sources. See 07-tools.md.
 
 **And `--csct` need not be paid for SIMD.** ReS2tAC cuts the descriptor to 24 bits so
 sixteen *pixels* fit three registers -- a pixel-major constraint that does not bind once
