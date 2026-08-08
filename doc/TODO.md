@@ -41,7 +41,7 @@ first-class output with one producer.
 
 ---
 
-## 0.35 Slanted support windows + PatchMatch propagation — the one change that hits everything
+## 0.35 Edge-aware support first, then slanted planes — measured, not assumed
 
 Where dense MASDA stands: 126 ms, 86.1% coverage, 10.6% bad-1.0. SGM: 16 ms, 81.1%,
 8.1%. At matched coverage, MASDA 8.6% against SGM 6.2%.
@@ -49,8 +49,16 @@ Where dense MASDA stands: 126 ms, 86.1% coverage, 10.6% bad-1.0. SGM: 16 ms, 81.
 One change addresses the top item on both the quality list and the runtime list, and
 is the only candidate that could put us *ahead* rather than level:
 
-**Estimate a plane per pixel (disparity + normal) and generate candidates by
-propagation rather than exhaustive search** — PatchMatch Stereo, doi:10.5244/C.25.14.
+**Measured before committing to it** (see 09-matching.md): error is flat up to a
+disparity gradient of 0.3 px/px and explodes beyond. High-gradient regions carry
+~half of all error on both scenes — but above 0.6 px/px that is a *depth
+discontinuity*, not a slanted surface, and the discontinuity population is 2-3x
+larger than the genuinely slanted one. A warped window still straddles an occlusion
+boundary.
+
+So: **edge-aware support first** (AGAP, doi:10.1049/iet-ipr.2018.5801), slanted
+planes second (PatchMatch, doi:10.5244/C.25.14). That is the reverse of the order
+the papers suggested, and the reversal came from the data.
 
 - *Quality.* Our window aggregation assumes constant disparity across the window,
   which is wrong on every slanted surface and is why the aggregation-radius sweep

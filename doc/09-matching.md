@@ -1223,3 +1223,44 @@ per-pixel work on the GPU, sparse irregular work on the CPU.
 
 Nothing here needs restructuring to move. That was the point of choosing these two
 axes.
+
+## Testing the slanted-window premise before implementing it
+
+PatchMatch's slanted support windows are a large piece of work, so the premise is
+worth checking first: is our error actually concentrated where the surface is not
+fronto-parallel? Binning bad-1.0 by the ground-truth disparity gradient:
+
+| slant, \|∇d\| px/px | teddy pixels | teddy bad-1.0 | cones bad-1.0 |
+|---|---|---|---|
+| 0.00 - 0.05 | 80118 | 6.9% | 4.8% |
+| 0.05 - 0.15 | 31392 | 6.2% | 5.7% |
+| 0.15 - 0.30 | 16694 | 6.2% | 6.2% |
+| 0.30 - 0.60 | 2159 | **24.0%** | 13.2% |
+| 0.60 - 1.20 | 5059 | **50.9%** | 38.7% |
+| > 1.20 | 5371 | **55.3%** | 49.3% |
+
+Near-fronto-parallel pixels are at 6.7%; the rest are at 24.2%, and **high-gradient
+regions carry about half of all error** on both scenes despite being a minority of
+pixels. So the direction is real.
+
+**But the bins say something the headline does not.** Error is flat up to a gradient
+of 0.3 px/px and only explodes beyond it. A gradient above 0.6 px/px means more than
+four pixels of disparity change across a 7-pixel window — that is not a slanted
+surface, it is a **depth discontinuity**. So the high-gradient bucket is a mixture,
+and the two halves need different fixes:
+
+- **Genuine slant** (roughly 0.15-0.6) is what slanted support windows solve. On
+  these scenes it is a small population: 2159 pixels on teddy.
+- **Discontinuities** (>0.6) are the larger population and are not a slant problem at
+  all. A warped window still straddles an occlusion boundary and still averages two
+  surfaces. That needs edge-aware support or explicit occlusion handling — AGAP's
+  contribution, not PatchMatch's.
+
+And roughly half the total error is still in genuinely flat regions at 6-7%, which
+is the cost-function problem, untouched by either.
+
+**So the premise survives but the plan changes.** Slanted windows alone would address
+the smaller half of the high-gradient error. The ranking that follows from these
+numbers is edge-aware support first, slanted planes second, since the discontinuity
+population is two to three times larger than the slanted one on both scenes. That is
+the opposite of the order I proposed from reading the papers.
