@@ -9,3 +9,4 @@ bags/imu/*.bin
 
 # Middlebury images: license permits publishing, but fetch on demand rather than vendor
 article/data/
+core/build/
