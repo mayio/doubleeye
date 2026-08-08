@@ -1564,3 +1564,129 @@ three that failed outright. The structural changes — band fusion so the volume
 exists, `[d][x]` layout, pixel-parallel reductions, int16 — remain untried and are
 where the 12x is. Incremental tuning of this structure has been thoroughly explored
 and is close to exhausted.
+
+## The restructuring, step 1: measure the premise before building on it
+
+The plan above named band fusion as step 1 on the reasoning that the cost volume is
+40 MB and a `W*H` plane is 675 KB against a 256 KB L2, so the guided filter's ~9 live
+planes per thread thrash a 6 MB L3 four ways over. That reasoning predicted a large
+win. It is wrong, and cheap to falsify: crop the image until a plane is L2-resident
+and see whether the cost stage speeds up per unit of work.
+
+| plane | 1 thread | 4 threads |
+|---|---|---|
+| 112 KB (H=64) | 21.88 ns/px·disp | 9.09 ns/px·disp |
+| 225 KB (H=128) | 23.00 | 11.60 |
+| 338 KB (H=192) | 23.24 | 12.46 |
+| **659 KB (H=375)** | **24.99** | **13.98** |
+
+14% single-threaded, 35% at four threads. Real, but not the 3x the argument implied:
+these passes stream with no reuse, and a streaming pass is prefetchable, so cache
+*capacity* barely matters. **Working set was the wrong diagnosis.** That is the
+seventh mechanism guess to fail here, and it cost twenty minutes instead of a day
+because it was tested before it was built on.
+
+### The one claim that survived: the running sum is latency-bound
+
+Attributing the box filter by phase, over 240 calls at 450x375, r=5:
+
+| phase | ms | share |
+|---|---|---|
+| horizontal running sum | 95.6 | **74%** |
+| vertical pass | 23.9 | 19% |
+| normalisation | 7.2 | 6% |
+
+The horizontal pass is `acc += in[x]; acc -= in[x-2r-1]` — a serial dependency chain.
+Every add waits on the previous one, so it advances at float-add *latency*, four
+cycles per element, however many adders are idle; and it cannot vectorise, for the
+same reason. The vertical pass was already fixed (it carries a row of accumulators),
+which is why it is a quarter of the cost of its own mirror image.
+
+The fix for a non-vectorisable reduction is to run many independent ones side by side.
+L rows at once gives L independent chains, needs no transpose — L sequential streams
+is what the prefetcher is for — and is bit-identical, because each chain performs the
+same adds on the same values in the same order.
+
+| chains | box filter | vs shipping |
+|---|---|---|
+| 1 (shipping) | 122.6 ms | 1.00x |
+| 2 | 80.3 | 1.55x |
+| 4 | 51.6 | 2.41x |
+| **8** | **50.7** | **2.45x** |
+| 16 | 52.1 | 2.38x |
+
+The curve is the one two adders at four cycles of latency predict: saturating around
+eight, then spilling at sixteen. Splitting the loop at `x = span` to hoist the bounds
+test out of every element is folded in. All variants verified bit-identical against
+the previous implementation rather than assumed to be.
+
+### A 2.45x arithmetic win is 6% in situ, and that is the finding
+
+| | 1 thread | 4 threads | scaling |
+|---|---|---|---|
+| score + stage + transpose | 86.7 ms | 57.1 ms | 1.52x |
+| guided filter, before | 163.8 | 87.8 | 1.87x |
+| guided filter, after | **100.6** | **73.6** | 1.37x |
+| one box pass, before | 33.0 | 20.2 | |
+| one box pass, after | **17.7** | **12.9** | |
+
+The box pass improved 1.86x at one thread and only 1.57x at four, and the whole cost
+stage moved 147.7 -> 138.6 ms. **Both halves of the stage scale at ~1.4-1.5x on four
+real cores**, which is the signature of a shared bottleneck, not of arithmetic. Fixing
+the arithmetic on a stage that is waiting for memory buys the fraction of it that was
+not waiting.
+
+So the microbenchmark did not lie, it answered a different question: single-threaded
+on one hot plane, the chain is the limit; four-threaded on cold planes, it is not.
+A number measured in one context is not a measurement in another, at the scale of two
+threads rather than two machines.
+
+### Two passes that were pure traffic
+
+Folding the normalisation into the vertical pass's stores removes a read-modify-write
+of 675 KB per box filter for one flop an element. Folding the guided filter's final
+`ma*I + mb` combine directly into the block buffer removes another write, read and
+write per slice — 81 MB over the volume — for values that were already in registers.
+Only the valid window is read downstream, so it is the same arithmetic on the same
+elements.
+
+| | cost stage | total, teddy |
+|---|---|---|
+| shipping | 147.7 ms | 216.0 ms |
+| + 8 chains, folded norm | 138.6 | 194.2 |
+| + fused combine and stage | **124.8** | **184.2** |
+
+**15% on both, bit-identical output**, verified with `cmp` against the previous
+build's raw disparity and re-scored over all eight scenes: 76.7% coverage, 11.0%
+bad-1.0, unchanged to the decimal.
+
+`article/dense_bench.py` now does that scoring in one command. It did not exist — the
+eight-scene dense figures had been produced by hand once, so they could be quoted but
+not re-checked, and a speed change that quietly altered the output would not have been
+caught. It also keeps the raw disparity per scene, which is what makes `cmp` possible.
+
+### Where band fusion actually stands
+
+Downgraded from "step 1, where the 12x lives" to "worth trying, with a known
+tension", on two measurements.
+
+Against it: the cache-capacity argument is worth 35% at four threads, not 3x. And the
+halo is not free — the guided filter chains two box passes, so a band of B rows needs
+slice rows `[y0-2r, y1+2r)`, and at r=5 that is 20 extra rows per band. A band small
+enough to be L2-resident (B=8, 864 KB) does 3.5x redundant filter work; a band big
+enough to amortise the halo (B=64) is 6.9 MB and back to thrashing L3. The redundancy
+lands on the guided filter, which is the expensive half.
+
+For it, and this is the stronger argument and is *not* about cache capacity: the score
+loop reads both 1.35 MB census planes once per disparity slice, so **162 MB of census
+re-reads** over 60 slices, plus ~120 MB of staging and transpose traffic. Banding
+makes a band's census rows resident across all D disparities and turns that 162 MB
+into ~2.7 MB. That is a traffic argument, and traffic is what the 1.4x scaling points
+at.
+
+The way to resolve the tension is to give each thread a contiguous stripe of rows and
+stream bands down it carrying the box filters' vertical accumulators across band
+boundaries, so the halo is paid once per stripe (4 stripes x 20 rows = 21% of H)
+rather than once per band. That is a two-level streaming pipeline through ring
+buffers and is genuinely intricate — the reason to do it is the 162 MB, and the thing
+to measure first is how much of the 1.4x scaling that traffic actually explains.

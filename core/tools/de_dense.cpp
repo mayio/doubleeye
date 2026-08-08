@@ -88,19 +88,58 @@ struct Top2 {
 };
 
 
+// Horizontal running sums for L rows at once.
+//
+// A running sum is a serial dependency chain: every add waits on the previous
+// one, so the loop advances at float-add LATENCY -- four cycles per element on
+// this core -- no matter how many adders are idle. It also cannot vectorise,
+// for the same reason. Measured, this one pass was 74% of the whole box filter
+// (95.6 ms of 122.6 over 240 calls).
+//
+// The fix for a non-vectorisable reduction is to run many independent ones side
+// by side. L rows give L independent chains that the same adders interleave,
+// and it needs no transpose: the L rows are L sequential streams, which is what
+// the prefetcher is for.
+//
+// L = 8 measured best. The curve is the one two adders at four cycles of
+// latency predict -- 1.55x at L=2, 2.41x at 4, 2.45x at 8, then 2.38x at 16 as
+// the accumulators start spilling.
+//
+// The `x >= span` test is hoisted out by splitting the loop at x = span rather
+// than asking on every element of every chain. Each chain still performs the
+// same adds on the same values in the same order, so the result is
+// bit-identical -- verified against the previous implementation, not assumed.
+template <int L>
+inline void horiz_rows(const float* in, float* const* op, int W, int r,
+                       int y, int n) {
+  const int span = 2 * r + 1;
+  float a[L];
+  const float* ip[L];
+  for (int l = 0; l < n; ++l) { a[l] = 0.f; ip[l] = in + size_t(y + l) * W; }
+  const int x1 = std::min(W, span);
+  for (int x = 0; x < x1; ++x) {
+    const int ox = x - r > 0 ? x - r : 0;
+    for (int l = 0; l < n; ++l) { a[l] += ip[l][x]; op[l][ox] = a[l]; }
+  }
+  for (int x = x1; x < W; ++x) {
+    const int ox = x - r;
+    for (int l = 0; l < n; ++l) {
+      a[l] += ip[l][x]; a[l] -= ip[l][x - span]; op[l][ox] = a[l];
+    }
+  }
+  for (int x = std::max(0, W - r); x < W; ++x)
+    for (int l = 0; l < n; ++l) op[l][x] = a[l];
+}
+
 // Separable box filter with running sums: O(N) regardless of radius.
 void box_filter(const float* in, float* out, float* tmp, int W, int H, int r) {
   if (r <= 0) { std::copy(in, in + size_t(W) * H, out); return; }
-  for (int y = 0; y < H; ++y) {
-    float acc = 0.f;
-    const float* ip = in + size_t(y) * W;
-    float* op = tmp + size_t(y) * W;
-    for (int x = 0; x < W; ++x) {
-      acc += ip[x];
-      if (x > 2 * r) acc -= ip[x - 2 * r - 1];
-      op[std::max(0, x - r)] = acc;
-    }
-    for (int x = std::max(0, W - r); x < W; ++x) op[x] = acc;
+  const int CH = 8;
+  for (int y = 0; y < H; y += CH) {
+    const int n = std::min(CH, H - y);
+    float* op[CH];
+    for (int l = 0; l < n; ++l) op[l] = tmp + size_t(y + l) * W;
+    horiz_rows<CH>(in, op, W, r, y, n);
   }
   // Vertical pass, y outer and x inner.
   //
@@ -112,6 +151,12 @@ void box_filter(const float* in, float* out, float* tmp, int W, int H, int r) {
   // dependency in y, where it is unavoidable, while every inner loop runs over x
   // contiguously with W independent lanes. Same arithmetic, same result, but the
   // compiler can vectorise all three inner loops.
+  // The normalisation is folded into these stores rather than run as its own
+  // pass over W*H, which was a full read-modify-write of 675 KB for one flop an
+  // element. Every store already had the value in a register. Overwriting a row
+  // several times (which the clamped borders do) is still correct, because each
+  // store writes acc*norm rather than scaling in place.
+  const float norm = 1.f / float((2 * r + 1) * (2 * r + 1));
   std::vector<float> acc(size_t(W), 0.f);
   for (int y = 0; y < H; ++y) {
     const float* add = tmp + size_t(y) * W;
@@ -121,14 +166,12 @@ void box_filter(const float* in, float* out, float* tmp, int W, int H, int r) {
       for (int x = 0; x < W; ++x) acc[x] -= sub[x];
     }
     float* dst = out + size_t(std::max(0, y - r)) * W;
-    for (int x = 0; x < W; ++x) dst[x] = acc[x];
+    for (int x = 0; x < W; ++x) dst[x] = acc[x] * norm;
   }
   for (int y = std::max(0, H - r); y < H; ++y) {
     float* dst = out + size_t(y) * W;
-    for (int x = 0; x < W; ++x) dst[x] = acc[x];
+    for (int x = 0; x < W; ++x) dst[x] = acc[x] * norm;
   }
-  const float norm = 1.f / float((2 * r + 1) * (2 * r + 1));
-  for (size_t i = 0; i < size_t(W) * H; ++i) out[i] *= norm;
 }
 
 
@@ -457,6 +500,12 @@ int main(int argc, char** argv) {
           slice[size_t(y) * W + x] =
               (24.f - float(popcnt64(cl[size_t(y) * W + x] ^
                                      cr[size_t(y) * W + x - d]))) * inv_half;
+      // The block buffer is filled here, before the filter, so the filter's
+      // final combine can write into it directly instead of writing a full
+      // plane and having it copied straight back out again.
+      float* dst = &blk[size_t(k - klo) * W * H];
+      std::fill(dst, dst + size_t(W) * H, -1e30f);
+      bool staged = false;
       if (r > 0 && cfg.guided && F == 1) {
         // Direct full-resolution guided filter. Kept as a separate path because
         // routing F == 1 through the subsample/upsample machinery costs a
@@ -472,7 +521,18 @@ int main(int argc, char** argv) {
         }
         box_filter(abs_.data(), ma.data(), ts.data(), W, H, r);
         box_filter(bbs.data(), mb.data(), ts.data(), W, H, r);
-        for (size_t i = 0; i < slice.size(); ++i) slice[i] = ma[i] * I[i] + mb[i];
+        // Combine and stage in one pass. The previous form wrote ma*I+mb across
+        // the whole plane and then copied the valid window of it into the block
+        // buffer -- a 675 KB write, read and write again per slice, 81 MB over
+        // the volume, for values that were already in registers. Only the valid
+        // window is ever read downstream, so computing it straight into place is
+        // the same arithmetic on the same elements.
+        for (int y = 3; y < H - 3; ++y)
+          for (int x = 3 + d; x < W - 3; ++x) {
+            const size_t i = size_t(y) * W + x;
+            dst[i] = ma[i] * I[i] + mb[i];
+          }
+        staged = true;
       } else if (r > 0 && cfg.guided) {
         // Fast variant. Measured: 2.4 points of bad-1.0 worse at F=4 for 84 ms,
         // because a stereo cost slice is not smooth the way an image is.
@@ -494,12 +554,11 @@ int main(int argc, char** argv) {
         box_filter(slice.data(), mp.data(), tmp.data(), W, H, r);
         slice.swap(mp);
       }
-      // Stage into the block buffer; the transpose happens once per block.
-      float* dst = &blk[size_t(k - klo) * W * H];
-      std::fill(dst, dst + size_t(W) * H, -1e30f);
-      for (int y = 3; y < H - 3; ++y)
-        for (int x = 3 + d; x < W - 3; ++x)
-          dst[size_t(y) * W + x] = slice[size_t(y) * W + x];
+      // The other filter paths still produce a plane, so they stage as before.
+      if (!staged)
+        for (int y = 3; y < H - 3; ++y)
+          for (int x = 3 + d; x < W - 3; ++x)
+            dst[size_t(y) * W + x] = slice[size_t(y) * W + x];
     }
     // Blocked transpose: KB consecutive k values per output cache line.
     const int kn = khi - klo;

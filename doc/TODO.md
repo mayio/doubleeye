@@ -45,10 +45,19 @@ first-class output with one producer.
 
 State after 2026-08-08. `core/tools/de_dense.cpp`, eight Middlebury scenes:
 
-| | coverage | bad-1.0 | runtime |
+| | coverage | bad-1.0 | runtime, teddy |
 |---|---|---|---|
-| dense MASDA | 76.7% | **11.0%** | 214 ms |
+| dense MASDA | 76.7% | **11.0%** | 184 ms |
 | SGM | 78.0% | **10.9%** | 16 ms |
+
+Runtime is 184 ms on teddy and cones (D=60) and 250-290 ms on the six 2005 scenes
+(D=80), mean 246 ms over the eight. Re-score any change with one command, and diff
+the raw disparity to prove a speed change was only a speed change:
+
+```sh
+.venv/bin/python article/dense_bench.py --out /tmp/after   # 76.7% cov, 11.0% bad
+cmp /tmp/before/teddy.f32 /tmp/after/teddy.f32
+```
 
 Quality started the day 3.5x behind (28.1% against 8.1%) and is now a tie. What
 worked: window aggregation (26.6% -> 10.6%), guided-filter edge-aware support
@@ -56,7 +65,30 @@ worked: window aggregation (26.6% -> 10.6%), guided-filter edge-aware support
 parabola, fast guided filter, disparity blocking (6% only). All measured, all
 recorded in 09-matching.md with mechanisms.
 
-**Runtime is now the whole gap.** Two levers left, and the lesson from the fast
+**Step 1 of the restructuring is done, and it changed what the plan should be.**
+Measured, not assumed — full write-up in
+[09-matching.md](09-matching.md#the-restructuring-step-1-measure-the-premise-before-building-on-it):
+
+- **Done, 15% and bit-identical**: eight independent horizontal chains in the box
+  filter (the running sum was 74% of it and is latency-bound, 2.45x in isolation),
+  normalisation folded into the vertical stores, and the guided filter's final
+  combine written straight into the block buffer. Cost stage 147.7 -> 124.8 ms,
+  total 216.0 -> 184.2 ms, quality unchanged to the decimal.
+- **The working-set premise was wrong.** Cropping until a plane is L2-resident buys
+  35% at four threads, not the 3x the argument implied: these passes stream with no
+  reuse, and streaming is prefetchable, so cache capacity barely matters.
+- **What the numbers now point at is traffic, not cache or arithmetic.** Both halves
+  of the cost stage scale at only ~1.4-1.5x on four real cores. The score loop
+  re-reads both 1.35 MB census planes once per disparity slice: **162 MB**, which
+  banding would turn into ~2.7 MB.
+- **Band fusion is no longer the obvious step 1.** Its halo is 4r rows because the
+  guided filter chains two box passes, so an L2-sized band does 3.5x redundant filter
+  work and a band that amortises the halo is back to thrashing L3. Resolving that
+  needs per-thread row stripes with the box accumulators carried across band
+  boundaries — a two-level streaming pipeline. Measure how much of the 1.4x scaling
+  the 162 MB explains *before* building it.
+
+**Runtime is still the whole gap.** Two levers left, and the lesson from the fast
 guided filter is that they must not touch the cost values:
 
 1. **uint16 cost volume — deferred, not dropped.** Measured today: the machine
