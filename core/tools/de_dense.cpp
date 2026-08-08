@@ -36,6 +36,7 @@
 #include <cstring>
 #include <string>
 #include <atomic>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -84,13 +85,18 @@ double now_ms() {
 // two: the first measurement of it was taken in a microbenchmark where W, hw and hh
 // happened to be file-scope constants, and that difference alone inverted the
 // result.
+double g_cen_clear = 0, g_cen_cmp = 0, g_cen_pack = 0;
+
 template <int HW, int HH>
 void census_rows(const Image8& img, uint64_t* out, int t, int nth) {
   const int W = img.width, H = img.height;
   const int ngroups = ((2 * HW + 1) * (2 * HH + 1) - 1 + 7) / 8;
   std::vector<uint8_t> g(size_t(ngroups) * W);
+  double tc = 0, tm = 0, tp = 0;
   for (int y = HH + t; y < H - HH; y += nth) {
+    double t0 = now_ms();
     std::fill(g.begin(), g.end(), 0);
+    tc += now_ms() - t0; t0 = now_ms();
     const uint8_t* cen = img.data.data() + size_t(y) * W;
     int bit = 0;
     for (int dy = -HH; dy <= HH; ++dy)
@@ -103,6 +109,7 @@ void census_rows(const Image8& img, uint64_t* out, int t, int nth) {
           a[x] |= n[x] < cen[x] ? one : uint8_t(0);
         ++bit;
       }
+    tm += now_ms() - t0; t0 = now_ms();
     uint64_t* o = out + size_t(y) * W;
     for (int x = HW; x < W - HW; ++x) {
       uint64_t v = 0;
@@ -110,7 +117,11 @@ void census_rows(const Image8& img, uint64_t* out, int t, int nth) {
         v |= uint64_t(g[size_t(j) * W + x]) << (8 * j);
       o[x] = v;
     }
+    tp += now_ms() - t0;
   }
+  static std::mutex m;
+  std::lock_guard<std::mutex> lk(m);
+  g_cen_clear += tc; g_cen_cmp += tm; g_cen_pack += tp;
 }
 
 // Centre-symmetric census: compare each pixel against its point reflection through
@@ -1406,6 +1417,9 @@ int main(int argc, char** argv) {
   size_t filled = 0;
   for (float v : disp) if (std::isfinite(v)) ++filled;
   std::printf("%dx%d  D=%d  iters=%d  threads=%d\n", W, H, D, cfg.iters, nthreads);
+  std::printf("  census breakdown (thread-summed, both images): clear %.2f  "
+              "48 compare-or passes %.2f  pack to uint64 %.2f ms\n",
+              g_cen_clear, g_cen_cmp, g_cen_pack);
   std::printf("  cost breakdown (thread-summed): clear %.1f  score %.1f  "
               "filter %.1f  insert %.1f ms\n", c_fill, c_score, c_filt, c_ins);
   std::printf("census %.1f ms  cost %.1f ms  solve %.1f ms  total %.1f ms  "

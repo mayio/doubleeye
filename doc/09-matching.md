@@ -2494,3 +2494,55 @@ arithmetic rather than shifting memory or lane width.
 
 Against SGM this is now **9.7% against 10.9%**, a lead of 1.2 points rather than 0.6, at
 2.0 points less coverage.
+
+## Inside the census transform, and why the score loop costs 14x more
+
+Instrumented per phase, both images, thread-summed CPU:
+
+| phase | desktop | TX2 |
+|---|---|---|
+| clear the byte accumulators | 0.09 ms | 0.13 |
+| **48 compare-and-OR passes** | **2.87** | **5.81** |
+| pack six byte planes into uint64 | 0.42 | 1.63 |
+| **census transform total** | **3.4** | **7.6** |
+| **score loop (XOR + popcount + AD)** | **49.1** | **108.4** |
+
+**The transform is not the expensive part and has not been for some time.** The score
+loop costs 14x more on both machines. The two do comparable amounts of raw work, and the
+difference is entirely whether it vectorises.
+
+**Census transform: 168,750 pixels x 48 pairs x 2 images = 16.2M compare-and-OR.** The
+loop runs x innermost with a compile-time shift mask into byte accumulators, so it
+vectorises 32 bytes per instruction on AVX2 and 16 on NEON. Each element is still a
+read-modify-write -- three loads and a store per compare -- so it is memory-op bound
+rather than compare bound, and at 2.87 ms for 16.2M compares it achieves about 1.7
+byte-ops per cycle against a ceiling far above that. There is headroom here, but it is
+headroom on 3.4 ms.
+
+**Score loop: 60 disparities x 168,750 pixels = 10.1M pixel-disparities**, each doing two
+8-byte descriptor loads, an XOR, a **popcount**, a table lookup, two image loads for the
+absolute difference, and a multiply-add. Fewer operations than the transform, 14x the
+time.
+
+**The reason is popcount.** `__builtin_popcountll` compiles to the scalar `POPCNT`
+instruction, and AVX2 has no vector population count -- that arrived with AVX-512's
+`VPOPCNTDQ`, which this Kaby Lake does not have. So the single hottest loop in the whole
+matcher runs one 64-bit word at a time while everything around it runs 8 or 32 lanes
+wide. The transform is 32x parallel and the score is 1x parallel, on similar work.
+
+### What that implies, and it differs by target
+
+- **NEON has `vcntq_u8`**, a native per-byte population count, so on the TX2 a vectorised
+  popcount is 16 bytes per instruction plus a pairwise-add reduction. This is the single
+  largest identified opportunity on the Jetson: the score is 108.4 ms of CPU and the
+  instruction exists.
+- **On x86 the equivalent is the PSHUFB nibble-table trick** (Muła, Kurz and Lemire),
+  which is well established and typically 2-3x over scalar POPCNT for bulk counting.
+- Both need intrinsics, which collides with the deliberate choice in `core/Makefile` to
+  leave `ARCHFLAGS` empty so the same source builds on both machines. It would need
+  either per-target compilation units or runtime dispatch, and that is a real cost to
+  weigh rather than a detail.
+
+Also worth noting against `--csct`: it halved the descriptor and cut the score stage 1.55x
+on the TX2 precisely because it halved this scalar work. Vectorising popcount attacks the
+same cost without paying the 1.2 points of accuracy.
