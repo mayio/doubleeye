@@ -875,3 +875,41 @@ the constant is large and unmeasured, not that the algorithm is 900x slower.
 What *is* algorithmic: 9.15M edges for a 168k-pixel image is 54 candidates per
 pixel, and the margin gate then discards most of what was scored. Coarse-to-fine or
 a previous-frame prior would cut that, and neither has been tried.
+
+### Coarse-to-fine: 5.3x faster, and it damages the confidence measure
+
+The obvious way to cut 54 candidates per pixel is to bracket the answer with a
+coarse pass. Half resolution, inpaint the holes, upsample, then search ±4 px around
+that guess at full resolution:
+
+| | edges | runtime | coverage | bad-1.0 |
+|---|---|---|---|---|
+| flat dense | 9,154,890 | 21 s | 89.0% | 34.7% |
+| coarse-to-fine | 1,448,007 | **4.0 s** | 85.4% | 33.0% |
+
+**5.3x faster for a slightly better ungated error rate.** As a speed change it works
+exactly as intended.
+
+The problem appears once the margin gate is applied. Compared at similar coverage,
+coarse-to-fine is worse:
+
+| | coverage | bad-1.0 |
+|---|---|---|
+| flat dense, gate 0.20 | 16.7% | **9.4%** |
+| coarse-to-fine, gate 0.20 | 29.1% | 19.0% |
+| flat dense, gate 0.10 | 34.8% | **15.9%** |
+| coarse-to-fine, gate 0.10 | 48.7% | 23.6% |
+
+The mechanism is worth naming because it is not obvious. When the coarse pass is
+wrong, the ±4 px window **excludes the correct answer entirely**. The fine pass then
+runs a competition among candidates that are all wrong, and one of them wins it
+convincingly — so the margin comes out *high* on a wrong match. Coarse-to-fine does
+not merely propagate coarse errors, it launders them into confident ones.
+
+That makes it strictly a speed/quality trade rather than a free win, and it damages
+the one signal this matcher has that SGM does not. It also independently reproduces
+the earlier coarse-to-fine negative result from the article, by a different route
+and with the mechanism identified.
+
+If the speedup is wanted, the fix is to keep a few candidates *outside* the bracket
+so the margin still measures a real competition — untested.
