@@ -41,6 +41,40 @@ first-class output with one producer.
 
 ---
 
+## 0.35 Slanted support windows + PatchMatch propagation — the one change that hits everything
+
+Where dense MASDA stands: 126 ms, 86.1% coverage, 10.6% bad-1.0. SGM: 16 ms, 81.1%,
+8.1%. At matched coverage, MASDA 8.6% against SGM 6.2%.
+
+One change addresses the top item on both the quality list and the runtime list, and
+is the only candidate that could put us *ahead* rather than level:
+
+**Estimate a plane per pixel (disparity + normal) and generate candidates by
+propagation rather than exhaustive search** — PatchMatch Stereo, doi:10.5244/C.25.14.
+
+- *Quality.* Our window aggregation assumes constant disparity across the window,
+  which is wrong on every slanted surface and is why the aggregation-radius sweep
+  plateaued at 3-4. **SGM shares this fronto-parallel bias**, so fixing it is a place
+  SGM is weak rather than a way to catch up.
+- *Runtime.* The cost volume is 40 MB, is 71 of 126 ms, and the work is
+  memory-bandwidth bound (8 threads is slower than 4). Propagation never materialises
+  it.
+- *Fit.* Everything measured here says the candidate set decides the outcome, and
+  PatchMatch is a cheap candidate generator. MASDA supplies what it lacks: a
+  one-to-one constraint and a confidence measure. Neither paper does that
+  combination.
+
+Use red-black / checkerboard propagation, not scanline order, so it stays parallel.
+
+Second tier, in order:
+1. **Graded cost.** Census gives 49 Hamming levels; SGM's Birchfield-Tomasi
+   difference is continuous. Combining them is standard and untried here.
+2. **uint16 cost volume** instead of float32. Bandwidth-bound, so quartering the
+   bytes is worth more than vectorising the arithmetic.
+3. **Edge-aware support** instead of a box (AGAP, doi:10.1049/iet-ipr.2018.5801).
+   The box was worth 16 points of bad-1.0; a support region that follows image
+   structure should be worth more, and MST filtering is O(N).
+
 ## 0.4 Semi-dense candidates + margin gate — reaches SGM's precision, needs to get fast
 
 Dense SGM beats MASDA **at MASDA's own keypoints**, 0.858 against 0.616 precision,
@@ -80,6 +114,9 @@ a different thing, and `dense_baseline.py` is now the yardstick.
 
 ## 0.5 Quick wins now that the live view works
 
+- **Benchmark `de_dense` on the Jetson.** All dense numbers are desktop-only; the
+  board was unreachable when they were taken. The memory-bandwidth finding matters
+  more there, since the TX2 has far less of it.
 - **Compare against the D4 ASIC's own depth.** Nobody has checked whether this
   matcher beats the silicon it is replacing. Needs `rs_ir_capture` to also record
   the `Depth` stream, then compare disparities at our matched keypoints on (a) a
