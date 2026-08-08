@@ -1786,3 +1786,66 @@ scene-to-scene spread, so it should not be quoted as "no loss" -- it is "no loss
 this benchmark can resolve". Runtime on this laptop drifts ±12% with thermals across
 runs of identical work, which is why the comparison above is back to back and why
 single runs are not worth reporting.
+
+## How many candidates per pixel are needed? Measured before pruning anything
+
+Mario's suggestion: run MASDA on a sparse candidate set rather than the full volume,
+since most (pixel, disparity) pairs are nobody's plausible answer. That would return
+the algorithm to the sparse edge-list form it was written for, delete the 40 MB
+volume, and remove the stride-(D+1) diagonal walk in the beta update -- which is the
+one genuinely awkward thing the dense layout imposes.
+
+Pruning has a hard ceiling: if the truth is not among the top k by aggregated cost,
+no solver recovers it. `article/topk_recall.py` measures it. Recall is the fraction of
+known-ground-truth pixels whose true disparity is within 1 px of one of the top k
+candidates, and every scene's truth is inside the search range, so nothing is being
+hidden in an unreachable remainder.
+
+| k | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| mean recall | 75.1% | 78.0% | 80.6% | **82.8%** | 85.0% | 90.0% |
+
+**Top-8 pruning does not bind.** Its ceiling is 82.8% of known pixels, and the
+shipping pipeline currently delivers 67.9% of known pixels correct (76.4% coverage at
+11.1% bad-1.0) -- about fifteen points of headroom. Even k=2 has eight points. So the
+7.5x reduction in edges is available at no measurable accuracy cost, and the thing to
+watch when it is built is not the answer set but the uniqueness competition: pruning
+removes claimants from the beta update, which changes the dynamics rather than only
+the candidate list.
+
+Two notes on how this was measured, both of which would have produced a wrong answer
+if skipped. Pruning must be by **rank within a pixel**, never a global magnitude
+threshold: Census costs are absolute Hamming fractions, so a textureless region scores
+uniformly mediocre and its correct match scores mediocre too, and a magnitude cutoff
+would delete precisely the flat regions where half the remaining error already sits.
+And recall is conditioned on the truth being inside the search range, so that pruning
+is not charged for pixels no k could reach.
+
+### The solve is earning its 46 ms, and checking that took a fair comparison
+
+The recall table says aggregation's own argmax is correct on 75.1% of known pixels,
+against the full pipeline's 67.9%. Read as it stands that says the message passing is
+*harmful*, which would be a startling result -- and it is the precision-versus-count
+trap, two rates over different denominators, which has already caught me once here.
+
+MASDA covers 76.4% and argmax covers 97%, so the gate is choosing the easier pixels.
+At **matched coverage** -- argmax gated by its own top1-minus-top2 margin down to
+MASDA's coverage, the same quantity MASDA gates on -- the comparison inverts:
+
+| scene | MASDA | argmax at matched coverage |
+|---|---|---|
+| teddy | **7.9%** | 11.4% |
+| cones | **6.3%** | 8.2% |
+| Art | **16.3%** | 17.7% |
+| Laundry | **20.6%** | 24.7% |
+
+Uniqueness plus message passing is worth 1.4 to 4.1 points of bad-1.0 over picking the
+best-scoring disparity per pixel. That is the first direct measurement of what the
+solver contributes on dense data as opposed to what the whole pipeline scores, and it
+is the number to hold pruning against.
+
+Worth keeping separately: argmax at full coverage yields *more correct pixels* over
+known ground truth (80.3% against 75.0% on teddy) because MASDA's gate discards
+correct pixels along with wrong ones. That is the trade the gate exists to make, not a
+defect, but anything downstream that wants pixels rather than precision should know
+the choice is there.

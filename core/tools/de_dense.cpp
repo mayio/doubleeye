@@ -445,7 +445,7 @@ int main(int argc, char** argv) {
   const std::string lp = argv[1], rp = argv[2];
   const int W = std::atoi(argv[3]), H = std::atoi(argv[4]);
   Cfg cfg;
-  std::string outp;
+  std::string outp, volp;
   for (int i = 5; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has = i + 1 < argc;
@@ -463,6 +463,7 @@ int main(int argc, char** argv) {
     else if (a == "--threads" && has) cfg.threads = std::atoi(argv[++i]);
     else if (a == "--min-margin" && has) cfg.min_margin = float(std::atof(argv[++i]));
     else if (a == "--out" && has) outp = argv[++i];
+    else if (a == "--dump-vol" && has) volp = argv[++i];
   }
   Image8 L, R;
   if (!load_raw_y8(lp, W, H, &L) || !load_raw_y8(rp, W, H, &R)) {
@@ -664,6 +665,13 @@ int main(int argc, char** argv) {
     for (auto& th : cpool) th.join();
   }
   const double t_cost = now_ms() - tc0;
+
+  // The aggregated volume, for measuring how many candidates per pixel are
+  // actually needed. Diagnostic only; 40 MB for a 450x375 pair at D=60.
+  if (!volp.empty()) {
+    FILE* f = std::fopen(volp.c_str(), "wb");
+    if (f) { std::fwrite(vol.data(), sizeof(float), vol.size(), f); std::fclose(f); }
+  }
 
   std::vector<float> disp(size_t(W) * H, std::nanf(""));
   std::vector<float> margin(size_t(W) * H, 0.f);
