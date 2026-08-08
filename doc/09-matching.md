@@ -1410,3 +1410,47 @@ is the other standard option, trading the running sum for four loads per query.
 Recording the correction rather than quietly fixing it: this is the fifth mechanism I
 attributed confidently and wrongly today. The measurement cost two minutes and saved
 implementing a uint16 volume that would have bought almost nothing.
+
+### Attributing the cost stage properly, having guessed wrong repeatedly
+
+Restructuring the vertical box pass — carrying a row of accumulators and stepping y,
+so the serial dependency stays in y while every inner loop runs contiguously over x
+with W independent lanes — took the cost stage from 159 ms to 147 ms. Output
+identical. A 7% gain, which is the third optimisation in a row to come in far below
+what the mechanism suggested.
+
+So instead of theorising again, strip one layer at a time and read the numbers:
+
+| configuration | cost stage | implies |
+|---|---|---|
+| `--agg 0` (score + scatter only) | **66.7 ms** | **45% of the stage** |
+| `--box --agg 5` (one box pass) | 80.2 ms | a box pass is ~13.5 ms |
+| guided `--agg 5` (four box + elementwise) | 147.2 ms | four boxes ~54 ms, elementwise ~27 ms |
+
+**Scoring and the scatter are the single largest item, at 45%** — and I had spent
+three changes optimising the filtering, which is 55% split across seven passes.
+
+The scoring itself cannot be much of it: 60 disparities over 168k pixels is 10M
+XOR-and-popcount pairs, a few milliseconds of arithmetic. So the 66.7 ms is dominated
+by *moving the volume* — writing 40 MB out through the blocked transpose — which is
+also why blocking it only bought 6%: the traffic is irreducible while the volume
+exists.
+
+### The conclusion the attribution forces
+
+Every remaining lever inside this structure is worth single-digit percentages, because
+the structure itself is the cost: a 40 MB volume gets written once and read once per
+solver iteration, and no amount of filter tuning changes that.
+
+Two ways out, and they are the same two already on the list for other reasons:
+
+- **Fuse the solver into the cost stage per row band.** Compute the cost for a band
+  of rows with an r-row halo, solve those rows immediately, discard. The volume never
+  exists — only a band of it — which removes the 40 MB write and the 40 MB read
+  outright. Rows are already independent, so this is a restructuring rather than an
+  algorithm change.
+- **PatchMatch propagation**, which never builds a volume in the first place.
+
+That is now the third independent argument for propagation — accuracy on slanted
+surfaces, candidate generation, and runtime — which is a reasonable point to stop
+tuning and change the structure.

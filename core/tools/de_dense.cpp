@@ -102,14 +102,30 @@ void box_filter(const float* in, float* out, float* tmp, int W, int H, int r) {
     }
     for (int x = std::max(0, W - r); x < W; ++x) op[x] = acc;
   }
-  for (int x = 0; x < W; ++x) {
-    float acc = 0.f;
-    for (int y = 0; y < H; ++y) {
-      acc += tmp[size_t(y) * W + x];
-      if (y > 2 * r) acc -= tmp[size_t(y - 2 * r - 1) * W + x];
-      out[size_t(std::max(0, y - r)) * W + x] = acc;
+  // Vertical pass, y outer and x inner.
+  //
+  // The obvious form is x outer, one scalar accumulator, stepping y -- and it is
+  // doubly bad: the inner loop strides by W so every access is a fresh cache
+  // line, and the accumulator is a serial dependency that cannot vectorise.
+  //
+  // Carrying a whole ROW of accumulators and stepping y instead keeps the serial
+  // dependency in y, where it is unavoidable, while every inner loop runs over x
+  // contiguously with W independent lanes. Same arithmetic, same result, but the
+  // compiler can vectorise all three inner loops.
+  std::vector<float> acc(size_t(W), 0.f);
+  for (int y = 0; y < H; ++y) {
+    const float* add = tmp + size_t(y) * W;
+    for (int x = 0; x < W; ++x) acc[x] += add[x];
+    if (y > 2 * r) {
+      const float* sub = tmp + size_t(y - 2 * r - 1) * W;
+      for (int x = 0; x < W; ++x) acc[x] -= sub[x];
     }
-    for (int y = std::max(0, H - r); y < H; ++y) out[size_t(y) * W + x] = acc;
+    float* dst = out + size_t(std::max(0, y - r)) * W;
+    for (int x = 0; x < W; ++x) dst[x] = acc[x];
+  }
+  for (int y = std::max(0, H - r); y < H; ++y) {
+    float* dst = out + size_t(y) * W;
+    for (int x = 0; x < W; ++x) dst[x] = acc[x];
   }
   const float norm = 1.f / float((2 * r + 1) * (2 * r + 1));
   for (size_t i = 0; i < size_t(W) * H; ++i) out[i] *= norm;
