@@ -2944,3 +2944,26 @@ Steady state at 848x480: GPU ~26 ms of kernels, solve 23 ms in parallel, fetch
 hidden, 28.9 total -- 13% under the 33.3 ms budget, at the full operating point:
 48-bit census, graded cost, edge-aware recursive filter, D=60, MASDA solve with
 margin gate.
+
+## Pinning the CPU tool to the A57s: a measured negative with a two-sided mechanism
+
+The GPU tool's solve went from 30-45 ms of wander to 22.6-23.1 when its four threads
+pinned to the A57 cluster, so the same pin was tried on `de_dense` itself (all five
+worker pools; cores verified by CPU part id, 0xd07 = A57 at {0,3,4,5}, 0x003 = Denver
+at {1,2}). Interleaved best-of-8 at 848x480:
+
+| | min | spread |
+|---|---|---|
+| unpinned, 6 threads | **169.7 ms** | 40% |
+| pinned, 6 threads on 4 A57s | 243.4 | **4%** |
+| pinned, 4 threads | 213.1 | 4% |
+
+**40% worse on the mean, ten times tighter on the spread.** Both effects have the same
+cause: the Denver cores are real throughput AND the source of the variance. The CPU
+tool wants all six cores and pays for them in measurement noise -- which is exactly why
+interleaved best-of-N exists. The GPU tool's solve pins WELL because it only needs
+four threads and the Denvers are busy being the CUDA driver and the fetcher thread.
+
+Reverted; the pin stays only in `de_dense_cuda`, where it was measured to help. The
+general rule that survives: pinning is a per-configuration measurement, not a platform
+fact.
