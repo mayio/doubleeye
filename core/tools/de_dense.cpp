@@ -88,6 +88,7 @@ double now_ms() {
 // happened to be file-scope constants, and that difference alone inverted the
 // result.
 double g_cen_clear = 0, g_cen_cmp = 0, g_cen_pack = 0;
+double g_pool_spawn = 0, g_pool_join = 0;
 
 template <int HW, int HH>
 void census_rows(const Image8& img, uint64_t* out, int t, int nth) {
@@ -482,24 +483,34 @@ void rf_filter(float* C, const uint16_t* ax, const uint16_t* ay, int W, int H) {
 
 // The coefficient planes. ax[i] governs the step into pixel i from its left
 // neighbour, ay[i] the step from the row above.
-void rf_coeffs(const float* I, uint16_t* ax, uint16_t* ay, int W, int H,
+void rf_coeffs(const uint8_t* raw, uint16_t* ax, uint16_t* ay, int W, int H,
                float sigma_s, float sigma_r, int nth) {
   const float k = -std::sqrt(2.f) / sigma_s;
   const float rs = sigma_s / sigma_r;
-  // Two exp() per pixel is ~340k transcendentals, and left serial it was a
-  // measurable slice of the wall clock while three cores waited.
+  // The coefficient depends only on the neighbour difference of two bytes, which
+  // has 256 possible values, so both exponentials collapse into one 512-byte
+  // table. Measured before the change: ~700k transcendentals took 10 ms of the
+  // cost-stage prologue on the TX2 with all six threads on it. The table is built
+  // from the byte difference directly rather than from |a/255 - b/255|, which is
+  // the same quantity up to the last float ulp -- NOT bit-identical to the old
+  // path, so this checkpoint is scored with dense_bench, not cmp.
+  uint16_t tbl[256];
+  for (int d = 0; d < 256; ++d) {
+    const float c = std::exp(k * (1.f + rs * (float(d) / 255.f)));
+    tbl[d] = uint16_t(std::min(32767.f, c * 32768.f + 0.5f));
+  }
   std::vector<std::thread> pool;
   for (int t = 0; t < nth; ++t) pool.emplace_back([&, t]() {
-  for (int y = t; y < H; y += nth)
-    for (int x = 0; x < W; ++x) {
-      const size_t i = size_t(y) * W + x;
-      const float gx = x > 0 ? std::fabs(I[i] - I[i - 1]) : 0.f;
-      const float gy = y > 0 ? std::fabs(I[i] - I[i - size_t(W)]) : 0.f;
-      const float cx = std::exp(k * (1.f + rs * gx));
-      const float cy = std::exp(k * (1.f + rs * gy));
-      ax[i] = uint16_t(std::min(32767.f, cx * 32768.f + 0.5f));
-      ay[i] = uint16_t(std::min(32767.f, cy * 32768.f + 0.5f));
-    }
+  for (int y = t; y < H; y += nth) {
+    const uint8_t* r = raw + size_t(y) * W;
+    const uint8_t* u = raw + size_t(y > 0 ? y - 1 : 0) * W;
+    uint16_t* axr = ax + size_t(y) * W;
+    uint16_t* ayr = ay + size_t(y) * W;
+    axr[0] = tbl[0];
+    for (int x = 1; x < W; ++x) axr[x] = tbl[std::abs(int(r[x]) - int(r[x - 1]))];
+    if (y == 0) for (int x = 0; x < W; ++x) ayr[x] = tbl[0];
+    else        for (int x = 0; x < W; ++x) ayr[x] = tbl[std::abs(int(r[x]) - int(u[x]))];
+  }
   });
   for (auto& th : pool) th.join();
 }
@@ -985,7 +996,14 @@ int main(int argc, char** argv) {
   std::vector<double> ts_fill(nthreads, 0), ts_score(nthreads, 0);
   std::vector<double> ts_filt(nthreads, 0), ts_ins(nthreads, 0);
   std::vector<double> ts_alloc(nthreads, 0);
+  // Per-thread WALL span, so idle cores can be attributed. The four in-situ timers
+  // give busy time; span minus busy is time the thread existed and was not working,
+  // and comparing spans across threads separates imbalance (spans differ) from
+  // contention or preemption (spans equal, busy short). Occupancy has been reasoned
+  // about twice today and both guesses were wrong.
+  std::vector<double> ts_span(nthreads, 0);
   const double tc0 = now_ms();
+  double tp_alloc = 0, tp_norm = 0, tp_coeff = 0;
   // With K = 2 the running top-2 per pixel IS the reduced volume, so the 40 MB
   // array is never allocated. It is still needed for --dump-vol and for the k
   // sweep, which is why both paths exist.
@@ -999,10 +1017,18 @@ int main(int argc, char** argv) {
   const bool guided_search = !prior.empty();
   const int NJ = 2 * cfg.band + 1;
   const size_t WH = size_t(W) * H;
+  {
+    const double t = now_ms();
+    (void)t;
+  }
+  const double tpa = now_ms();
   std::vector<float> vol(blockwise ? 0 : WH * size_t(D), -1e30f);
-  // Merged candidates, [pixel][2]: what the solver consumes in blockwise mode.
-  std::vector<float> gcs(blockwise ? WH * 2 : 0, -1e30f);
-  std::vector<int> gcd(blockwise ? WH * 2 : 0, -1), gcn(blockwise ? WH : 0, 0);
+  tp_alloc = now_ms() - tpa;
+  // The merged-candidate arrays that used to be allocated here are gone: the 2-of-2n
+  // selection now happens inside the solve, row by row, where the candidates are
+  // consumed. Measured before the change: filling them was 5-15 ms of serial
+  // prologue and the merge pass another ~30 ms outside any pool, against a stage
+  // wall of ~180 -- the two biggest pieces of the Amdahl loss this stage had.
   //
   // Guided-filter aggregation instead of a box.
   //
@@ -1031,8 +1057,12 @@ int main(int argc, char** argv) {
   // guided filter's eight per-thread temporaries.
   std::vector<uint16_t> axv, ayv;
   const uint16_t *axp = nullptr, *ayp = nullptr;
-  {
+  if (!cfg.rf) {
+    // Only the guided filter reads I. The recursive path's coefficients come from
+    // the raw bytes, so normalising 407k floats for it was a pure prologue cost.
+    const double t = now_ms();
     for (size_t i = 0; i < I.size(); ++i) I[i] = float(L.data[i]) / 255.f;
+    tp_norm = now_ms() - t;
   }
   // mean_I and var_I exist only for the guided filter. Under the recursive filter
   // they were still being computed -- a downsample, two box filters and a variance
@@ -1046,11 +1076,18 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < vIs.size(); ++i) vIs[i] -= mIs[i] * mIs[i];
   }
   if (cfg.rf) {
+    const double t = now_ms();
     axv.resize(size_t(W) * H); ayv.resize(size_t(W) * H);
-    rf_coeffs(I.data(), axv.data(), ayv.data(), W, H, cfg.sigma_s, cfg.sigma_r,
-              nthreads);
+    rf_coeffs(L.data.data(), axv.data(), ayv.data(), W, H, cfg.sigma_s,
+              cfg.sigma_r, nthreads);
     axp = axv.data(); ayp = ayv.data();
+    tp_coeff = now_ms() - t;
   }
+  // The per-thread top-2 planes outlive the cost stage: each worker saw a disjoint
+  // set of disparities, and the SOLVE now does the 2-of-2n selection per row instead
+  // of a separate merge pass writing 8 MB of merged candidates nothing else read.
+  std::vector<std::vector<int16_t>> as0(nthreads), as1(nthreads);
+  std::vector<std::vector<int16_t>> ad0(nthreads), ad1(nthreads);
   {
     const int r = std::max(0, cfg.agg);
     // Disparity is processed in BLOCKS, and each thread owns whole blocks.
@@ -1081,16 +1118,18 @@ int main(int argc, char** argv) {
     const int KB = blockwise ? (cfg.simd ? SIMD_G : 1) : 16;
     const int nblocks = (D + KB - 1) / KB;
     std::atomic<int> next_block(0);
-    // Outside the pool so the per-thread top-2 survives the join for merging.
-    std::vector<std::vector<int16_t>> as0(nthreads), as1(nthreads);
-    std::vector<std::vector<int16_t>> ad0(nthreads), ad1(nthreads);
     std::vector<std::thread> cpool;
+    g_pool_spawn = now_ms();
     for (int t = 0; t < nthreads; ++t) cpool.emplace_back([&, t]() {
     // Timed because it is on the critical path and no other timer covers it. Every
     // one of the four in-situ timers below starts after the scratch exists, so a
     // regression that lives in allocation is invisible in the breakdown and shows
     // up only as lost occupancy -- which is exactly how it presented.
     const double ta0 = now_ms();
+    struct SpanGuard {
+      double t0; double* out;
+      ~SpanGuard() { *out = now_ms() - t0; }
+    } span_guard{ta0, &ts_span[t]};
     // Only the chosen filter path's scratch is allocated. Every thread used to
     // take all eighteen planes -- 12 MB each, 46 MB across four threads -- and
     // std::vector zero-fills them, so most of a memset of 46 MB was being paid on
@@ -1439,44 +1478,20 @@ int main(int argc, char** argv) {
     }
     });
     for (auto& th : cpool) th.join();
+    g_pool_join = now_ms();
 
-    // Merge the per-thread top-2 lists. Each thread saw a disjoint set of
-    // disparities, so this is a 2-of-2n selection per pixel: ~675 K comparisons
-    // for the whole image, against the 40 MB the transpose used to move.
-    if (blockwise) {
-      std::vector<std::thread> mpool;
-      for (int mt = 0; mt < nthreads; ++mt) mpool.emplace_back([&, mt]() {
-      const size_t lo = WH * size_t(mt) / nthreads;
-      const size_t hi = WH * size_t(mt + 1) / nthreads;
-      for (size_t i = lo; i < hi; ++i) {
-        int16_t b0 = -32768, b1 = -32768;
-        int i0 = -1, i1 = -1;
-        for (int t = 0; t < nthreads; ++t) {
-          const int16_t v0 = as0[t][i], v1 = as1[t][i];
-          if (v0 > b0)      { b1 = b0; i1 = i0; b0 = v0; i0 = ad0[t][i]; }
-          else if (v0 > b1) { b1 = v0; i1 = ad0[t][i]; }
-          if (v1 > b0)      { b1 = b0; i1 = i0; b0 = v1; i0 = ad1[t][i]; }
-          else if (v1 > b1) { b1 = v1; i1 = ad1[t][i]; }
-        }
-        int n = 0;
-        // Back to float here: the solver's lambda/gamma comparisons and the
-        // margin stay in float, and it is 4 ms, so there is nothing to win by
-        // quantising it and a real risk in doing so.
-        const float q = 1.f / float(SCORE_ONE);
-        if (i0 >= 0) { gcs[i * 2] = float(b0) * q; gcd[i * 2] = i0; n = 1; }
-        if (i1 >= 0) { gcs[i * 2 + 1] = float(b1) * q; gcd[i * 2 + 1] = i1; n = 2; }
-        gcn[i] = n;
-      }
-      });
-      for (auto& th : mpool) th.join();
-    }
   }
   const double t_cost = now_ms() - tc0;
+  const double t_prologue = g_pool_spawn - tc0;
+  const double t_merge = now_ms() - g_pool_join;
   double c_fill = 0, c_score = 0, c_filt = 0, c_ins = 0, c_alloc = 0;
+  double c_span = 0, span_max = 0;
   for (int t = 0; t < nthreads; ++t) {
     c_fill += ts_fill[t]; c_score += ts_score[t];
     c_filt += ts_filt[t]; c_ins += ts_ins[t];
     c_alloc += ts_alloc[t];
+    c_span += ts_span[t];
+    span_max = std::max(span_max, ts_span[t]);
   }
 
   // The aggregated volume, for measuring how many candidates per pixel are
@@ -1505,9 +1520,9 @@ int main(int argc, char** argv) {
       const size_t DN = K > 0 ? 0 : size_t(W) * D;       // dense path only
       const size_t GN = K > 0 ? 0 : size_t(D) + 2;
       const size_t WN = K > 0 ? 0 : size_t(W);
-      // In blockwise mode the candidates live in the shared merged arrays, so even
-      // the sparse per-thread copies are not needed.
-      const size_t CN = (K > 0 && !blockwise) ? size_t(W) * K : 0;
+      // Blockwise now fills the same per-thread row buffers the vol path uses,
+      // via the fused per-row merge below, so CN is needed in both modes.
+      const size_t CN = K > 0 ? size_t(W) * K : 0;
       std::vector<float> s(DN), beta(DN), rho(DN);
       std::vector<float> gath(GN), svals(GN);
       std::vector<int> idxs(GN), k0(WN), k1(WN), bestk(W), order(W);
@@ -1521,11 +1536,39 @@ int main(int argc, char** argv) {
       std::vector<int> cursor(W);
       for (int y = t; y < H; y += nthreads) {
         if (K > 0) {
+          if (blockwise) {
+            // The 2-of-2n selection, fused into the solve. This used to be a
+            // separate pass over 8 MB of merged-candidate arrays, run in its own
+            // thread pool between the cost join and the solve spawn: ~30 ms of
+            // stage wall at 848x480 in which the six cost workers -- measured at
+            // 5.99 of 6 busy while alive -- were all dead. Row-local, the
+            // candidates are written hot into the same 28 KB the solver reads
+            // back, and the pass disappears into the solve's own pool.
+            const float q = 1.f / float(SCORE_ONE);
+            const size_t row = size_t(y) * W;
+            for (int x = 0; x < W; ++x) {
+              const size_t i = row + x;
+              int16_t b0 = -32768, b1 = -32768;
+              int i0 = -1, i1 = -1;
+              for (int tt = 0; tt < nthreads; ++tt) {
+                const int16_t v0 = as0[tt][i], v1 = as1[tt][i];
+                if (v0 > b0)      { b1 = b0; i1 = i0; b0 = v0; i0 = ad0[tt][i]; }
+                else if (v0 > b1) { b1 = v0; i1 = ad0[tt][i]; }
+                if (v1 > b0)      { b1 = b0; i1 = i0; b0 = v1; i0 = ad1[tt][i]; }
+                else if (v1 > b1) { b1 = v1; i1 = ad1[tt][i]; }
+              }
+              int n = 0;
+              // Back to float here: the solver's lambda/gamma comparisons and the
+              // margin stay in float, and it is a few ms, so there is nothing to
+              // win by quantising it and a real risk in doing so.
+              if (i0 >= 0) { cs[size_t(x) * 2] = float(b0) * q; cd[size_t(x) * 2] = i0; n = 1; }
+              if (i1 >= 0) { cs[size_t(x) * 2 + 1] = float(b1) * q; cd[size_t(x) * 2 + 1] = i1; n = 2; }
+              cn[x] = n;
+            }
+          }
           solve_row_sparse(W, D, K, cfg,
                            blockwise ? nullptr : &vol[size_t(y) * W * D],
-                           blockwise ? &gcs[size_t(y) * W * 2] : cs.data(),
-                           blockwise ? &gcd[size_t(y) * W * 2] : cd.data(),
-                           blockwise ? &gcn[size_t(y) * W] : cn.data(),
+                           cs.data(), cd.data(), cn.data(),
                            sbeta.data(), srho.data(),
                            &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
                            bstart.data(), bitems.data(), cursor.data(),
@@ -1552,6 +1595,23 @@ int main(int argc, char** argv) {
   std::printf("  cost breakdown (thread-summed): alloc %.1f  clear %.1f  score %.1f  "
               "filter %.1f  insert %.1f ms\n",
               c_alloc, c_fill, c_score, c_filt, c_ins);
+  {
+    const double busy = c_alloc + c_fill + c_score + c_filt + c_ins;
+    std::printf("  occupancy: busy %.1f ms / spans %.1f ms = %.2f of %d threads busy "
+                "while alive; longest span %.1f of %.1f ms stage wall\n",
+                busy, c_span, c_span > 0 ? busy / c_span * nthreads : 0.0,
+                nthreads, span_max, t_cost);
+    std::printf("  outside the pool: prologue %.1f ms (alloc %.1f, normalize %.1f, "
+                "rf_coeffs %.1f, spawn %.1f) + after-pool %.1f ms of %.1f stage wall\n",
+                t_prologue, tp_alloc, tp_norm, tp_coeff,
+                t_prologue - tp_alloc - tp_norm - tp_coeff, t_merge, t_cost);
+    std::printf("  per-thread  ");
+    for (int t = 0; t < nthreads; ++t) {
+      const double b = ts_alloc[t] + ts_fill[t] + ts_score[t] + ts_filt[t] + ts_ins[t];
+      std::printf("[%d busy %.0f span %.0f] ", t, b, ts_span[t]);
+    }
+    std::printf("\n");
+  }
   std::printf("census %.1f ms  cost %.1f ms  solve %.1f ms  total %.1f ms  "
               "agg=%d iters=%d  filled %.1f%%\n",
               t_census, t_cost, t_solve, t_census + t_cost + t_solve,
