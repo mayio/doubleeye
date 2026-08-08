@@ -245,6 +245,109 @@ this camera is a reasonable platform to test it on. A matcher relying on descrip
 alone cannot separate the dots; a matcher that also knows two left keypoints may not
 claim the same right keypoint can.
 
+## Are we better than the ASIC? Unknown, and it is measurable
+
+The honest answer is that nobody has checked, and the comparison needs stating
+carefully because the two produce different things.
+
+| | D4 ASIC | this project |
+|---|---|---|
+| output | dense, a disparity per pixel | sparse, ~650-1900 correspondences |
+| cost | free, it is silicon | 23.07 ms of a 33.3 ms budget |
+| confidence | not exposed per pixel | score margin per match, 0.169-0.659 precision by quartile |
+| tunable | a handful of preset filters | every term in the objective |
+
+"Better" is therefore only meaningful per question. Where we could plausibly win:
+
+- **On degenerate texture.** The projector makes every dot identical, and the
+  uniqueness constraint is exactly the extra information that separates them. This
+  is the whole thesis of the project and it is untested against the ASIC.
+- **On sub-pixel accuracy**, since the parabola fit on the inter-window cost is a
+  choice we made and can improve; median inlier error is 0.167 px.
+- **On knowing when to be believed.** The margin is a real per-match confidence.
+
+Where we will not win: density, or cost. The ASIC does dense correspondence at
+90 Hz for zero CPU.
+
+**The experiment**, which needs one small change: `rs_ir_capture` records IR only,
+so it would have to also record the `Depth` stream. Then, at our matched keypoints,
+compare our disparity against the ASIC's, on (a) a flat wall, where both can be
+scored against a fitted plane without any external ground truth, and (b) a scene
+with the emitter off, where texture is scarce and the constraint should matter most.
+That is a real answer to "are we better", and it is a day's work.
+
+## Would adding the RGB camera help the matcher?
+
+The geometry says yes and the photometry says no, and the photometry wins.
+
+**The geometry is genuinely favourable.** From the device's own extrinsics:
+
+| pair | baseline | rotation |
+|---|---|---|
+| IR1 - IR2 | 49.88 mm | exactly identity, delivered rectified |
+| IR1 - Color | 14.70 mm | 0.26° off identity |
+| IR2 - Color | 64.58 mm | (Color sits opposite IR2 across IR1) |
+
+Three different baselines is the classic multi-baseline configuration, and
+multi-baseline stereo exists precisely to kill the ambiguity that repetitive texture
+creates: a false match at one baseline does not survive at another, because the
+disparity that would explain it differs. That is our periodic-texture failure mode,
+the one where precision collapses to 0.204 for every method including the exact
+solver.
+
+> M. Okutomi and T. Kanade (1991). *A multiple-baseline stereo.* CVPR.
+> [doi:10.1109/CVPR.1991.139662](https://doi.org/10.1109/CVPR.1991.139662)
+
+> R. Hansen, N. Ayache and F. Lustman (1990). *High Speed Trinocular Stereo for
+> Mobile-Robot Navigation.*
+> [doi:10.1007/978-3-642-84051-7_9](https://doi.org/10.1007/978-3-642-84051-7_9)
+
+**But four things break it, and the first is fatal.**
+
+1. **The colour camera cannot see the projector.** It has an IR-cut filter. On
+   exactly the blank surfaces where the projector supplies all the texture — the
+   ones that took textureless area from 56.6% to 24.9% — RGB contributes nothing.
+   It adds information only where surfaces already have visible-light texture,
+   which is where matching already works.
+
+2. **IR-to-RGB is cross-spectral stereo, a distinct and harder problem.** Census
+   compares a pixel against its neighbours, and the *ordering* of those comparisons
+   is not preserved across spectra: two materials with the same visible brightness
+   can differ in the near infrared and vice versa. Census and intensity correlation
+   degrade badly across spectra; the literature moves to gradient-based or learned
+   material-aware features for this reason.
+
+   > P. Pinggera, T. Breckon and H. Bischof (2012). *On Cross-Spectral Stereo
+   > Matching using Dense Gradient Features.* BMVC.
+   > [doi:10.5244/C.26.103](https://doi.org/10.5244/C.26.103)
+
+   > T. Zhi, B. Pires, M. Hebert and S. Narasimhan (2018). *Deep Material-Aware
+   > Cross-Spectral Stereo Matching.* CVPR.
+   > [doi:10.1109/CVPR.2018.00205](https://doi.org/10.1109/CVPR.2018.00205)
+
+3. **Rolling shutter.** The IR imagers are global shutter; the colour camera is
+   not. On a moving vehicle that is geometric distortion that varies down the
+   frame, and this project's whole point is a moving vehicle.
+
+4. **Narrower field of view**, 69.1° against the IR pair's 89.1°, so the third view
+   covers only the middle of the scene. And the IR1-Color rotation is not identity,
+   so unlike the IR pair it would need real rectification rather than none.
+
+**Recommendation: not as a matching source.** The one mechanism that would help —
+multi-baseline disambiguation — needs the third view to see the same texture, and
+the projector is invisible to it. What is left is a narrower, rolling-shutter,
+cross-spectral view contributing mainly where matching is already easy.
+
+RGB earns its place elsewhere: colouring the point cloud, and later as the input to
+object detection and appearance-based tracking, where colour carries information
+geometry does not. That is also where the GPU discussion in
+[10-architecture.md](10-architecture.md) expects it.
+
+**If multi-baseline is what is wanted**, the direct route is a second D435, or an
+IR camera without an IR-cut filter, positioned to give a different baseline against
+the existing pair. Then all views see the projector and the Okutomi-Kanade argument
+applies without a spectral penalty.
+
 ## Still required
 
 Not yet present, needed for the bring-up steps that follow.

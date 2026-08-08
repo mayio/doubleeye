@@ -43,6 +43,13 @@ first-class output with one producer.
 
 ## 0.5 Quick wins now that the live view works
 
+- **Compare against the D4 ASIC's own depth.** Nobody has checked whether this
+  matcher beats the silicon it is replacing. Needs `rs_ir_capture` to also record
+  the `Depth` stream, then compare disparities at our matched keypoints on (a) a
+  flat wall, scored against a fitted plane, and (b) an emitter-off scene where
+  texture is scarce and the uniqueness constraint should matter most. Reasoning and
+  the expected shape of the answer in [01-hardware.md](01-hardware.md).
+
 - **Measure denser detection against ground truth.** `--cell 12 --per-cell 2` gives
   ~3x the matches and looks clearly better live, but "reads better" is not
   "more correct". `de_bench --sweep` over the cell/per-cell grid would settle it,
