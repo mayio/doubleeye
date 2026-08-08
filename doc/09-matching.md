@@ -1965,3 +1965,80 @@ is ahead on accuracy at 2.4 points less coverage.
 The stage split is now census ~8-13 ms, cost ~54 ms, solve ~4 ms. **Census has become
 12-16% of the total** without anyone looking at it, and it is a fixed cost paid twice
 per pair independent of D -- the first time it has been large enough to matter.
+
+## Attributing the cost stage after blockwise, and three negatives
+
+With the volume gone the cost stage is 43-54 ms and the split is not where the plan
+assumed. Ablating the filter (`--guided --box --agg 0` leaves score and insert only):
+
+| | ms, 4 threads | share |
+|---|---|---|
+| score + top-2 insert | 38.1 | **88%** |
+| recursive filter | 5.0 | 12% |
+
+**The filter is 12% of the stage.** The int16 plan was aimed at it -- half the traffic,
+twice the SIMD lanes -- and would have been optimising 5 ms. Isolating the two halves
+in a microbenchmark, single-threaded over 60 slices:
+
+| | ms |
+|---|---|
+| score only | 35.0 |
+| score + top-2 insert | 59.3 |
+
+So the insert is **24.3 ms**, 41% of that pair, and not the nearly-free compare the
+design argued it would be.
+
+### Negative: blocking the score loop to reuse census rows
+
+The score loop reads both 1.35 MB census planes per disparity slice: 162 MB over 60
+slices, more than half the stage's traffic, and the obvious fix is rows outer with a
+block of B disparities inner so a row's census words serve B disparities.
+
+| | one d at a time | B=2 | B=4 | B=8 | B=16 |
+|---|---|---|---|---|---|
+| score loop | **28.8 ms** | 40.2 | 34.1 | 37.7 | 34.5 |
+| census read | 162 MB | 81 | 40 | 20 | 10 |
+
+**Uniformly worse**, by 16-28%, while reading a sixteenth of the census. Cutting 150 MB
+of reads bought nothing, so the re-read was never the cost -- one reused slice plane
+stays in cache for its writes, and B live planes do not. Another traffic argument that
+did not survive contact.
+
+### Negative: fusing the insert into the filter's last pass
+
+The insert was a separate pass re-reading the plane the filter had just written, and
+the filter's final vertical pass already holds each row's value in a register. Fusing
+removes a full 675 KB read per slice. Verified bit-identical -- top-2 depends only on
+the order of k, which is the outer loop, so running the insert bottom-to-top changes
+nothing.
+
+Interleaved best-of-6, to keep the ±12% thermal drift on this laptop out of it:
+
+| | cost stage |
+|---|---|
+| separate insert | **48.8 ms** |
+| fused insert | 51.3 ms |
+
+**5% worse.** Reverted. The likely reason is stream count -- the vertical pass streamed
+three planes and the fused version streams seven, against a limited number of
+prefetcher slots shared by four threads -- but that is unverified, and the record here
+says not to bank on it.
+
+### What this means for the remaining runtime
+
+Three traffic-reduction arguments in a row have now failed on this stage: cache
+capacity (35%, not 3x), census re-reads (negative), pass fusion (negative). Meanwhile
+the stage still scales at only ~1.55x on four cores, so something shared is saturated
+that none of these three was.
+
+The score loop is 10.1M pixel-disparities each needing two loads and a popcount, and
+GCC will not vectorise `popcnt64` without AVX-512. That is close to a floor for this
+structure. **The remaining structural lever is D itself**, which every stage is linear
+in: a half-resolution coarse pass at D/2 over a quarter of the pixels, then refinement
+in a narrow band, is 4-5x less total work. It is the one large lever untouched, and it
+is a quality risk rather than a pure speed change, so it needs the bad-1.0 sweep rather
+than a bit-identity check.
+
+The earlier coarse-to-fine negative does not transfer: that failed on the *sparse*
+matcher because k was already 2.7, so there were no false candidates for a prior to
+remove. Here D=60 is real and the saving is arithmetic.
