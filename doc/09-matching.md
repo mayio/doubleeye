@@ -1343,3 +1343,35 @@ filter at reduced resolution, upsample the two coefficient planes and apply them
 full resolution. The coefficients are smooth, so subsampling by 4 costs almost
 nothing in quality and removes ~16x of the filter traffic. Untried, and the obvious
 next step on runtime.
+
+### The fast guided filter does not work here
+
+Implemented and measured. The premise — the guided filter's coefficient planes are
+smooth, so computing them at reduced resolution is nearly free — does not hold for a
+stereo cost volume.
+
+| subsample factor | cost stage | coverage | bad-1.0 |
+|---|---|---|---|
+| 1 (direct) | 159 ms | 81.9% | **7.7%** |
+| 2 | 153 ms | 82.0% | 8.2% |
+| 4 | 104 ms | 81.8% | **10.1%** |
+| 8 | 102 ms | 81.4% | 14.6% |
+
+At factor 4 it saves 55 ms and costs **2.4 points of bad-1.0** — which undoes most of
+what the guided filter bought in the first place (10.6% -> 8.8%). At factor 2 there
+is no useful trade at all: 6 ms for half a point.
+
+The reason is that the fast variant subsamples the **input** as well as the guidance,
+and a stereo cost slice is not a smooth signal. Decimating it by 4 discards fifteen
+of every sixteen cost samples before they are ever aggregated, and no amount of
+smoothness in `a` and `b` recovers that. He and Sun's result is about filtering
+*images*, where the input genuinely is smooth. That distinction did not occur to me
+until the numbers came back.
+
+Left in behind `--fgf N`, defaulting to 1. Routing F=1 through the subsample and
+upsample machinery would cost a redundant copy and two bilinear passes for nothing —
+207 ms against 159 ms in the cost stage — so F=1 takes a separate direct path.
+
+**So the runtime item is still open**, and the obvious remaining levers are the ones
+that do not touch the cost values: a uint16 volume instead of float32 to halve the
+traffic, and PatchMatch-style propagation to avoid materialising a volume at all.

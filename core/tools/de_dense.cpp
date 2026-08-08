@@ -115,11 +115,46 @@ void box_filter(const float* in, float* out, float* tmp, int W, int H, int r) {
   for (size_t i = 0; i < size_t(W) * H; ++i) out[i] *= norm;
 }
 
+
+// Decimate by an integer factor (nearest). Cheap and adequate: the guided
+// filter's coefficient planes are smooth, which is the whole premise of the
+// fast variant.
+void downsample(const float* in, float* out, int W, int H, int Ws, int Hs, int f) {
+  for (int y = 0; y < Hs; ++y) {
+    const float* ip = in + size_t(std::min(H - 1, y * f)) * W;
+    float* op = out + size_t(y) * Ws;
+    for (int x = 0; x < Ws; ++x) op[x] = ip[std::min(W - 1, x * f)];
+  }
+}
+
+// Bilinear upsample of a coefficient plane back to full resolution.
+void upsample(const float* in, float* out, int W, int H, int Ws, int Hs, int f) {
+  const float sx = float(Ws) / float(W), sy = float(Hs) / float(H);
+  for (int y = 0; y < H; ++y) {
+    const float fy = std::min(float(Hs) - 1.f, (float(y) + 0.5f) * sy - 0.5f);
+    const int y0 = std::max(0, int(fy)), y1 = std::min(Hs - 1, y0 + 1);
+    const float wy = fy - float(y0);
+    const float* r0 = in + size_t(y0) * Ws;
+    const float* r1 = in + size_t(y1) * Ws;
+    float* op = out + size_t(y) * W;
+    for (int x = 0; x < W; ++x) {
+      const float fx = std::min(float(Ws) - 1.f, (float(x) + 0.5f) * sx - 0.5f);
+      const int x0 = std::max(0, int(fx)), x1 = std::min(Ws - 1, x0 + 1);
+      const float wx = fx - float(x0);
+      const float a = r0[x0] * (1.f - wx) + r0[x1] * wx;
+      const float b = r1[x0] * (1.f - wx) + r1[x1] * wx;
+      op[x] = a * (1.f - wy) + b * wy;
+    }
+  }
+  (void)f;
+}
+
 struct Cfg {
   int dmin = 1, dmax = 60, iters = 2, agg = 3;
   bool subpixel = false;   // measured: hurts slightly, see below
   bool guided = true;      // edge-aware aggregation
   float eps = 0.0025f;     // guided-filter regularisation, I in [0,1]
+  int fgf = 1;             // fast guided filter: measured NOT worth it, see below
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
   int threads = 0;
 };
@@ -283,6 +318,7 @@ int main(int argc, char** argv) {
     else if (a == "--subpixel") cfg.subpixel = true;
     else if (a == "--box") cfg.guided = false;
     else if (a == "--eps" && has) cfg.eps = float(std::atof(argv[++i]));
+    else if (a == "--fgf" && has) cfg.fgf = std::max(1, std::atoi(argv[++i]));
     else if (a == "--threads" && has) cfg.threads = std::atoi(argv[++i]);
     else if (a == "--min-margin" && has) cfg.min_margin = float(std::atof(argv[++i]));
     else if (a == "--out" && has) outp = argv[++i];
@@ -339,14 +375,25 @@ int main(int argc, char** argv) {
   // strong intensity edge stops the aggregation. It is still O(N) -- box filters
   // all the way down -- and the guidance statistics (mean_I, var_I) do not depend
   // on disparity, so they are computed once for the whole volume.
-  std::vector<float> I(size_t(W) * H), mI(size_t(W) * H), vI(size_t(W) * H);
+  //
+  // Fast guided filter: the four box passes per disparity slice happen at 1/f^2
+  // of the pixels, and only the two coefficient planes come back to full
+  // resolution. The coefficients are smooth, which is what makes this nearly
+  // free in quality -- He and Sun's observation.
+  const int F = cfg.fgf;
+  const int Ws = (F == 1) ? W : std::max(1, W / F);
+  const int Hs = (F == 1) ? H : std::max(1, H / F);
+  const int rs = (F == 1) ? cfg.agg : std::max(1, cfg.agg / F);
+  std::vector<float> I(size_t(W) * H);
+  std::vector<float> Is(size_t(Ws) * Hs), mIs(size_t(Ws) * Hs), vIs(size_t(Ws) * Hs);
   {
-    std::vector<float> t1(size_t(W) * H), t2(size_t(W) * H), II(size_t(W) * H);
     for (size_t i = 0; i < I.size(); ++i) I[i] = float(L.data[i]) / 255.f;
-    for (size_t i = 0; i < I.size(); ++i) II[i] = I[i] * I[i];
-    box_filter(I.data(), mI.data(), t1.data(), W, H, cfg.agg);
-    box_filter(II.data(), vI.data(), t2.data(), W, H, cfg.agg);
-    for (size_t i = 0; i < vI.size(); ++i) vI[i] -= mI[i] * mI[i];
+    std::vector<float> t1(size_t(Ws) * Hs), IIs(size_t(Ws) * Hs);
+    downsample(I.data(), Is.data(), W, H, Ws, Hs, F);
+    for (size_t i = 0; i < Is.size(); ++i) IIs[i] = Is[i] * Is[i];
+    box_filter(Is.data(), mIs.data(), t1.data(), Ws, Hs, rs);
+    box_filter(IIs.data(), vIs.data(), t1.data(), Ws, Hs, rs);
+    for (size_t i = 0; i < vIs.size(); ++i) vIs[i] -= mIs[i] * mIs[i];
   }
   {
     const int r = std::max(0, cfg.agg);
@@ -369,6 +416,9 @@ int main(int argc, char** argv) {
     std::vector<float> ab(size_t(W) * H), bb(size_t(W) * H);
     std::vector<float> ma(size_t(W) * H), mb(size_t(W) * H);
     std::vector<float> blk(size_t(KB) * W * H);
+    const size_t NS = (F == 1) ? size_t(W) * H : size_t(Ws) * Hs;
+    std::vector<float> ps(NS), ips(NS), mps(NS), mips(NS), ts(NS);
+    std::vector<float> abs_(NS), bbs(NS), mas(NS), mbs(NS);
     for (int b = t; b < nblocks; b += nthreads) {
     const int klo = b * KB, khi = std::min(D, klo + KB);
     for (int k = klo; k < khi; ++k) {
@@ -379,20 +429,38 @@ int main(int argc, char** argv) {
           slice[size_t(y) * W + x] =
               (24.f - float(popcnt64(cl[size_t(y) * W + x] ^
                                      cr[size_t(y) * W + x - d]))) / 24.f;
-      if (r > 0 && cfg.guided) {
-        // q = mean_a * I + mean_b, the standard guided filter with the left
-        // image as guidance. Four box filters per slice; the guidance moments
-        // were done once above.
-        for (size_t i = 0; i < ip.size(); ++i) ip[i] = I[i] * slice[i];
-        box_filter(slice.data(), mp.data(), tmp.data(), W, H, r);
-        box_filter(ip.data(), mip.data(), tmp.data(), W, H, r);
-        for (size_t i = 0; i < ab.size(); ++i) {
-          const float cov = mip[i] - mI[i] * mp[i];
-          ab[i] = cov / (vI[i] + cfg.eps);
-          bb[i] = mp[i] - ab[i] * mI[i];
+      if (r > 0 && cfg.guided && F == 1) {
+        // Direct full-resolution guided filter. Kept as a separate path because
+        // routing F == 1 through the subsample/upsample machinery costs a
+        // redundant copy and two bilinear passes for nothing: 207 ms against
+        // 155 ms in the cost stage.
+        for (size_t i = 0; i < ps.size(); ++i) ips[i] = Is[i] * slice[i];
+        box_filter(slice.data(), mps.data(), ts.data(), W, H, r);
+        box_filter(ips.data(), mips.data(), ts.data(), W, H, r);
+        for (size_t i = 0; i < abs_.size(); ++i) {
+          const float cov = mips[i] - mIs[i] * mps[i];
+          abs_[i] = cov / (vIs[i] + cfg.eps);
+          bbs[i] = mps[i] - abs_[i] * mIs[i];
         }
-        box_filter(ab.data(), ma.data(), tmp.data(), W, H, r);
-        box_filter(bb.data(), mb.data(), tmp.data(), W, H, r);
+        box_filter(abs_.data(), ma.data(), ts.data(), W, H, r);
+        box_filter(bbs.data(), mb.data(), ts.data(), W, H, r);
+        for (size_t i = 0; i < slice.size(); ++i) slice[i] = ma[i] * I[i] + mb[i];
+      } else if (r > 0 && cfg.guided) {
+        // Fast variant. Measured: 2.4 points of bad-1.0 worse at F=4 for 84 ms,
+        // because a stereo cost slice is not smooth the way an image is.
+        downsample(slice.data(), ps.data(), W, H, Ws, Hs, F);
+        for (size_t i = 0; i < ps.size(); ++i) ips[i] = Is[i] * ps[i];
+        box_filter(ps.data(), mps.data(), ts.data(), Ws, Hs, rs);
+        box_filter(ips.data(), mips.data(), ts.data(), Ws, Hs, rs);
+        for (size_t i = 0; i < abs_.size(); ++i) {
+          const float cov = mips[i] - mIs[i] * mps[i];
+          abs_[i] = cov / (vIs[i] + cfg.eps);
+          bbs[i] = mps[i] - abs_[i] * mIs[i];
+        }
+        box_filter(abs_.data(), mas.data(), ts.data(), Ws, Hs, rs);
+        box_filter(bbs.data(), mbs.data(), ts.data(), Ws, Hs, rs);
+        upsample(mas.data(), ma.data(), W, H, Ws, Hs, F);
+        upsample(mbs.data(), mb.data(), W, H, Ws, Hs, F);
         for (size_t i = 0; i < slice.size(); ++i) slice[i] = ma[i] * I[i] + mb[i];
       } else if (r > 0) {
         box_filter(slice.data(), mp.data(), tmp.data(), W, H, r);
