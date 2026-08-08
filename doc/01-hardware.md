@@ -181,6 +181,70 @@ reason to use it here.
 
 
 
+## How the D435 actually produces depth
+
+Worth setting down, because it determines what this project is replacing.
+
+The device reports **two independent sensors**, confirmed with
+`rs-enumerate-devices`:
+
+| sensor | streams |
+|---|---|
+| Stereo Module | Infrared 1, Infrared 2, **Depth** |
+| RGB Camera | Color |
+
+Note which sensor owns Depth. It is computed by the D4 ASIC from the **stereo IR
+pair**, and the RGB camera contributes nothing to it — RGB exists to colour a point
+cloud, and is aligned to depth in software afterwards. Unplugging colour entirely
+would not change a single depth value.
+
+So this project consumes IR1 and IR2 directly and does in software what the D4's
+stereo block does in silicon. That is the whole point: the ASIC's correspondence
+search is fixed, and MASDA is a different one.
+
+### It is active stereo, not structured light and not time-of-flight
+
+The projector emits a fixed pseudo-random dot pattern in the near infrared. It is
+**not a coded pattern that gets decoded**: nothing anywhere in the pipeline knows
+what the pattern is. It exists only to paint texture onto surfaces that have none,
+so that stereo matching has something to match.
+
+Three consequences follow, and all three are visible in our own data:
+
+- Depth still works with the emitter off, just worse on blank surfaces. A
+  structured-light sensor produces nothing without its pattern.
+- The measured effect is on *texture*, not brightness: the projector takes the
+  textureless area from 56.6% to 24.9% while moving mean intensity by 1.8 DN. That
+  is obstacle 12 — mean intensity cannot see the projector at all.
+- Two of these cameras pointed at the same scene degrade each other gracefully
+  rather than corrupting each other, because neither is trying to decode anything.
+
+### The IR imagers are not infrared-only
+
+This surprises people, including me before measuring it. With the emitter **off**,
+a single frame has mean 88 of 255, 6.4% of pixels saturated, and 43% of the image
+carrying real local texture. In a room lit by ordinary visible light, that light is
+what the imagers are responding to: they are broadband monochrome sensors sensitive
+to visible *and* near infrared, not narrowband IR detectors.
+
+Which is why the IR frames in `/doubleeye/image_matches` look like photographs of
+the room with dots sprinkled on, rather than like a dot pattern floating in
+blackness. It also means ambient lighting affects matching quality directly, and
+that the exposure setting matters for the picture as well as for the projector.
+
+### Why the projector both helps and hurts
+
+It halves the textureless area, which is what makes it worth using. But every dot
+is **identical to every other dot**, so a Census descriptor centred on one carries
+almost no identity: 3.3x degenerate on real frames (see
+[06-preprocessing.md](06-preprocessing.md)). The projector converts *no information*
+into *ambiguous information*.
+
+That is precisely the regime MASDA's uniqueness constraint is for, and it is why
+this camera is a reasonable platform to test it on. A matcher relying on descriptors
+alone cannot separate the dots; a matcher that also knows two left keypoints may not
+claim the same right keypoint can.
+
 ## Still required
 
 Not yet present, needed for the bring-up steps that follow.
