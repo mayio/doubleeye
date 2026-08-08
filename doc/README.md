@@ -13,6 +13,7 @@ duplicates it; this is the engineering record that sits underneath it.
 
 | Document | Contents |
 |---|---|
+| [../CLAUDE.md](../CLAUDE.md) | **How to work on this project** — six rules distilled from the 22 obstacles, plus layout and build commands |
 | [TODO.md](TODO.md) | **What to do next**, ordered by what unblocks the most |
 | [01-hardware.md](01-hardware.md) | Components in the system, what each is for, what is still missing |
 | [02-software-environment.md](02-software-environment.md) | Exact versions on both machines, what was installed vs. pre-existing, how to build and deploy |

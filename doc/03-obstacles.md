@@ -6,6 +6,11 @@ cross-referencing; the two that cost the most were **5** (power mode) and
 **7** (uvcvideo). Obstacles **10** and **13** are self-inflicted and
 documented because both cost real time.
 
+These are not independent problems. Six patterns account for almost all of them,
+and they are written up as working rules in [CLAUDE.md](../CLAUDE.md) at the repo
+root, each citing the obstacles that produced it. Read that first if you are
+returning to this project; this file is the evidence behind it.
+
 The recurring theme is worth stating up front: **on this platform, the
 expensive failures are silent.** Not one of the serious problems below produced
 an error message. Several actively produced output that looked healthy.
