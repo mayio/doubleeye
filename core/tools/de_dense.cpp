@@ -49,10 +49,12 @@ double now_ms() {
 }
 
 // Census over the whole image, one uint64 per pixel. 7x7 -> 48 bits.
-std::vector<uint64_t> census_image(const Image8& img, int hw, int hh) {
+std::vector<uint64_t> census_image(const Image8& img, int hw, int hh, int nth) {
   const int W = img.width, H = img.height;
   std::vector<uint64_t> out(size_t(W) * H, 0);
-  for (int y = hh; y < H - hh; ++y) {
+  std::vector<std::thread> pool;
+  for (int t = 0; t < nth; ++t) pool.emplace_back([&, t]() {
+  for (int y = hh + t; y < H - hh; y += nth) {
     for (int x = hw; x < W - hw; ++x) {
       const int c = img.at(x, y);
       uint64_t v = 0;
@@ -66,6 +68,8 @@ std::vector<uint64_t> census_image(const Image8& img, int hw, int hh) {
       out[size_t(y) * W + x] = v;
     }
   }
+  });
+  for (auto& th : pool) th.join();
   return out;
 }
 
@@ -263,8 +267,8 @@ int main(int argc, char** argv) {
   if (nthreads < 1) nthreads = 1;
 
   const double t0 = now_ms();
-  const std::vector<uint64_t> cl = census_image(L, 3, 3);
-  const std::vector<uint64_t> cr = census_image(R, 3, 3);
+  const std::vector<uint64_t> cl = census_image(L, 3, 3, nthreads);
+  const std::vector<uint64_t> cr = census_image(R, 3, 3, nthreads);
   const double t_census = now_ms() - t0;
 
   // --- cost volume, aggregated over a window ---
@@ -279,12 +283,24 @@ int main(int argc, char** argv) {
   // trick, costs two separable passes, and turns 49 levels into a graded score.
   // Built disparity-major so each slice is a contiguous H*W plane the box filter
   // can walk, then transposed once into the [x][k] layout the solver wants.
+  //
+  // Parallel over DISPARITY here, not over rows. Each slice is an independent
+  // H*W plane -- score, box filter, scatter -- so the only shared state is the
+  // output volume, and slices write disjoint elements of it. Measured before
+  // this change the cost volume was 211 ms of a 273 ms total and did not move
+  // with thread count at all, because it was the one serial stage left.
+  //
+  // Both axes of parallelism in this program are over an index that partitions
+  // the work with no sharing: disparity here, rows in the solver. That is also
+  // what makes the whole thing a GPU kernel later rather than a rewrite.
   const double tc0 = now_ms();
   std::vector<float> vol(size_t(W) * H * D, -1e30f);
   {
-    std::vector<float> slice(size_t(W) * H), tmp(size_t(W) * H);
     const int r = std::max(0, cfg.agg);
-    for (int k = 0; k < D; ++k) {
+    std::vector<std::thread> cpool;
+    for (int t = 0; t < nthreads; ++t) cpool.emplace_back([&, t]() {
+    std::vector<float> slice(size_t(W) * H), tmp(size_t(W) * H);
+    for (int k = t; k < D; k += nthreads) {
       const int d = cfg.dmin + k;
       std::fill(slice.begin(), slice.end(), 0.f);
       for (int y = 3; y < H - 3; ++y)
@@ -318,6 +334,8 @@ int main(int argc, char** argv) {
         for (int x = 3 + d; x < W - 3; ++x)
           vol[(size_t(y) * W + x) * D + k] = slice[size_t(y) * W + x] * norm;
     }
+    });
+    for (auto& th : cpool) th.join();
   }
   const double t_cost = now_ms() - tc0;
 

@@ -1161,3 +1161,65 @@ non-iterative, so it is cheap.
    support region should be worth more, and it is cheap.
 4. **Continuous disparity.** Comes free with a plane-based formulation, and would
    sidestep the sub-pixel parabola that measurably did not work here.
+
+## Making it fast, and keeping it parallel
+
+Profiling first, per rule. At 273 ms the split was **census 20 ms, cost volume
+211 ms, solve 42 ms** — and the cost volume did not move with thread count at all.
+It was the one serial stage, and it was 78% of the runtime. The solver, already
+row-parallel, was scaling 4.7x.
+
+The fix was free: each disparity slice is an independent H×W plane — score, box
+filter, scatter — and slices write disjoint elements of the output volume. Threading
+over disparity needs no locks and no atomics.
+
+| threads | census | cost | solve | total |
+|---|---|---|---|---|
+| 1 | 28 ms | 200 ms | 177 ms | 405 ms |
+| 2 | 15 ms | 125 ms | 91 ms | 230 ms |
+| **4** | **9 ms** | **71 ms** | **46 ms** | **126 ms** |
+| 8 | 12 ms | 93 ms | 48 ms | 152 ms |
+
+**273 ms to 126 ms, output bit-identical** (86.1% coverage, 10.6% bad-1.0 before and
+after).
+
+### Eight threads is slower than four, and that is the useful part
+
+This machine has 4 physical cores with 2 threads each. Going from 4 to 8 makes it
+*worse*, which says the work is **memory-bandwidth bound rather than compute bound**:
+hyperthreads share a core's load/store path, so they contend rather than help. The
+cost volume is 40 MB written once and read once per solver iteration, and none of
+the arithmetic is expensive — a popcount, an add, a compare.
+
+That is worth knowing before optimising further. Vectorising the inner loops would
+buy little if the machine is already waiting on memory; the useful moves are the
+ones that reduce *traffic*: smaller types for the cost volume (uint8 or uint16
+instead of float32 would quarter it), fusing the aggregation into the scatter so the
+volume is written once instead of staged, or not materialising the whole volume at
+all — which is what PatchMatch's propagation would give us.
+
+### Why this shape parallelises later
+
+Both axes here partition the work with no sharing at all:
+
+| stage | parallel over | shared state |
+|---|---|---|
+| census | rows | none |
+| cost volume + aggregation | **disparity** | disjoint writes |
+| MASDA message passing | **rows** | none |
+| decision | rows | none |
+
+No locks, no atomics, no reductions across workers anywhere in the pipeline. That is
+not an accident of the CPU implementation — it follows from the problem: matching is
+within a row, so rows are independent, and a disparity slice is a self-contained
+hypothesis.
+
+Which is exactly the shape a GPU wants: one block per row for the solver, one thread
+per (pixel, disparity) for the cost volume, and a separable box filter that is two
+standard passes. The bandwidth-bound finding above argues *for* the GPU rather than
+against it, since bandwidth is what a GPU has. It also lands on the right side of the
+boundary already proposed in [10-architecture.md](10-architecture.md): dense
+per-pixel work on the GPU, sparse irregular work on the CPU.
+
+Nothing here needs restructuring to move. That was the point of choosing these two
+axes.
