@@ -59,10 +59,23 @@ recorded in 09-matching.md with mechanisms.
 **Runtime is now the whole gap.** Two levers left, and the lesson from the fast
 guided filter is that they must not touch the cost values:
 
-1. ~~uint16 cost volume~~ — **measured and dropped.** The machine sustains
-   18.9 GB/s at four threads; the cost stage achieves 2.5 GB/s, 13% of that. We are
-   not bandwidth-bound and shrinking the volume buys almost nothing.
-   **Do this instead: vectorise the box filter across rows.** Its running sum
+1. **uint16 cost volume — deferred, not dropped.** Measured today: the machine
+   sustains 18.9 GB/s at four threads while the cost stage achieves 2.5 GB/s, so
+   traffic is not the current limit and shrinking the volume would buy nothing
+   *yet*.
+
+   **Revisit once the dependency chain is fixed**, for two reasons. Bottlenecks
+   move: removing a latency-bound serial chain can raise throughput until memory
+   becomes the limit, and 2.5 GB/s has a lot of headroom to climb into. And uint16
+   is not only half the bytes — it is **twice the SIMD lanes**, sixteen 16-bit
+   elements per 256-bit register against eight floats, so it helps the vectorised
+   filter directly rather than only through bandwidth.
+
+   Precision is not the obstacle: 65536 levels against a 49-level Census aggregate
+   is ample. So this is a scheduling decision, not a rejection — measure the
+   achieved bandwidth again after the SIMD box filter lands, and if it has moved
+   toward 18 GB/s, do it.
+   **Do this first: vectorise the box filter across rows.** Its running sum
    (`acc += in[x]; acc -= in[x-2r-1]`) is a serial dependency chain that cannot
    vectorise and is limited by add latency — four passes per slice, sixty slices.
    Processing several rows at once with one SIMD lane per row makes the chains
