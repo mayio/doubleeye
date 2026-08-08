@@ -41,6 +41,41 @@ first-class output with one producer.
 
 ---
 
+## 0.3 Dense MASDA: level with SGM on quality, 13x behind on runtime
+
+State after 2026-08-08. `core/tools/de_dense.cpp`, eight Middlebury scenes:
+
+| | coverage | bad-1.0 | runtime |
+|---|---|---|---|
+| dense MASDA | 76.7% | **11.0%** | 214 ms |
+| SGM | 78.0% | **10.9%** | 16 ms |
+
+Quality started the day 3.5x behind (28.1% against 8.1%) and is now a tie. What
+worked: window aggregation (26.6% -> 10.6%), guided-filter edge-aware support
+(10.6% -> 8.8%), margin gate for the operating point. What did not: sub-pixel
+parabola, fast guided filter, disparity blocking (6% only). All measured, all
+recorded in 09-matching.md with mechanisms.
+
+**Runtime is now the whole gap.** Two levers left, and the lesson from the fast
+guided filter is that they must not touch the cost values:
+
+1. **uint16 cost volume** instead of float32. Halves 40 MB of traffic; 65536 levels
+   is far more than a 49-level Census aggregate needs, so it should be lossless in
+   practice. Measure the traffic hypothesis first — three runtime attributions today
+   were each partly wrong.
+2. **PatchMatch propagation.** Avoids materialising the volume at all. Now supported
+   by three independent arguments: slanted surfaces (accuracy), candidate generation
+   (what every measurement here says decides the outcome), and runtime.
+
+Still untried on quality: a **graded cost** (Census plus absolute difference).
+Roughly half the remaining error sits in near-fronto-parallel regions at 6-7%, which
+nothing done today touches, and Census's 49 Hamming levels against SGM's continuous
+Birchfield-Tomasi is the most likely reason.
+
+**All dense numbers are desktop-only.** The Jetson was unreachable. The
+bandwidth-bound finding matters more there, so re-measure before optimising against
+a memory wall of unknown height.
+
 ## 0.35 Edge-aware support first, then slanted planes — measured, not assumed
 
 Where dense MASDA stands: 126 ms, 86.1% coverage, 10.6% bad-1.0. SGM: 16 ms, 81.1%,
