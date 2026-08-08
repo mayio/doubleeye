@@ -2546,3 +2546,34 @@ wide. The transform is 32x parallel and the score is 1x parallel, on similar wor
 Also worth noting against `--csct`: it halved the descriptor and cut the score stage 1.55x
 on the TX2 precisely because it halved this scalar work. Vectorising popcount attacks the
 same cost without paying the 1.2 points of accuracy.
+
+### Vectorising popcount alone does not work, and the reason sharpens the diagnosis
+
+The obvious follow-up: AArch64 has `vcntq_u8` in the mandatory NEON base, so a
+vectorised Hamming distance needs no `-march` flag and leaves `ARCHFLAGS` empty. Eight
+distances at a time via `vcntq_u8` folded down by three pairwise widening adds, scalar
+fallback elsewhere.
+
+**No speedup: 96.5 ms against 95.4 on the TX2, interleaved best-of-6.** Reverted. (The
+implementation also produced a handful of differing pixels, which alone would justify
+reverting, but the runtime result is the decisive one -- a correct version would still
+have been worthless.)
+
+**The blocking diagnosis was right and the fix was aimed one level too shallow.** Taking
+popcount out of the inner loop lets *it* go wide, but the loop body still cannot
+vectorise, because what remains is two **table lookups** -- `tbl[hamming]` and
+`adt[|L-R|]` -- and a gather does not vectorise on NEON either. The serialising work
+simply moved from popcount to the lookups.
+
+So the score loop is not "slow because popcount is scalar". It is slow because *every*
+step in it is either a scalar instruction or an indexed load, and removing one of the
+two categories leaves the other in charge. Making it wide means removing **both**:
+computing `tbl[h]` arithmetically instead of by lookup, and the truncated absolute
+difference with a vector min and subtract instead of `adt[]`. Both are expressible in
+closed form -- `tbl[h] = ((half - h) * SCORE_ONE) / half` needs a division by a constant,
+which vectorises as a multiply-high -- but bit-identity then depends on reproducing
+integer truncation exactly, so it must be scored rather than assumed.
+
+That is a real piece of work with a real payoff on the TX2, where the score loop is 80 ms
+of CPU. It is not the half-measure attempted here, and the half-measure is worth
+recording precisely because it looked like the whole thing.
