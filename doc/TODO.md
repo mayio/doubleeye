@@ -62,29 +62,44 @@ tools/deploy.sh && ssh jetson 'cd ~/doubleeye/core && ./build/de_dense ...'
 **Read [09-matching.md](09-matching.md) before touching this.** Every item below has a
 measurement behind it and several have a recorded negative that looks like a good idea.
 
-### The one decision to make first
+### The layout decision is settled: it was a false choice
 
-**Does the cost volume become disparity-minor?** The score loop wants disparity in the
-SIMD lanes -- that is how ReS2tAC vectorises it, and it is what makes the table lookups
-vectorisable via `vqtbl4q_u8`. The recursive filter wants disparity-major, one whole plane
-at a time, because that is what it aggregates over. The two cannot both be satisfied by
-the current layout.
+**The cost volume does not become disparity-minor.** The score wants disparity in the
+REGISTER FILE and the filter wants it in MEMORY, and those are independent -- nothing about
+the loads is disparity-minor either way. `--simd` in `de_dense.cpp` computes a group of
+eight disparities with disparity in the lanes and transposes in registers before storing,
+so the filter, insert and solver see the planes they always saw. Bit-identical, all eight
+scenes, at `--threads 1`.
 
-This is the `[d][x]` versus `[x][d]` question that has now arrived three times: from the
-solver (settled by sparse candidates removing the transpose), from band fusion (parked),
-and now from SIMD. **Settle it before writing any more vector code** -- the last attempt
-failed precisely because it vectorised within the wrong loop order.
+**Measured, TX2, teddy, interleaved best-of-8: score loop 1.59x (77.0 -> 48.4 ms), cost
+stage wall 0.92x.** 9% less CPU, 8% more wall clock, 0.62 of a core lost. At D=96 (twelve
+groups over six threads) the sign flips to 1.04x on the stage, so the D=60 regression is
+the eight-groups-over-six-threads schedule. Full accounting, including two failed mechanism
+guesses and the allocation timer that finally explained it, in 09-matching.md.
+
+**The ceiling is the real finding.** The score is 30% of cost-stage CPU, so 1.6x on it is
+an 11% stage ceiling, and the layout costs ~12 ms of clear and alloc against the 29 ms it
+saves. At agg 5 the **filter is now larger than the score** (93 against 77 ms). Off by
+default. Making it pay means decoupling the work quantum from the group size -- score into
+shared group buffers, then hand out single planes for filter and insert from a second queue
+-- which is real engineering against an 11% ceiling. Reverting is also defensible.
+
+**`cmp` between two multi-threaded runs is not an identity check.** Two identical scalar
+runs at six threads differ from each other: the top-2 insert keeps the first of two equal
+scores and blocks are handed out dynamically. Verify at `--threads 1`, and only there.
 
 ### Ranked after that
 
-1. **Vectorised score loop.** The largest single item: ~80 ms of TX2 CPU. `VCNT` for
-   Hamming, disparity in the lanes, `vqtbl4q_u8` for the 49-entry table, 8-bit costs.
-   Cannot be bit-identical, so it needs `dense_bench.py`, not `cmp`.
+1. **The recursive filter, not the score loop.** It is the largest item in the stage at
+   agg 5 -- 93 ms of TX2 CPU against the score's 77 -- and vectorising the score just moved
+   the score below it. Four passes of `cur[x] += a[x]*(nxt[x]-cur[x])`; the horizontal
+   passes are serial recurrences in x but the vertical ones are pure row-wise SIMD.
 2. **Coverage**, the only axis SGM still leads and untouched all day. The margin gate is
    deliberately trading it for precision; the question is whether a better-calibrated gate
    holds the precision at higher coverage.
 3. **Prior as a MASK on absolute-disparity planes**, with per-plane bounding boxes. The
    offset-indexed version is a measured negative and the mechanism is known.
+
 4. **Idle cores.** Desktop 3.27 of 4, TX2 2.9x of 6.
 
 ### Do not retry without new information
@@ -99,6 +114,11 @@ with mechanisms.
 worth 20% on the Jetson; `--csct` was worthless on the desktop and worth 10% on the
 Jetson. Time anything new on the target before believing it. TX2 run-to-run variance is
 37%, so use interleaved best-of-N there, never single runs.
+
+**And `--csct` need not be paid for SIMD.** ReS2tAC cuts the descriptor to 24 bits so
+sixteen *pixels* fit three registers -- a pixel-major constraint that does not bind once
+disparity is in the lanes. With the `vpaddq_u8` reduction a 24-bit descriptor would save
+about two instructions of twelve. Not worth 1.2 points of bad-1.0.
 
 ## 0.35 Edge-aware support first, then slanted planes — measured, not assumed
 

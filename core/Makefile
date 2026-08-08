@@ -57,8 +57,11 @@ $(PROF): tools/de_profile.cpp $(OBJS)
 $(PIPE): tools/de_pipe.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
 
-$(DENSE): tools/de_dense.cpp $(OBJS)
-	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
+# The header is a prerequisite AND the recipe uses $< rather than $^, because $^ would
+# hand a .hpp to g++ as an input file. Without the prerequisite, editing the NEON kernel
+# relinks a stale de_dense and the change appears simply not to work -- obstacle 10.
+$(DENSE): tools/de_dense.cpp include/doubleeye/simd_score.hpp $(OBJS)
+	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $< $(OBJS) -o $@
 
 $(TESTBIN): tests/test_preproc.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@

@@ -26,6 +26,7 @@
 //            [--min-margin F] [--out disp.f32]
 
 #include "doubleeye/preproc.hpp"
+#include "doubleeye/simd_score.hpp"
 
 #include <time.h>
 
@@ -34,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <atomic>
 #include <mutex>
@@ -502,6 +504,7 @@ void rf_coeffs(const float* I, uint16_t* ax, uint16_t* ay, int W, int H,
   for (auto& th : pool) th.join();
 }
 
+
 struct Cfg {
   int dmin = 1, dmax = 60, iters = 2, agg = 3;
   bool rf = true;              // recursive edge-aware filter; --guided for the old one
@@ -517,6 +520,7 @@ struct Cfg {
   int ad_trunc = 10;           // truncation for the absolute difference, 8-bit
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
   int threads = 0;
+  bool simd = false;           // NEON score kernel, disparity in the lanes
 };
 
 // One image row. Rows share no left or right pixel, so this needs no locking.
@@ -805,7 +809,10 @@ int main(int argc, char** argv) {
   if (argc < 5) {
     std::fprintf(stderr,
         "usage: %s LEFT.y8 RIGHT.y8 W H [--dmax N] [--iters N] [--threads N]\n"
-        "          [--min-margin F] [--out disp.f32]\n", argv[0]);
+        "          [--min-margin F] [--out disp.f32] [--simd]\n"
+        "  --simd  NEON score kernel, AArch64 only, bit-identical, off by default:\n"
+        "          1.6x on the score loop and 0.92x on the stage at D=60. See\n"
+        "          doc/09-matching.md.\n", argv[0]);
     return 2;
   }
   const std::string lp = argv[1], rp = argv[2];
@@ -836,6 +843,7 @@ int main(int argc, char** argv) {
     else if (a == "--ad" && has) cfg.ad = float(std::atof(argv[++i]));
     else if (a == "--ad-trunc" && has) cfg.ad_trunc = std::atoi(argv[++i]);
     else if (a == "--prior" && has) priorp = argv[++i];
+    else if (a == "--simd") cfg.simd = true;
   }
   Image8 L, R;
   if (!load_raw_y8(lp, W, H, &L) || !load_raw_y8(rp, W, H, &R)) {
@@ -910,6 +918,33 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // --simd refuses rather than falling back. A flag that silently does nothing is
+  // indistinguishable downstream from one that did something and bought nothing,
+  // which is the whole of rule 1 -- and this flag exists to be timed.
+  if (cfg.simd) {
+#ifndef DE_HAVE_NEON
+    std::fprintf(stderr, "--simd is the AArch64 NEON kernel; this is not an "
+                         "aarch64 build\n");
+    return 1;
+#else
+    if (cfg.csct) {
+      std::fprintf(stderr, "--simd reads the 64-bit descriptors; not --csct\n");
+      return 1;
+    }
+    if (!(cfg.rf && cfg.topk == 2 && volp.empty() && priorp.empty())) {
+      std::fprintf(stderr, "--simd requires the default path (--rf, --topk 2, no "
+                           "--dump-vol, no --prior)\n");
+      return 1;
+    }
+    if (cfg.ad_trunc < 1 || cfg.ad_trunc > 63) {
+      std::fprintf(stderr, "--simd needs 1 <= --ad-trunc <= 63 so the clamped "
+                           "difference is a legal 64-entry table index (got %d)\n",
+                   cfg.ad_trunc);
+      return 1;
+    }
+#endif
+  }
+
   const int D = cfg.dmax - cfg.dmin + 1;
   int nthreads = cfg.threads > 0 ? cfg.threads
                                  : int(std::thread::hardware_concurrency());
@@ -949,6 +984,7 @@ int main(int argc, char** argv) {
   // compiler could specialise in ways the shipping function cannot be.
   std::vector<double> ts_fill(nthreads, 0), ts_score(nthreads, 0);
   std::vector<double> ts_filt(nthreads, 0), ts_ins(nthreads, 0);
+  std::vector<double> ts_alloc(nthreads, 0);
   const double tc0 = now_ms();
   // With K = 2 the running top-2 per pixel IS the reduced volume, so the 40 MB
   // array is never allocated. It is still needed for --dump-vol and for the k
@@ -1036,7 +1072,13 @@ int main(int argc, char** argv) {
     // four threads busy, at a constant 3.36 GHz. The stage is not memory-bound --
     // stalls on L3 misses are 2-5% of cycles and DRAM traffic is 8% of this
     // machine's bandwidth -- it was simply idle.
-    const int KB = blockwise ? 1 : 16;
+    //
+    // The vector score kernel needs SIMD_G disparities in hand at once, so it takes
+    // its work in groups of that size and the ragged last group falls back to the
+    // scalar path. At D=60 and SIMD_G=8 that is seven full groups and a group of
+    // four, over six threads -- worse balance than one disparity at a time, and the
+    // reason the wall-clock win is smaller than the score-loop win.
+    const int KB = blockwise ? (cfg.simd ? SIMD_G : 1) : 16;
     const int nblocks = (D + KB - 1) / KB;
     std::atomic<int> next_block(0);
     // Outside the pool so the per-thread top-2 survives the join for merging.
@@ -1044,6 +1086,11 @@ int main(int argc, char** argv) {
     std::vector<std::vector<int16_t>> ad0(nthreads), ad1(nthreads);
     std::vector<std::thread> cpool;
     for (int t = 0; t < nthreads; ++t) cpool.emplace_back([&, t]() {
+    // Timed because it is on the critical path and no other timer covers it. Every
+    // one of the four in-situ timers below starts after the scratch exists, so a
+    // regression that lives in allocation is invisible in the breakdown and shows
+    // up only as lost occupancy -- which is exactly how it presented.
+    const double ta0 = now_ms();
     // Only the chosen filter path's scratch is allocated. Every thread used to
     // take all eighteen planes -- 12 MB each, 46 MB across four threads -- and
     // std::vector zero-fills them, so most of a memset of 46 MB was being paid on
@@ -1051,6 +1098,25 @@ int main(int argc, char** argv) {
     const size_t FN = cfg.rf ? 0 : size_t(W) * H;
     const bool i16 = cfg.rf && blockwise;
     std::vector<int16_t> islice(i16 ? size_t(W) * H : 0);
+    // SIMD_G planes live at once instead of one: 2.7 MB a thread at 450x375, against
+    // 2 MB of L2 shared across the A57 cluster. So a plane can no longer stay
+    // resident from score through filter to insert, which is the one real cost of
+    // this change and the reason it is measured rather than argued. The counters say
+    // the stage had 1.6 GB/s of 18.9 and a core and a half idle, so there is room --
+    // but that is a prediction, and traffic predictions here have been wrong by 7x.
+    const bool simd_grp = cfg.simd && i16;
+    // NOT a std::vector: it would zero-fill 2.7 MB a thread on construction and the
+    // per-group std::fill immediately zeroes it again. Measured at 18.8 ms of
+    // thread-summed CPU for the redundant pass -- the fourth time in this file that
+    // vector's zero-fill has been the thing on the critical path, and the first time
+    // any timer was watching the allocation itself.
+    //
+    // The fill that remains is not redundant: rf_filter_i16 runs over the whole
+    // plane including the border and the left strip the score loop never writes, and
+    // it propagates what it finds there into the valid window.
+    const size_t GN = simd_grp ? size_t(SIMD_G) * W * H : 0;
+    std::unique_ptr<int16_t[]> gbuf(simd_grp ? new int16_t[GN] : nullptr);
+    int16_t* const gslice = gbuf.get();
     std::vector<float> slice(i16 ? 0 : size_t(W) * H), tmp(FN);
     std::vector<float> ip(FN), mp(FN), mip(FN);
     std::vector<float> ab(FN), bb(FN);
@@ -1070,6 +1136,7 @@ int main(int argc, char** argv) {
     const size_t NS = cfg.rf ? 0 : ((F == 1) ? size_t(W) * H : size_t(Ws) * Hs);
     std::vector<float> ps(NS), ips(NS), mps(NS), mips(NS), ts(NS);
     std::vector<float> abs_(NS), bbs(NS), mas(NS), mbs(NS);
+    ts_alloc[t] += now_ms() - ta0;
     if (guided_search) {
       // One plane per offset. Parallel over offsets, which with 2*band+1 of them
       // and four threads is imbalanced -- 5 planes over 4 workers is two rounds --
@@ -1110,6 +1177,67 @@ int main(int argc, char** argv) {
     for (int b = next_block.fetch_add(1); b < nblocks;
          b = next_block.fetch_add(1)) {
     const int klo = b * KB, khi = std::min(D, klo + KB);
+#ifdef DE_HAVE_NEON
+    // Vector path: score SIMD_G disparities with disparity in the lanes, then run
+    // the unchanged filter and insert over each of the SIMD_G planes it produced.
+    // A ragged final group falls through to the scalar loop below.
+    if (simd_grp && khi - klo == SIMD_G) {
+      double tm = now_ms();
+      // Zero only what the score kernel does not write. Clearing the whole buffer
+      // costs 7.8x here what it costs in the scalar path for the same byte count --
+      // 14.0 ms against 1.8 -- because one 337 KB plane refilled sixty times stays
+      // in L2 and eight planes at 2.7 MB cannot. The kernel covers x in [3+d, W-3)
+      // for every y in [3, H-3), so only the border and the left strip are left.
+      for (int g = 0; g < SIMD_G; ++g) {
+        int16_t* pl = gslice + size_t(g) * WH;
+        const int lft = std::min(3 + cfg.dmin + klo + g, W);
+        std::fill(pl, pl + size_t(3) * W, int16_t(0));
+        for (int y = 3; y < H - 3; ++y) {
+          int16_t* rw = pl + size_t(y) * W;
+          std::fill(rw, rw + lft, int16_t(0));
+          std::fill(rw + std::max(lft, W - 3), rw + W, int16_t(0));
+        }
+        std::fill(pl + size_t(H - 3) * W, pl + WH, int16_t(0));
+      }
+      ts_fill[t] += now_ms() - tm; tm = now_ms();
+      int16_t tbl[64] = {0};
+      const int half = 24;
+      for (int h = 0; h <= 2 * half; ++h)
+        tbl[h] = int16_t(((half - h) * SCORE_ONE) / half);
+      const int32_t wq = int32_t(std::max(0.f, std::min(1.f, cfg.ad)) * 1024.f);
+      const int Tt = std::max(1, cfg.ad_trunc);
+      int16_t adt[256];
+      for (int v = 0; v < 256; ++v)
+        adt[v] = int16_t(SCORE_ONE - (2 * SCORE_ONE * std::min(v, Tt)) / Tt);
+      score_group_neon(cl.data(), cr.data(), L.data.data(), R.data.data(),
+                       gslice, WH, W, H, cfg.dmin + klo, tbl, adt, wq, Tt);
+      ts_score[t] += now_ms() - tm;
+      for (int g = 0; g < SIMD_G; ++g) {
+        int16_t* pl = gslice + size_t(g) * WH;
+        tm = now_ms();
+        rf_filter_i16(pl, axp, ayp, W, H);
+        ts_filt[t] += now_ms() - tm; tm = now_ms();
+        const int dg = cfg.dmin + klo + g;
+        const int16_t kk = int16_t(klo + g);
+        for (int y = 3; y < H - 3; ++y) {
+          const size_t rw = size_t(y) * W;
+          for (int x = 3 + dg; x < W - 3; ++x) {
+            const size_t i = rw + x;
+            const int16_t v = pl[i];
+            if (v <= ts1[i]) continue;
+            if (v > ts0[i]) {
+              ts1[i] = ts0[i]; td1[i] = td0[i];
+              ts0[i] = v;      td0[i] = kk;
+            } else {
+              ts1[i] = v;      td1[i] = kk;
+            }
+          }
+        }
+        ts_ins[t] += now_ms() - tm;
+      }
+      continue;
+    }
+#endif
     for (int k = klo; k < khi; ++k) {
       const int d = cfg.dmin + k;
       double tm = now_ms();
@@ -1344,10 +1472,11 @@ int main(int argc, char** argv) {
     }
   }
   const double t_cost = now_ms() - tc0;
-  double c_fill = 0, c_score = 0, c_filt = 0, c_ins = 0;
+  double c_fill = 0, c_score = 0, c_filt = 0, c_ins = 0, c_alloc = 0;
   for (int t = 0; t < nthreads; ++t) {
     c_fill += ts_fill[t]; c_score += ts_score[t];
     c_filt += ts_filt[t]; c_ins += ts_ins[t];
+    c_alloc += ts_alloc[t];
   }
 
   // The aggregated volume, for measuring how many candidates per pixel are
@@ -1420,8 +1549,9 @@ int main(int argc, char** argv) {
   std::printf("  census breakdown (thread-summed, both images): clear %.2f  "
               "48 compare-or passes %.2f  pack to uint64 %.2f ms\n",
               g_cen_clear, g_cen_cmp, g_cen_pack);
-  std::printf("  cost breakdown (thread-summed): clear %.1f  score %.1f  "
-              "filter %.1f  insert %.1f ms\n", c_fill, c_score, c_filt, c_ins);
+  std::printf("  cost breakdown (thread-summed): alloc %.1f  clear %.1f  score %.1f  "
+              "filter %.1f  insert %.1f ms\n",
+              c_alloc, c_fill, c_score, c_filt, c_ins);
   std::printf("census %.1f ms  cost %.1f ms  solve %.1f ms  total %.1f ms  "
               "agg=%d iters=%d  filled %.1f%%\n",
               t_census, t_cost, t_solve, t_census + t_cost + t_solve,

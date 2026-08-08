@@ -2621,3 +2621,117 @@ a third direction. It was parked when sparse candidates made the transpose unnec
 vectorising the score loop brings it back, because the score wants disparity-minor and the
 filter wants disparity-major. That is a genuine design decision and not a micro-optimisation,
 and it should be settled before any more SIMD is written.
+
+## The layout question was a false choice: 1.59x on the score loop, and the stage got slower
+
+The `[d][x]` versus `[x][d]` decision above conflates two resources. **The score wants
+disparity in the register file; the recursive filter wants it in memory, and those are
+independent.** Nothing about the loads is disparity-minor either way: the right
+descriptors for eight consecutive disparities at pixel x are eight consecutive uint64 of
+the right census plane, and the left descriptor is a broadcast. So the kernel computes a
+group with disparity in the lanes and **transposes in registers before storing**, and the
+filter, the top-2 insert and the solver see exactly the planes they saw before. No layout
+change, and `--simd` in `core/tools/de_dense.cpp` is the whole of it.
+
+This is not the write amplification the blocked transpose managed. That wrote one 4-byte
+disparity per 64-byte line of a `[x][d]` volume, 16x at line granularity. An in-register
+transpose deposits sixteen contiguous bytes per plane and consecutive x groups continue
+the same lines: eight sequential write streams, no partial lines.
+
+**The kernel, and it is bit-identical.** Four XORs, four `vcntq_u8` and four `vpaddq_u8`
+collapse eight descriptors' byte counts into eight bytes of one register -- ~1.5
+instructions per Hamming distance -- and those bytes are already the byte indices
+`vqtbl4q_u8` wants. The 49-level Census table and the truncated-difference table both fit
+64 entries (`ad_trunc` is 10, and the difference is clamped to it before the lookup, which
+is what `adt[v] == adt[min(v,T)]` already guaranteed), so **the closed-form reformulation
+this file called necessary is not necessary** and every value is exactly what the scalar
+loop produces. Verified: all eight scenes byte-for-byte identical at one thread.
+
+### The result, teddy at D=60, TX2 6 threads, interleaved best-of-8
+
+| part | scalar | `--simd` | |
+|---|---|---|---|
+| **score** | **77.0 ms** | **48.4** | **1.59x** |
+| filter | 93.2 | 90.0 | -- |
+| insert | 66.9 | 63.5 | -- |
+| clear | 1.8 | **11.1** | **6.2x worse** |
+| alloc | 17.0 | 19.4 | -- |
+| cost stage CPU | 255.9 | 232.4 | 1.10x |
+| **cost stage WALL** | **67.6** | **73.3** | **0.92x** |
+| cores busy | 3.79 of 6 | 3.17 of 6 | |
+
+**9% less CPU, 8% more wall clock.** The kernel does what it was predicted to do and the
+stage got slower, because 0.62 of a core went missing.
+
+### Two mechanism guesses failed before the counters were read, again
+
+**Guess 1, the L2 working set.** Eight live planes are 2.7 MB a thread against 2 MB of
+shared A57 L2, so a plane can no longer stay resident from score through filter to insert.
+Wrong where it was aimed: filter and insert CPU did not move (93.2 -> 90.0, 66.9 -> 63.5).
+
+**Guess 2, load imbalance.** Sixty disparities in groups of eight is eight groups over six
+threads, two rounds with the second nearly empty. Tested directly at D=48 -- six groups,
+six threads, one clean round -- and the stage was *still* 0.92x. Not sufficient.
+
+**What the counters said, once a timer was put where none had been.** Every in-situ timer
+starts after the scratch exists, so allocation was invisible in the breakdown and showed
+up only as lost occupancy. `alloc` was **35.5 ms against the scalar path's 16.7** --
+`std::vector` zero-filling 2.7 MB a thread that the per-group `std::fill` then zeroes
+again. The fourth time vector's zero-fill has been the thing on the critical path here,
+and the first time anything was measuring it. Worth noting the scalar path pays 17 ms of
+allocation too, which nobody knew.
+
+Replacing it with a non-zeroing buffer moved the cost rather than removing it: `alloc`
+fell to 18.8 and `clear` rose from 1.8 to 14.0. The bytes are the same 60-odd full planes
+either way; **what changed is cache residency.** One 337 KB plane refilled sixty times
+stays in L2; eight planes at 2.7 MB cannot, so the same byte count costs 7.8x. Clearing
+only the border the kernel does not write recovered very little (14.0 -> 11.1), and the
+reason sharpens it further: the left strip spans rows 3..H-3, and touching every row
+touches every page, so **the cost is page and line touches, not bytes written.** Guess 1
+was right about the mechanism and wrong about where it would land -- it is in the clear,
+not the filter.
+
+### Where the sign flips, and the ceiling that makes it not matter much
+
+At **D=96, twelve groups over six threads**, on a quiet board (2% spread):
+
+| | scalar | `--simd` | |
+|---|---|---|---|
+| score | 122.0 ms | 70.6 | **1.73x** |
+| cost stage wall | 91.4 | 88.0 | **1.04x** |
+| total | 112.3 | 109.6 | 1.02x |
+
+So the D=60 regression is the schedule, confirmed by flipping it. But note what a win looks
+like: **1.73x on the score loop is 1.04x on the stage.** The score is 77 of 256 ms of
+cost-stage CPU, 30%, so 1.6x on it is an 11% ceiling for the whole stage -- and the layout
+costs ~12 ms of clear and alloc against the 29 ms it saves. The score loop was correctly
+identified as the largest single item and is not large enough for this to matter at the
+level that was hoped. At agg 5 the **filter is larger than the score** (93 against 77).
+
+**Kept behind `--simd`, off by default, because it is 1.6x on a real loop with bit-identity
+and the blocker is a schedule rather than the kernel.** What would make it pay is
+decoupling the work quantum from the group size -- score into shared group buffers, then
+hand out single planes for filter and insert from a second queue -- which is a real piece
+of engineering against an 11% ceiling. Reverting instead is a one-line decision and the
+rule about knobs argues for it.
+
+### `cmp` between two multi-threaded runs is not an identity check
+
+Found while trying to explain nine differing bytes: **two identical scalar runs at six
+threads differ from each other.** The top-2 insert requires strictly-greater to displace,
+so exactly-equal scores keep whichever disparity arrived first, and blocks are handed out
+dynamically, so tie order varies run to run. Scalar 1t vs scalar 6t differs too.
+
+At one thread everything is deterministic and all eight scenes are byte-identical. So the
+protocol is: **`cmp` at `--threads 1`, and only there.** Earlier changes verified
+"bit-identical" by cmp were not wrong -- int16 and the allocation fixes did not alter
+partitioning, so they did not trip it -- but this change does, and a handful of differing
+bytes is what a correct change looks like at six threads. Accuracy is unaffected and that
+is measured rather than argued: pooled over eight scenes at six threads, both paths give
+**75.99% coverage and 9.54% bad-1.0**, equal to three decimals.
+
+That handful of bytes is also the signature the earlier popcount attempt was reverted for
+in part ("also produced a handful of differing pixels"). It may have been arithmetically
+correct all along. The runtime result there was decisive on its own, so the conclusion
+stands, but the identity evidence against it was not evidence.
+
