@@ -2577,3 +2577,47 @@ integer truncation exactly, so it must be scored rather than assumed.
 That is a real piece of work with a real payoff on the TX2, where the score loop is 80 ms
 of CPU. It is not the half-measure attempted here, and the half-measure is worth
 recording precisely because it looked like the whole thing.
+
+## What others did: ReS2tAC, and why our vectorisation was shaped wrong
+
+Searched after the popcount attempt failed. The directly relevant work is **ReS2tAC**
+(Ruf et al., Sensors 21(11):3938, doi:10.3390/s21113938), which optimises SGM for
+embedded ARM with NEON intrinsics. It answers the two questions this file was stuck on,
+and contradicts the design of the attempt above.
+
+**They use `VCNT` and no lookup table.** So hardware popcount is the right primitive --
+that part of the diagnosis holds.
+
+**But they put DISPARITY in the vector lanes, not pixels.** They process "16 disparities
+and four lines simultaneously in one iteration", broadcasting the left descriptor and
+walking consecutive right descriptors. That is the difference. Our attempt vectorised
+eight *pixels'* popcounts and left the loop pixel-major, so `tbl[hamming]` and
+`adt[|L-R|]` stayed per-pixel gathers and took over the loop. **With disparity in the
+lanes the Hamming distances for 16 disparities land in one register, and the table lookup
+becomes a vector operation** -- NEON's `vqtbl4q_u8` reads a 64-entry byte table in one
+instruction, which covers a 49-level Census table exactly. The lookup problem this file
+called unsolvable-without-arithmetic is solvable; it just needs the other loop order.
+
+**They use 8-bit costs and a 24-bit descriptor.** The descriptor is cut to 3 bytes by
+dropping to a 5x5 neighbourhood on the CPU, specifically so 16 pixels' descriptors fit in
+three vector registers. That is the same trade `--csct` measured here -- 24 bits -- and it
+cost 1.2 points of bad-1.0. They pay it for the SIMD fit; whether we should is a decision
+with a measured price rather than a guess.
+
+**The honest caveat: they did not test on a TX2.** Their embedded target is a Jetson
+Xavier AGX with an 8-core ARMv8.2 CPU, so the reported 46 FPS at VGA is not a TX2 number
+and must not be quoted as one.
+
+### The tension this creates with our architecture
+
+Disparity is our OUTER loop -- one whole plane per disparity -- because the recursive
+filter needs whole planes to aggregate over. Putting disparity in the vector lanes means
+computing 16 disparities per pixel at once and scattering them into 16 separate planes,
+which is exactly the write-amplification the blocked transpose existed to manage before
+the volume was removed.
+
+So this is the `[d][x]` versus `[x][d]` question from earlier in this file, arriving from
+a third direction. It was parked when sparse candidates made the transpose unnecessary;
+vectorising the score loop brings it back, because the score wants disparity-minor and the
+filter wants disparity-major. That is a genuine design decision and not a micro-optimisation,
+and it should be settled before any more SIMD is written.
