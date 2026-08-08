@@ -811,3 +811,67 @@ the 30 Hz on-vehicle matcher as written — but it is now a quality ceiling wort
 optimising towards, rather than a direction excluded on principle. The candidate set
 is 71 per keypoint of which the gate discards most; generating fewer, better
 candidates is an obvious avenue and has not been tried.
+
+## MASDA as a dense matcher: it works, and it shows exactly what uniqueness cannot do
+
+`article/dense_masda.py` runs MASDA over every pixel rather than over keypoints.
+That is possible without changing the solver because the problem decomposes:
+correspondences lie on one image row, so rows share no left or right index, and the
+whole image is a single assignment problem whose exclusivity constraints happen to
+couple only within rows. 9.15M edges on a 450x375 pair with 60 disparities.
+
+| | coverage | bad-1.0 teddy | bad-1.0 cones | runtime |
+|---|---|---|---|---|
+| dense MASDA | **89.0%** | 34.7% | 24.6% | 21 s (NumPy) |
+| SGM | 81.1% | **8.1%** | **5.5%** | 24 ms (C++ SIMD) |
+
+![dense masda](../article/figures/dense_masda.png)
+
+It produces a real depth image, and with *more* coverage than SGM. The scene
+structure is plainly there: the bear, the cones, the plant. It is also covered in
+salt-and-pepper speckle, because every pixel decides independently and uniqueness
+constrains only that two left pixels may not claim the same right pixel. Nothing
+says a pixel should agree with its neighbour.
+
+The margin gate trades coverage for accuracy, and on this problem the trade is bad:
+
+| gate | coverage | bad-1.0 |
+|---|---|---|
+| 0.00 | 89.0% | 34.7% |
+| 0.10 | 34.8% | 15.9% |
+| 0.20 | 16.7% | 9.4% |
+| 0.30 | 4.9% | **7.4%** |
+
+Matching SGM's error rate costs everything: 4.9% of pixels against SGM's 81.1%.
+
+### The unifying result
+
+Put beside the keypoint experiments, this explains all of them at once.
+
+- At **keypoints** — which are by construction the places with enough texture to
+  localise — semi-dense candidates plus the margin gate reach 0.882 precision
+  against SGM's 0.858.
+- At **every pixel**, including the textureless majority, the same method reaches
+  34.7% bad against SGM's 8.1%.
+
+Uniqueness is sufficient where the descriptor has something to say, and cannot
+substitute for smoothness where it does not. SGM's path aggregation propagates
+disparity from textured regions into textureless ones; a per-pixel descriptor
+comparison has no mechanism for that, however the candidates are arranged.
+
+Which is the argument for the sparse formulation, arrived at from the opposite
+direction: keypoints are not a computational shortcut, they are a *selection of the
+pixels where this class of matcher has information*. Running it everywhere else
+mostly manufactures speckle.
+
+### On the runtime column
+
+21 s against 24 ms is a factor of ~900, and it is not an algorithmic comparison.
+MASDA here is NumPy with `np.maximum.at` scatter-reductions over 9.15M edges; SGM is
+compiled C++ with SIMD and decades of optimisation. The C++ MASDA on a sparse
+problem is already ~200x faster than the NumPy one, so the honest statement is that
+the constant is large and unmeasured, not that the algorithm is 900x slower.
+
+What *is* algorithmic: 9.15M edges for a 168k-pixel image is 54 candidates per
+pixel, and the margin gate then discards most of what was scored. Coarse-to-fine or
+a previous-frame prior would cut that, and neither has been tried.
