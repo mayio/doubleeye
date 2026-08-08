@@ -41,6 +41,24 @@ first-class output with one producer.
 
 ---
 
+## 0.4 Smoothness as a factor — now the highest-value matcher work
+
+Dense SGM beats MASDA **at MASDA's own keypoints**, 0.858 against 0.616 precision,
+pooled over the eight Middlebury scenes, while also filling 78% of the image in
+17 ms (`article/dense_baseline.py`). The gap is not about max-sum; it is the
+smoothness prior MASDA does not have, measured at 24 points of precision.
+
+Uniqueness and smoothness are orthogonal — SGM has no uniqueness constraint and
+needs a left-right check bolted on to reach 78% coverage. A factor graph with both
+is the interesting object, and adding a smoothness factor is the same kind of
+derivation the ordering factor already went through in section 7 of the article.
+
+The earlier two-pass smoothness attempt failed because a prior fitted from the
+matches it then judges is self-confirming. Path aggregation over the whole field is
+a different thing, and `dense_baseline.py` is now the yardstick.
+
+---
+
 ## 0.5 Quick wins now that the live view works
 
 - **Compare against the D4 ASIC's own depth.** Nobody has checked whether this

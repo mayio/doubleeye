@@ -655,3 +655,70 @@ per-scene range of 60 or 80 px, which is already tight.
 range in its banner, so a wrong gate is visible rather than silent.
 `desktop/de_live_ros2.py` takes `--min-range`/`--max-range` **in metres** and
 defaults to 0.4-6.0 m, because that is the unit the scene is in.
+
+## A dense baseline, and an uncomfortable number
+
+`article/dense_baseline.py` runs OpenCV's semi-global matcher on the same eight
+Middlebury scenes. It exists to answer "can we produce a dense depth image" with a
+picture, and to make the sparse-versus-dense argument quantitative rather than
+rhetorical. SGM is the family the D4 ASIC belongs to, so this is also the closest
+proxy to the ASIC available offline.
+
+Setting the comparison up fairly needs care, because the two answer different
+questions. Dense SGM is scored the Middlebury way — the fraction of known-GT pixels
+whose error exceeds 1 px, over the whole image. MASDA is scored at its own matched
+keypoints, a much smaller denominator. So SGM is **also** scored at exactly MASDA's
+keypoints, which is the only like-for-like number here.
+
+| scene | SGM coverage | SGM bad-1.0 | at MASDA's keypoints: SGM | MASDA |
+|---|---|---|---|---|
+| teddy | 81.1% | 8.1% | 0.899 | 0.615 |
+| cones | 81.7% | 5.5% | 0.943 | 0.781 |
+| Art | 70.3% | 14.5% | 0.810 | 0.489 |
+| Books | 80.7% | 9.7% | 0.935 | 0.704 |
+| Dolls | 79.9% | 9.3% | 0.898 | 0.689 |
+| Laundry | 77.6% | 17.7% | 0.491 | 0.301 |
+| Moebius | 78.1% | 11.5% | 0.925 | 0.680 |
+| Reindeer | 74.9% | 11.1% | 0.935 | 0.592 |
+| **pooled** | **78.0%** | **10.9%** | **0.858** | **0.616** |
+
+**Dense SGM is more accurate than MASDA at MASDA's own keypoints, 0.858 against
+0.616, and it fills 78% of the image as well, in 17 ms.** That is not a small gap
+and it should not be written around.
+
+### What it does and does not mean
+
+It is not "SGM beats MASDA" as a statement about inference. SGM aggregates matching
+cost along eight paths through the image, which is a **smoothness prior over the
+whole disparity field**. MASDA uses uniqueness and nothing else. So what this
+measures is the value of the prior MASDA does not have, and the answer is: a great
+deal. 0.616 to 0.858 on identical points and identical data.
+
+That is the same conclusion [09](09-matching.md) and the article's section 10
+already reached from the other direction — smoothness is the largest piece of
+information the matcher currently ignores — but as an argument rather than a
+number. The number is 24 points of precision.
+
+Three things keep it from being the whole story:
+
+- The two constraints are **orthogonal, not competing**. Uniqueness is a statement
+  about the matching being one-to-one; smoothness is a statement about the surface.
+  SGM has no uniqueness constraint at all, which is why it needs a left-right
+  consistency check bolted on afterwards to reach 78% coverage rather than 100%.
+  The interesting object is a matcher with both, which is what a smoothness factor
+  in the factor graph would be.
+- The earlier smoothness attempt failed for a specific and fixable reason. A
+  two-pass prior fitted from the matches it then judges is self-confirming; SGM's
+  path aggregation is a joint optimisation over the whole field, which is a
+  different thing entirely.
+- SGM declines 22% of known-GT pixels. MASDA declines by only ever proposing at
+  keypoints. Neither number is coverage in the same sense.
+
+### What this changes
+
+The honest reading is that the current matcher is not competitive with a
+well-implemented dense method on accuracy, and the gap is explained by a missing
+prior rather than by anything about max-sum. That makes the smoothness factor the
+highest-value piece of work on the matcher, ahead of everything currently in
+section 0.5 of the TODO, and it makes `dense_baseline.py` the thing to measure it
+against.
