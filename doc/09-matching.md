@@ -1535,3 +1535,32 @@ lanes cost more than they save.
 Reverted. Recorded because the failure is informative: it is evidence that the
 remaining 12x really is in the layout-plus-vectorisation combination, and that
 neither half delivers alone. The four steps have to go in order.
+
+### One character: divide becomes multiply
+
+The scoring inner loop runs D·H·W times — 9.6M for a 450×375 pair at 60 disparities —
+and ended with `/ 24.f`. A float divide is roughly twenty cycles against four for a
+multiply, and the compiler cannot make the substitution itself: 1/24 is not exactly
+representable, so `x / 24.f` to `x * (1.f/24.f)` changes the last bit and is
+forbidden without `-freciprocal-math`.
+
+| | score + scatter | total |
+|---|---|---|
+| before | 66.7 ms | 201.3 ms |
+| after | **59.5 ms** | **197.2 ms** |
+
+Output identical. 11% of that stage for a one-character change, which is worth having.
+
+**And my prediction was still too high.** I expected the divide to be most of the
+stage — 9.6M divides at twenty cycles is ~55 ms of the 66.7 on paper. It was 7 ms.
+Presumably the divides pipeline better than the latency figure suggests, and the
+remaining 59.5 ms is still unattributed. GCC will not vectorise `popcnt64` without
+AVX-512, and the disparity-blocking staging moves an extra 80 MB, but I have not
+measured which of those it is and my record today says not to guess.
+
+**Where this leaves the runtime work.** Six attempts at the cost stage have produced
+2-11% each: blocked transpose, vectorisable vertical pass, reciprocal multiply, and
+three that failed outright. The structural changes — band fusion so the volume never
+exists, `[d][x]` layout, pixel-parallel reductions, int16 — remain untried and are
+where the 12x is. Incremental tuning of this structure has been thoroughly explored
+and is close to exhausted.

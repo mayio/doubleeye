@@ -440,11 +440,23 @@ int main(int argc, char** argv) {
     for (int k = klo; k < khi; ++k) {
       const int d = cfg.dmin + k;
       std::fill(slice.begin(), slice.end(), 0.f);
+      // Multiply by the reciprocal, do not divide.
+      //
+      // This inner loop runs D * H * W times -- 9.6M for a 450x375 pair with 60
+      // disparities -- and a float division is roughly twenty cycles against four
+      // for a multiply. The compiler cannot make the substitution itself: 1/24 is
+      // not exactly representable, so turning `x / 24.f` into `x * (1/24.f)`
+      // changes the last bit and is forbidden without -freciprocal-math.
+      //
+      // Measured: 66.7 -> 59.5 ms in the score-and-scatter stage, 11% of it.
+      // Worth having and not the whole story -- what remains in that 59.5 ms is
+      // still unattributed, and reasoning about it has a poor record here.
+      const float inv_half = 1.f / 24.f;
       for (int y = 3; y < H - 3; ++y)
         for (int x = 3 + d; x < W - 3; ++x)
           slice[size_t(y) * W + x] =
               (24.f - float(popcnt64(cl[size_t(y) * W + x] ^
-                                     cr[size_t(y) * W + x - d]))) / 24.f;
+                                     cr[size_t(y) * W + x - d]))) * inv_half;
       if (r > 0 && cfg.guided && F == 1) {
         // Direct full-resolution guided filter. Kept as a separate path because
         // routing F == 1 through the subsample/upsample machinery costs a
