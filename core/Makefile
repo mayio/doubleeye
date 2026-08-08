@@ -34,9 +34,14 @@ TESTBIN := $(BUILD)/test_preproc
 TESTMAT := $(BUILD)/test_match
 # Header-only kernel, so no object to link; reports SKIPPED off AArch64.
 TESTSIMD := $(BUILD)/test_simd_score
+# CUDA tool: built only where nvcc exists (the TX2). sm_62 is the TX2's Pascal;
+# the desktop has no toolkit, so its build is untouched. If a desktop toolkit ever
+# appears, sm_61 is the GTX 1050 -- adjust or use -arch there.
+NVCC := $(wildcard /usr/local/cuda/bin/nvcc)
+DENSECU := $(BUILD)/de_dense_cuda
 
 .PHONY: all clean test
-all: $(TOOL) $(MATCHER) $(BENCH) $(PROF) $(PIPE) $(DENSE)
+all: $(TOOL) $(MATCHER) $(BENCH) $(PROF) $(PIPE) $(DENSE) $(if $(NVCC),$(DENSECU))
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -70,6 +75,9 @@ $(TESTBIN): tests/test_preproc.cpp $(OBJS)
 
 $(TESTMAT): tests/test_match.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
+
+$(DENSECU): tools/de_dense_cuda.cu include/doubleeye/dense_solve.hpp $(OBJS)
+	$(NVCC) -O3 -std=c++14 -arch=sm_62 $(INC) $< $(OBJS) -o $@ -Xcompiler -pthread
 
 $(TESTSIMD): tests/test_simd_score.cpp include/doubleeye/simd_score.hpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $< -o $@
