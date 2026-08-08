@@ -2099,3 +2099,55 @@ Against SGM's 16 ms. Meaningfully closer rather than parity -- **and census beco
 largest single item**, which is where the next attribution should point. That is a
 projection from a work ratio, not a measurement, and this file's record on projections
 is why it is written as one.
+
+## Census: 3.5x, and the microbenchmark inverted the answer once
+
+Census is 8.1 ms of a 61 ms pair and, unlike the cost stage, is **not linear in D** --
+so once coarse-to-fine cuts the cost stage it becomes the largest single item. Three
+suspects, so measured rather than picked: `img.at(x,y)` recomputing `y*width` on all 48
+neighbour reads, a 48-long serial OR chain per pixel, and nothing vectorising because
+the only wide axis is x and x is the outer loop.
+
+Isolated, both images, single-threaded:
+
+| variant | ms | vs shipping | output |
+|---|---|---|---|
+| shipping | 10.81 | 1.00x | -- |
+| hoist the row pointers | 6.68 | 1.62x | identical |
+| offset outer, uint64 accumulator | 39.99 | **0.27x** | identical |
+| **offset outer, six uint8 accumulators** | **1.83** | **5.91x** | identical |
+
+**Reordering the loops on its own is 3.7x worse.** A uint64 accumulator fits four lanes
+in a 256-bit register, and 48 passes over a row is a lot of loop overhead to buy four
+lanes. It only pays once the accumulator is a byte: six 8-bit planes give 32 lanes for
+the compare-and-or, packed into the uint64 once per row. Bit b lands at
+`(b>>3)*8 + (b&7) = b`, so the descriptors are unchanged.
+
+Loop order and lane width look like two independent tweaks and are not -- the two
+reordered forms differ by 22x. Half of this change would have been a regression.
+
+### The microbenchmark's constants were doing the work
+
+Dropped into `de_dense` with `hw`/`hh` as runtime arguments, the new census measured
+**17.6 ms against the original's 8.1** -- twice as slow, the exact opposite of the
+5.9x. In the microbenchmark `W`, `HW` and `HH` were file-scope constants, so GCC
+unrolled all 48 passes with a constant shift mask and a constant group pointer per
+pass, and widened the compare. As runtime arguments none of that happens.
+
+Specialising the window as a template parameter and dispatching on `hw == 3 && hh == 3`
+recovers it. Interleaved best-of-6 against the original:
+
+| | census | total, teddy |
+|---|---|---|
+| original | 8.1 ms | 61.0 ms |
+| templated | **2.3 ms** | **56.5 ms** |
+
+Output bit-identical, 90 tests passing, eight scenes unchanged at 75.6% / 10.3% and
+**77 ms mean**.
+
+**Rule 2 has now bitten at three different scales in one day**: desktop against Jetson,
+one thread against four, and compile-time constants against runtime arguments. The
+third is the least obvious and the microbenchmark is exactly where it hides, because a
+bench is where constants are most convenient to write. **A microbenchmark measures the
+code the compiler could generate for it, not the code in the program** -- so the loop
+that will ship has to be the loop that was timed, parameters included.
