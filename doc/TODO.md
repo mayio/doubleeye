@@ -88,6 +88,36 @@ Measured, not assumed — full write-up in
   boundaries — a two-level streaming pipeline. Measure how much of the 1.4x scaling
   the 162 MB explains *before* building it.
 
+### Next: sparse candidates (Mario's suggestion), measured and cleared
+
+**Ceiling measured first, and it does not bind.** Top-8 recall is 82.8% of known
+pixels against the pipeline's 67.9% delivered -- fifteen points of headroom, so 7.5x
+fewer edges is available at no measurable accuracy cost. See
+[09-matching.md](09-matching.md#how-many-candidates-per-pixel-are-needed-measured-before-pruning-anything)
+and `article/topk_recall.py`.
+
+The design, so it can be picked up cold:
+
+1. After aggregation, keep the **top k=8 by rank within each pixel** -- never a global
+   magnitude threshold, for the reason in 09-matching. Store `(score, d)` pairs, so a
+   row is `W*k` entries (28 KB at k=8, W=450) instead of `W*D` floats.
+2. The rho update is unchanged in shape: a contiguous run of k per left pixel.
+3. The beta update needs each RIGHT pixel's claimants, which pruning makes irregular.
+   Build it per row with a **counting sort into buckets by `xr = x - d`** -- O(k*W)
+   per row, entirely within the row, and cache-resident. This is the piece that
+   replaces the stride-(D+1) diagonal walk.
+4. Rows stay independent, so the existing row-parallel thread pool is unchanged and
+   **the solve needs no halo at all** -- correspondences lie on one image row. Only the
+   aggregation filter ever needed overlapping bands.
+
+**What to watch**: pruning removes claimants from the uniqueness competition, so it
+changes the beta dynamics rather than only the candidate list. Score with
+`article/dense_bench.py`; this one cannot be bit-identical, so it needs the numbers.
+
+**This also makes the old steps 2 and 3 unnecessary** rather than merely reordered:
+there is no volume to lay out as `[d][x]` and no stride-(D+1) walk to make
+pixel-parallel. Band fusion stays parked on the tension recorded above.
+
 **Runtime is still the whole gap.** Two levers left, and the lesson from the fast
 guided filter is that they must not touch the cost values:
 
