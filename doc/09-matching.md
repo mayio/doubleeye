@@ -2900,3 +2900,47 @@ transpose; candidate ideas are two-plane ILP per thread and fusing the transpose
 into the vertical pass), then the score's 14. The solve does not need to get faster
 until the GPU side is under ~30 ms, because the pipeline hides it. And half resolution
 already exceeds 30 Hz today if a use case wants that trade.
+
+## 30 Hz reached: the k-minor volume, and what it cost to find
+
+`de_dense_cuda` at **28.9 ms/frame (34.6 Hz) at 848x480 D=60**, full quality,
+bit-identical to the CPU on all eight scenes and the real pair. The day's path, every
+step cmp-verified: 57 -> 39 (fused score, one transpose deleted) -> 34 (packed top-2,
+k-pair transactions) -> 30.4/29.9 (A57 pinning, fetch overlap) -> 31.5 (runtime Dpad,
+after the bug below) -> 28.9 (Dpad group count as a template parameter).
+
+**The structural insight: `vol[y][x][k]`, k innermost.** The layout the CPU rejected
+three times is the GPU's right answer -- the machines want opposite layouts. A warp
+becomes 32 disparities of one row: census reads for consecutive d are one sliding
+256-byte window, volume accesses are aligned k-runs, and two whole passes disappear
+into fusions (score into the horizontal forward filter; top-2 into the vertical
+backward, whose stores then have no reader and die).
+
+Negatives and bugs, with mechanisms:
+
+- **Warp-serial shuffle scan of the recurrence: 55.7 ms** against the 21 it replaced.
+  Bit-exact and fully coalesced -- and 31 of 32 lanes burn issue slots per serial
+  step. Instruction throughput, not bandwidth. This is why Nehab et al. reassociate
+  recursive filters into block-parallel form, which an int16-truncating recurrence
+  cannot do bit-exactly.
+- **`__constant__` tables serialize under divergent indexing** -- 32 Hamming distances
+  per warp is divergent by construction. Shared-memory copies: 11.2 -> 9.2 ms.
+- **The top-2 shuffle tree merges non-adjacent k ranges** (lane 0 meets lane 16 before
+  lane 1), so a tie rule that assumes "the other side holds larger k" is wrong
+  mid-tree: 10 wrong pixels in 407k, every one an exact tie. The fix packs (value,
+  255-k) into one int32 so plain integer comparison is (value desc, k asc) and the
+  merge is order-independent. A 5-million-run host simulation of the exact tree found
+  it and is now `test_top2_merge` in make test.
+- **A compile-time DPAD=64** silently broke six of eight scenes -- everything with
+  D=80 never scored its upper disparities and read the neighbouring pixel's run.
+  teddy and cones, the two scenes everything gets tuned on, have D=60 and passed.
+  The eight-scene identity sweep caught it; a teddy-only check would have shipped it.
+
+CPU side: solve threads pinned to the A57 cluster (the Denver pair caused the 30-45 ms
+wander; pinned it is 22.6-23.1), and the candidate fetch moved to its own thread,
+where cudaMemcpy's stream serialization hides it inside the solve.
+
+Steady state at 848x480: GPU ~26 ms of kernels, solve 23 ms in parallel, fetch
+hidden, 28.9 total -- 13% under the 33.3 ms budget, at the full operating point:
+48-bit census, graded cost, edge-aware recursive filter, D=60, MASDA solve with
+margin gate.

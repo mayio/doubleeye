@@ -41,17 +41,33 @@ first-class output with one producer.
 
 ---
 
-## 0.3 Dense MASDA: real time via the GPU -- 17.5 Hz at 848x480, 40 Hz at 450x375
+## 0.3 Dense MASDA: **REAL TIME ACHIEVED -- 34.6 Hz at 848x480, full quality**
 
-**State 2026-08-08 late: `core/tools/de_dense_cuda` (TX2-only build) runs the image
-plane on the GPU and the MASDA solve on the CPU, pipelined, at 56.6-57.6 ms/frame
-steady state (17.5 Hz) at 848x480 D=60, and 24.6 ms (40.6 Hz) at 450x375 --
-bit-identical to `de_dense --threads 1`, verified by cmp at both resolutions and
-through 30 pipelined frames.** The remaining gap to 30 Hz at full resolution is the
-GPU filter (34 of the GPU's 54 ms); the solve (20-60 ms CPU) hides inside the
-pipeline. The Tegra lessons that cost time are in the commit and the source: no I/O
-coherency means every cudaHostAlloc flavour is CPU-uncached (~300 ms solve, twice),
-and the filter needed transposition, not clever indexing.
+**State 2026-08-09: `core/tools/de_dense_cuda` runs 28.9 ms/frame steady state
+(34.6 Hz) at 848x480 D=60 and 12.6 ms (79 Hz) at 450x375, pipelined, bit-identical
+to `de_dense --threads 1` on all eight Middlebury scenes and the real pair, through
+30 overlapped frames.** Config: `--threads 4 --frames N`; solve threads pin to the
+A57 cluster themselves. Two days' arc: CPU 152 -> first GPU port 57 -> k-minor
+volume 29.
+
+The structural answer was the volume layout: `vol[y][x][k]`, k innermost -- the
+`[x][d]` layout the CPU work rejected three times. The two machines want OPPOSITE
+layouts, which retroactively is what the whole `[d][x]`-vs-`[x][d]` saga was about.
+With k innermost: the score fuses with the horizontal forward filter pass (a warp =
+32 disparities of one row, ReS2tAC's assignment), every volume access is a k-run or
+a broadcast, and the top-2 fuses into the vertical backward pass so the filtered
+volume is never stored or re-read. Kernels: census+coeffs 1.5, score+hfwd 8.8,
+hbwd 5.0, vfwd 3.3, vbwd+top2 7.4 ms; CPU solve 23 ms hidden in the pipeline.
+
+The traps that cost a day between 57 and 29, each recorded in the source and
+09-matching.md: Tegra pinned memory is CPU-uncached in every flavour (~300 ms
+solve, found twice); a warp-serial shuffle scan of the recurrence is issue-bound at
+55.7 ms (the negative that motivated the layout change); the top-2 shuffle tree
+merges non-adjacent k ranges so tie rules must compare k explicitly (10 wrong
+pixels, all exact ties, caught by cmp, pinned by a 5M-run simulation that now lives
+in `make test`); and a compile-time DPAD=64 silently broke every scene with D=80 --
+caught only because the identity check runs all eight scenes, not just the two
+everything gets tuned on.
 
 What follows below is the CPU-side record as it stood before the port; its numbers
 remain the CPU baselines.
