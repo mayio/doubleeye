@@ -913,3 +913,49 @@ and with the mechanism identified.
 
 If the speedup is wanted, the fix is to keep a few candidates *outside* the bracket
 so the margin still measures a real competition — untested.
+
+## Dense MASDA in C++: 105x the NumPy version
+
+`core/tools/de_dense.cpp`. The NumPy dense matcher spends almost all of its 21 s in
+scatter — `np.maximum.at` over a 9.15M-entry edge list, an indirection per element —
+and the structure does not need an edge list at all.
+
+On a regular disparity grid, indexing scores as `s[(y*W + x)*D + d]` makes both
+max-sum reductions constant-stride walks:
+
+- **rho** ("max over this left pixel's other disparities") is a contiguous run of D.
+- **beta** ("max over this right pixel's other claimants") walks
+  `(xr+dmin)*D + k*(D+1)` — stride D+1.
+
+No edge list, no indirection. Rows share no left or right pixel, so they go to a
+thread pool with no synchronisation beyond the join.
+
+| version | time (450x375, D=60, 12 iters) | coverage | bad-1.0 |
+|---|---|---|---|
+| NumPy | 21,000 ms | 89.0% | 34.7% |
+| C++, first cut | 286 ms | 86.9% | 33.8% |
+| **C++, optimised** | **199 ms** | 86.9% | 33.8% |
+| *OpenCV SGM, for scale* | *24 ms* | *81.1%* | *8.1%* |
+
+**105x the NumPy version, and 8x SGM rather than 900x.** The remaining gap to SGM is
+now a plausible constant — both are compiled, both are threaded — rather than an
+interpreter artefact.
+
+Three changes took 286 ms to 199 ms, all verified output-identical:
+
+- **Gather the strided diagonal into scratch.** The beta pass walked stride D+1 =
+  244 bytes twice, once for the top-2 and once for the update: a cache miss per
+  element, sixty times per pixel. Gathering 60 floats once turns that into one
+  strided pass plus two contiguous ones.
+- **Precompute the valid disparity interval per pixel.** Which disparities are
+  in-bounds is a contiguous range, so storing `[k0, k1)` removes a sentinel
+  comparison from every element of every inner loop.
+- **Hoist the per-row allocations.** `solve_row` was allocating four `std::vector`s
+  per row — 1500 allocations per image — now thread-local scratch allocated once.
+
+The accuracy is unchanged from the NumPy version to within the decision rule's
+tie-breaking, which is the point: this is the same algorithm, not an approximation
+of it. It does not make dense MASDA competitive with SGM on quality — that limit is
+the missing smoothness prior and no amount of optimisation touches it.
+
+Not yet measured on the Jetson: the board was unreachable when this was written.
