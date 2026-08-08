@@ -97,9 +97,15 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
 2. **Coverage**, the only axis SGM still leads and untouched all day. The margin gate is
    deliberately trading it for precision; the question is whether a better-calibrated gate
    holds the precision at higher coverage.
-3. **Prior as a MASK on absolute-disparity planes**, with per-plane bounding boxes. The
-   offset-indexed version is a measured negative and the mechanism is known.
-
+3. **Stop computing all D planes -- the biggest measured lever in the project, 5.2x.**
+   Our own ceiling says 81.5% correct-over-known is available against 67.9% delivered.
+   The offset-indexed version is a measured negative with a known mechanism: aggregation
+   needs constant-disparity planes. Two published constructions avoid that failure mode
+   and both overlap what is already built -- **ELAS** (sparse support points chosen by
+   the first-to-second-minimum ratio, i.e. `Match::margin`, triangulated into a prior)
+   and **ESPReSSo** (PatchMatch hypotheses **shared across rectangular tiles**, so the
+   plane is constant within a tile and a recursive edge-aware filter stays legal). See
+   09-matching.md. Either is a bigger prize than anything in the inner loops.
 4. **Idle cores.** Desktop 3.27 of 4, TX2 2.9x of 6.
 
 ### Do not retry without new information

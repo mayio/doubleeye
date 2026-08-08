@@ -2735,3 +2735,65 @@ in part ("also produced a handful of differing pixels"). It may have been arithm
 correct all along. The runtime result there was decisive on its own, so the conclusion
 stands, but the identity evidence against it was not evidence.
 
+## What others did about the D-planes problem, and why it beats vectorising
+
+Searched after the score-loop vectorisation came in at 1.59x with an 11% stage ceiling.
+The literature does not try to make the sweep fast. It avoids the sweep.
+
+**ELAS** (Geiger, Roser, Urtasun, ACCV 2010, `libelas`) is the closest to what this
+project already has. It matches a **sparse set of support points**, triangulates them,
+and uses that as a prior that narrows the disparity search for every remaining pixel.
+Real-time on a CPU at over a megapixel. The support-point selector is **the ratio between
+the first and second SAD minimum** -- which is `Match::margin`, already exported here,
+already measured (precision by margin quartile 0.169 / 0.286 / 0.391 / 0.659). And the
+prior structure is a Delaunay triangulation, which is exactly what TODO 3.2 says to use
+instead of the k-nearest-neighbour proxy. Three pieces of this are already built.
+
+**ESPReSSo** (Goldman et al., 3DV 2018) is the one that answers the question the
+coarse-to-fine negative left open. It runs PatchMatch over slanted plane hypotheses on
+precomputed binary descriptors and aggregates with the **permeability filter** -- a
+separable recursive edge-aware filter, the same family as `rf_filter` here. The trick that
+makes aggregation legal is that **plane hypotheses are shared across rectangular tiles.**
+Within a tile the hypothesis is constant, so the filter aggregates at constant disparity,
+which is the exact property the offset-indexed parametrisation destroyed and the reason it
+cost 4 points. 11 ms per frame, but on a desktop GPU, so the number does not transfer.
+
+**rSGM** (Spangenberg, Langner, Adfeldt, Rojas, IV 2014) does VGA at D=128 above 16 Hz on
+a CPU, and notes that **every part of SGM except the data cost is agnostic to which
+disparities are sampled** -- so large disparities can be sampled on a sparser grid. Cheap
+to try and the wrong direction for us: large disparity is the near field, where this
+project's 0.19 m gate problem already lives.
+
+**DeepPruner** and **SCV-Stereo** are the learned versions of the same idea -- predict a
+per-pixel disparity range, build a sparse cost volume in it. Not for a TX2 CPU, but they
+confirm which axis the field thinks is the expensive one, and it is not the inner loop.
+
+### What this says about where the time should go
+
+The measured stage, TX2, teddy, agg 5, six threads, thread-summed CPU:
+
+| part | ms | note |
+|---|---|---|
+| **recursive filter** | **93** | biggest item; vertical passes are pure row-wise SIMD |
+| score | 77 -> 48 | done, `--simd`, 1.59x, and it did not help the wall clock |
+| top-2 insert | 67 | one streaming read plus a cached compare, already thin |
+| alloc | 17 | newly visible; nobody knew it was there |
+| **total CPU / wall** | **256 / 68** | **3.79 of 6 cores** |
+
+Three levers, and they are not the same size:
+
+1. **Stop computing all D planes.** Our own ceiling measurement says 81.5% correct-over-
+   known is available against 67.9% delivered, at **5.2x less arithmetic**. That is the
+   largest number in this file and it has been sitting in it since the coarse-to-fine
+   work. What failed was one parametrisation, not the idea, and ELAS and ESPReSSo are
+   both published constructions that do not have that failure mode.
+2. **Occupancy: 3.79 of 6 cores.** A 1.6x with no arithmetic change at all, and the SIMD
+   experiment showed the schedule is fragile enough to hand back more than a vectorised
+   inner loop can win.
+3. **SIMD the filter, not the score.** It is now the largest item. Its vertical passes are
+   `cur[x] += a[x]*(nxt[x]-cur[x])` across a row with no recurrence in x -- eight int16
+   lanes, no permutes, no tables. The horizontal passes are serial in x and are not this.
+
+Vectorising the score loop was ranked first and was worth 11% of the stage at best. The
+ranking was wrong, and it was wrong because it ranked by *item size* rather than by
+*item size times achievable factor divided by what the change costs elsewhere*.
