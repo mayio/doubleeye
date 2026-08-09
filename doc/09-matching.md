@@ -3023,3 +3023,29 @@ produce the prior.
 
 The GPU tool does not take a prior and does not need one at 34 Hz; if the CNN ever
 squeezes its budget, this is the lever that composes with it.
+
+## The Part 1 reframe: dense MASDA on sparse matrices, measured against exact assignment
+
+The article's keypoint application was a misunderstanding of the goal and is retired
+from the page (git history keeps it). `article/dense_sparse_matrices.py` re-measures
+the reframed subject on the shipping binary's own dumped volumes -- so the NumPy study
+and the C++ pipeline score identical evidence. Three results now on the page:
+
+- **Uniqueness vs winner-take-all, identical scores, pooled over 8 scenes** (~1.3M
+  answers): WTA 0.775, MASDA 0.878. +10.3 points for the one-to-one constraint at the
+  cost of 3.6% of correct answers; largest gains on the worst scenes (Art +12.5,
+  Reindeer +13.0).
+- **Vs exact per-row assignment** (JV with lambda/gamma slots, all 369 rows of teddy
+  and cones): precision identical to three decimals (0.914/0.914, 0.941/0.941),
+  objective ratios 0.99918/0.99961 -- but only 175/369 and 253/369 rows exactly
+  optimal, against ratio 1.0000 on the old keypoint problems. Dense rows are tie-heavy,
+  the Bayati-Shah-Sharma uniqueness condition fails routinely, and it costs under 0.1%
+  of objective and no measurable precision.
+- **Representation, on the dense problem**: dense per-row matrices 96.9 s/frame, sparse
+  edge list 1.57 s (62x), per-row compiled JV 10.0 s (sparse is 6.4x faster than exact).
+  The C++/CUDA endpoints (11 ms desktop solve, 28.9 ms/frame full GPU pipeline) close
+  the five orders of magnitude.
+
+One implementation note: the dump-vol path runs the float filter (census-only score),
+not the int16 graded path, so these study numbers are near but not identical to
+dense_bench's. Both are stated on the page.
