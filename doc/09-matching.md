@@ -3078,3 +3078,30 @@ matches it on precision.
 Left as an open question rather than claimed: whether a neighbourhood smoothness
 factor pays where ordering did not. Ordering can only remove errors it can SEE, and
 repetitive-texture errors are order-preserving by construction.
+
+### Two iterations against thirty: the study was measuring a configuration nobody runs
+
+Caught while reviewing the reframed article: the NumPy study ran 30 message-passing
+iterations, while `de_dense` and `de_dense_cuda` both ship **2**. Every published
+number described the 30-iteration configuration, and the speed table charged MASDA 15x
+the message passing production actually does. Re-measured, eight scenes:
+
+| iterations | pooled correct | pooled precision | objective ratio (teddy) | rows optimal |
+|---|---|---|---|---|
+| **2** (shipping) | 242,824 | **0.884** | 0.9918 | 6 / 369 |
+| 30 | 243,589 | 0.880 | 0.9992 | 175 / 369 |
+
+**Fifteen times the message passing buys 0.3% more correct answers, 0.4 points LESS
+precision, and a 4x slower solve.** The extra iterations move marginal candidates from
+unanswered to answered, and those are wrong more often than the population average, so
+the objective improves while precision does not.
+
+Speed at shipping settings (teddy, 369 rows): dense per-row matrices 7.22 s, sparse
+0.38 s, per-row JV 7.6 s -- 19x and 20x, against the 62x/6.4x the 30-iteration table
+reported. JV is iteration-independent, so its 7.6 vs 10.0 across the two runs is
+measurement noise on a shared desktop and a fair warning about single-run precision.
+
+The transferable point: **the objective is a loose proxy for the decision.** Sitting
+0.8% short of the optimal objective with 1.6% of rows exactly optimal is invisible in
+precision. Any belief-propagation result quoting an iteration count without this
+comparison should be treated with suspicion -- this one included, until today.

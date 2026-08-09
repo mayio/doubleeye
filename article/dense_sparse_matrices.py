@@ -111,11 +111,11 @@ def jv_row(ei, ej, se, W):
             if i < W and j < W and np.isfinite(S[i, j]) and S[i, j] > LAM}
 
 
-def dense_masda_row(ei, ej, se, W):
+def dense_masda_row(ei, ej, se, W, iters=30):
     """The article's dense-matrix solver on this row (for the speed table)."""
     S = np.full((W, W), -np.inf)
     S[ei, ej] = se
-    return masda(S, lam=LAM, gam=GAM, iters=30, damping=0.4)
+    return masda(S, lam=LAM, gam=GAM, iters=iters, damping=0.4)
 
 
 def obj(assign, se_lookup, m, n):
@@ -149,7 +149,7 @@ def dense_positions(W):
     return p
 
 
-def run_scene(name, with_jv, with_speed, row_step=1, kappa=None):
+def run_scene(name, with_jv, with_speed, row_step=1, kappa=None, iters=30):
     vol, W, H, D, gt = dump_volume(name)
     dmin = 1
     tot = dict(masda_ok=0, masda_wr=0, masda_n=0,
@@ -158,7 +158,7 @@ def run_scene(name, with_jv, with_speed, row_step=1, kappa=None):
                obj_masda=0.0, obj_jv=0.0, rows=0, rows_opt=0,
                t_sparse=0.0, t_dense=0.0, t_jv=0.0, edges=0,
                ord_ok=0, ord_wr=0, ord_n=0, xing_base=0, xing_ord=0,
-               pairs=0, t_ord=0.0)
+               pairs=0, t_ord=0.0, iters_run=0)
     rows = range(3, H - 3, row_step)
     for y in rows:
         ei, ej, se, k1, k2, s1, s2 = top2_edges_row(vol[y], W, D, dmin)
@@ -172,8 +172,9 @@ def run_scene(name, with_jv, with_speed, row_step=1, kappa=None):
 
         # MASDA on the sparse matrix
         t0 = time.perf_counter()
-        assign, _ = masda_sparse(ei, ej, se, W, W, lam=LAM, gam=GAM,
-                                 iters=30, damping=0.4)
+        assign, hist = masda_sparse(ei, ej, se, W, W, lam=LAM, gam=GAM,
+                                    iters=iters, damping=0.4)
+        tot["iters_run"] += len(hist)
         tot["t_sparse"] += time.perf_counter() - t0
         md = {i: float(i - j) for i, j in assign.items()}
         ok, wr, _ = eval_assign(y, md, gt)
@@ -208,7 +209,7 @@ def run_scene(name, with_jv, with_speed, row_step=1, kappa=None):
             tot["rows_opt"] += int(abs(om - oj) < 1e-6)
         if with_speed:
             t0 = time.perf_counter()
-            dense_masda_row(ei, ej, se, W)
+            dense_masda_row(ei, ej, se, W, iters)
             tot["t_dense"] += time.perf_counter() - t0
         tot["rows"] += 1
     return tot, W, H
@@ -217,13 +218,17 @@ def run_scene(name, with_jv, with_speed, row_step=1, kappa=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--only", default=None, help="comma-separated scene list")
     ap.add_argument("--row-step", type=int, default=1)
+    ap.add_argument("--iters", type=int, default=30,
+                    help="message-passing iteration cap (production ships 2)")
     ap.add_argument("--kappa", type=float, default=None,
                     help="also run the ordering factor at this kappa")
     a = ap.parse_args()
-    scenes = ["teddy"] if a.quick else sorted(os.listdir(DATA))
+    scenes = (a.only.split(",") if a.only else
+              (["teddy"] if a.quick else sorted(os.listdir(DATA))))
     jv_scenes = {"teddy", "cones"}
-    speed_scenes = {"teddy"}
+    speed_scenes = {"teddy"} if not a.only else set()
 
     pooled = dict(masda_ok=0, masda_wr=0, wta_ok=0, wta_wr=0)
     print(f"{'scene':<10} {'method':<7} {'matches':>8} {'correct':>8} "
@@ -231,7 +236,7 @@ def main():
     for s in scenes:
         with_jv = s in jv_scenes
         with_speed = s in speed_scenes
-        t, W, H = run_scene(s, with_jv, with_speed, a.row_step, a.kappa)
+        t, W, H = run_scene(s, with_jv, with_speed, a.row_step, a.kappa, a.iters)
         meths = ["wta", "masda"] + (["jv"] if with_jv else []) + (
             ["ord"] if a.kappa is not None else [])
         for meth in meths:
@@ -248,6 +253,8 @@ def main():
                   f"{t['pairs']} crossing pairs, "
                   f"solve {t['t_ord']:.1f}s vs {t['t_sparse']:.1f}s plain")
         if with_jv:
+            print(f"{s:<10} mean iterations actually run "
+                  f"{t['iters_run']/max(1,t['rows']):.1f} of {a.iters} cap")
             print(f"{s:<10} optimality: rows at exact optimum "
                   f"{t['rows_opt']}/{t['rows']}  "
                   f"objective ratio {t['obj_masda']/t['obj_jv']:.6f}")
