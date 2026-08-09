@@ -3049,3 +3049,32 @@ and the C++ pipeline score identical evidence. Three results now on the page:
 One implementation note: the dump-vol path runs the float filter (census-only score),
 not the int16 graded path, so these study numbers are near but not identical to
 dense_bench's. Both are stated on the page.
+
+### The ordering factor, re-measured in the dense configuration
+
+The Part 1 reframe initially kept the ordering section with only a caveat, which left
+it citing keypoint-scale results inside a dense article. Measured properly (eight
+scenes, every fourth row, paired against the factor off, kappa 0.3, damping 0.6):
+
+- **It works.** Crossings retained 0.54x on average (0.33-0.67 across scenes),
+  precision up on **8 of 8** scenes, mean +0.43 points, SE 0.094. Largest where the
+  scene is worst -- Laundry +0.9 at precision 0.771, Reindeer +0.7 -- the same shape
+  uniqueness itself shows.
+- **And it does not pay.** In the keypoint configuration a scanline band held a
+  handful of keypoints, so the O(E_r^2) crossing enumeration was a footnote. In the
+  dense configuration the band IS the row: ~2400 crossing pairs per row against ~885
+  edges, nearly 3:1, and the solve runs 5-7x slower to buy 40 correct answers out of
+  243,000.
+- **kappa saturates immediately**: 0.1, 0.3 and 0.8 land within 0.003 of each other on
+  precision and 1% on crossings retained. The factor is not being tuned into
+  usefulness; it is doing all it can, and that is small.
+
+The structural result survives and is the reason the section stays: the factor folds
+additively into the score, so it reuses the same two segment reductions with (s + o)
+for s -- no new message type. That composability is what an exact LAP solver cannot
+offer, and it is the honest argument for MASDA over JV, given section 4.2 shows JV
+matches it on precision.
+
+Left as an open question rather than claimed: whether a neighbourhood smoothness
+factor pays where ordering did not. Ordering can only remove errors it can SEE, and
+repetitive-texture errors are order-preserving by construction.

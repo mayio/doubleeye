@@ -36,7 +36,8 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from masda_stereo import _seg_max_excluding, masda, masda_sparse  # noqa: E402
+from masda_stereo import (_seg_max_excluding, masda, masda_sparse,  # noqa: E402
+                          masda_sparse_ordering, count_crossings)
 
 DATA = os.path.join(HERE, "data", "c_bench")
 BIN = os.path.join(os.path.dirname(HERE), "core", "build", "de_dense")
@@ -138,14 +139,26 @@ def eval_assign(y, assign_disp, gt, known_only=True):
     return ok, wrong, unk
 
 
-def run_scene(name, with_jv, with_speed, row_step=1):
+def dense_positions(W):
+    """Positions for the ordering factor: in the dense formulation a "keypoint"
+    IS a pixel index, and one image row is one scanline band, so every edge pair
+    in the row is a candidate crossing. That is the structural difference from
+    the keypoint configuration and it is why the pair count explodes."""
+    p = np.zeros((W, 2), np.float64)
+    p[:, 0] = np.arange(W)
+    return p
+
+
+def run_scene(name, with_jv, with_speed, row_step=1, kappa=None):
     vol, W, H, D, gt = dump_volume(name)
     dmin = 1
     tot = dict(masda_ok=0, masda_wr=0, masda_n=0,
                wta_ok=0, wta_wr=0, wta_n=0,
                jv_ok=0, jv_wr=0, jv_n=0,
                obj_masda=0.0, obj_jv=0.0, rows=0, rows_opt=0,
-               t_sparse=0.0, t_dense=0.0, t_jv=0.0, edges=0)
+               t_sparse=0.0, t_dense=0.0, t_jv=0.0, edges=0,
+               ord_ok=0, ord_wr=0, ord_n=0, xing_base=0, xing_ord=0,
+               pairs=0, t_ord=0.0)
     rows = range(3, H - 3, row_step)
     for y in rows:
         ei, ej, se, k1, k2, s1, s2 = top2_edges_row(vol[y], W, D, dmin)
@@ -165,6 +178,20 @@ def run_scene(name, with_jv, with_speed, row_step=1):
         md = {i: float(i - j) for i, j in assign.items()}
         ok, wr, _ = eval_assign(y, md, gt)
         tot["masda_ok"] += ok; tot["masda_wr"] += wr; tot["masda_n"] += len(md)
+
+        if kappa is not None:
+            pos = dense_positions(W)
+            t0 = time.perf_counter()
+            oa, _, npairs = masda_sparse_ordering(ei, ej, se, W, W, pos, pos,
+                                                  kappa=kappa, lam=LAM, gam=GAM,
+                                                  iters=30, damping=0.6)
+            tot["t_ord"] += time.perf_counter() - t0
+            od = {i: float(i - j) for i, j in oa.items()}
+            ok, wr, _ = eval_assign(y, od, gt)
+            tot["ord_ok"] += ok; tot["ord_wr"] += wr; tot["ord_n"] += len(od)
+            tot["xing_base"] += count_crossings(assign, pos, pos)[0]
+            tot["xing_ord"] += count_crossings(oa, pos, pos)[0]
+            tot["pairs"] += npairs
 
         se_lookup = {(int(i), int(j)): float(s) for i, j, s in zip(ei, ej, se)}
         if with_jv:
@@ -191,6 +218,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--row-step", type=int, default=1)
+    ap.add_argument("--kappa", type=float, default=None,
+                    help="also run the ordering factor at this kappa")
     a = ap.parse_args()
     scenes = ["teddy"] if a.quick else sorted(os.listdir(DATA))
     jv_scenes = {"teddy", "cones"}
@@ -202,14 +231,22 @@ def main():
     for s in scenes:
         with_jv = s in jv_scenes
         with_speed = s in speed_scenes
-        t, W, H = run_scene(s, with_jv, with_speed, a.row_step)
-        for meth in ("wta", "masda", "jv") if with_jv else ("wta", "masda"):
+        t, W, H = run_scene(s, with_jv, with_speed, a.row_step, a.kappa)
+        meths = ["wta", "masda"] + (["jv"] if with_jv else []) + (
+            ["ord"] if a.kappa is not None else [])
+        for meth in meths:
             n, ok, wr = t[f"{meth}_n"], t[f"{meth}_ok"], t[f"{meth}_wr"]
             if n == 0:
                 continue
             print(f"{s:<10} {meth:<7} {n:>8} {ok:>8} {ok/max(1,ok+wr):>9.3f}")
         pooled["masda_ok"] += t["masda_ok"]; pooled["masda_wr"] += t["masda_wr"]
         pooled["wta_ok"] += t["wta_ok"]; pooled["wta_wr"] += t["wta_wr"]
+        if a.kappa is not None:
+            print(f"{s:<10} ordering k={a.kappa}: crossings "
+                  f"{t['xing_base']} -> {t['xing_ord']} "
+                  f"({t['xing_ord']/max(1,t['xing_base']):.2f}x), "
+                  f"{t['pairs']} crossing pairs, "
+                  f"solve {t['t_ord']:.1f}s vs {t['t_sparse']:.1f}s plain")
         if with_jv:
             print(f"{s:<10} optimality: rows at exact optimum "
                   f"{t['rows_opt']}/{t['rows']}  "
