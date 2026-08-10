@@ -261,7 +261,41 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    count -- and rule 5 says measure after, not just before. And the intervals come
    from ground truth, so tiles are bounded only where ground truth is known.
 
-   The constructions, now that the prize is priced:
+   **The half-resolution predictor was priced next, and it is not the one.**
+   `article/range_predictor.py`, tile 16, same 15 scenes. `cost` is the fraction of
+   the sweep, `recall` the fraction of pixels whose TRUE disparity falls inside its
+   tile's band -- a band that excludes the answer does not cost time, it costs the
+   answer:
+
+   | pad | cost | recall |
+   |---|---|---|
+   | 0 | 15.2% | 55.6% |
+   | 2 | 19.7% | 88.5% |
+   | 4 | 24.1% | 91.2% |
+   | 8 | 32.8% | 93.7% |
+   | 16 | 49.3% | 96.5% |
+
+   Against the oracle's **19.2% at 100%**, the coarse pass buys 19.7% at **88.5%**
+   — the same arithmetic saving while throwing away one true disparity in nine. To
+   reach a recall worth having it needs pad 16, and 49.3% of the sweep is 2.0x, not
+   5.2x. Its bare interval contains the answer only **55.6%** of the time, and 5.6%
+   of pixels sit in tiles with no coarse disparity at all and must sweep everything.
+
+   **This explains the c2f result rather than contradicting it.** `--c2f` measured
+   1.24x on the desktop and flat on the TX2, and the reading then was that its
+   per-PLANE bounding boxes were too loose. Per-tile bands are much tighter and
+   still do not pay, so the loose scheme was not the binding problem: **the coarse
+   prior itself is not accurate enough.** Do not revisit c2f expecting the tiling
+   to rescue it.
+
+   **The bar for anything else is now a number.** A predictor must beat 24.1% cost
+   at 91.2% recall, and to realise the 5.2x it has to reach roughly 19% cost at 99%
+   recall — an interval good to about +-2 planes, nearly always containing the
+   answer. That is a demanding target and it is the right one to test a candidate
+   against before implementing it, since `range_predictor.py` only needs the
+   candidate's predicted interval, not a working matcher built on it.
+
+   The constructions, now that both the prize and the bar are priced:
 
    1. **ICSG -- intrinsic curves** (Shahbazi et al., ISPRS Congress 2016). Its own
       leaderboard entry claims *"83% reduction of the disparity range, individually
