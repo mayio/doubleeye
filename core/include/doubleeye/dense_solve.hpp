@@ -19,7 +19,19 @@ namespace doubleeye {
 struct Cfg {
   int dmin = 1, dmax = 60, iters = 2, agg = 3;
   bool rf = true;              // recursive edge-aware filter; --guided for the old one
-  float sigma_s = 12.f, sigma_r = 0.20f;   // sigma_r swept: 0.2 is the peak
+  // sigma_r swept: 0.2 is the peak. sigma_s was NOT swept until 2026-08-10, and
+  // 12 turned out to be past the optimum on both axes -- Middlebury v3, all 15
+  // training scenes, official scoring, --threads 1:
+  //   sigma_s  4    6      8      10     12     20     30
+  //   bad-1.0  --   25.96  26.04  26.41  26.94  31.91  33.49
+  //   coverage --   80.4%  80.1%  79.7%  79.3%  78.2%  77.3%
+  // 8 is inside the plateau and clear of the degradation below 6; 6 measured
+  // marginally better and the difference is inside scene-to-scene noise. Worth
+  // 0.9 points of bad-1.0 and 0.8 of coverage over the old 12, and the filter is
+  // an IIR whose cost does not depend on sigma, so it is free.
+  // sigma_r 0.30 measured 0.15 better than 0.20 at sigma_s 8 -- inside noise, and
+  // left alone rather than tuned on a difference that small.
+  float sigma_s = 8.f, sigma_r = 0.20f;
   bool subpixel = true;    // ON by default since 2026-08-10: worth 15.0 points
                            // of bad-1.0 on Middlebury v3. --no-subpixel disables.
   bool guided = true;      // edge-aware aggregation

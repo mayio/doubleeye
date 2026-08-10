@@ -220,7 +220,12 @@ def halo_cost(a, fn, T):
                 pv = pv[(pv >= 0) & (pv < D)]
                 if pv.size:
                     want[pv, by, bx] = True
-        st = np.ones((1 + 2 * (a.mpad // T), 1 + 2 * (a.mpad // T)), bool)
+        # CEIL, not floor. A tile needs real scores up to MPAD px outside itself,
+        # and any part of that reach landing in a neighbouring tile means that
+        # tile's plane must be computed too. Flooring gave zero dilation for every
+        # tile wider than MPAD and silently charged no halo at all.
+        rt = -(-a.mpad // T)
+        st = np.ones((1 + 2 * rt, 1 + 2 * rt), bool)
         for p in pads:
             area = 0.0
             for k in range(D):

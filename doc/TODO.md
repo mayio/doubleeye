@@ -389,13 +389,25 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
 
    | tile | cost, no halo | **cost with halo** |
    |---|---|---|
-   | 16 | 26.3% | **53.8%** |
-   | 32 | — | **34.4%** |
-   | 64 | — | 44.2% |
+   | **16** | 26.3% | **53.8%** |
+   | 32 | — | 65.9% |
+   | 64 | — | 81.5% |
 
-   **The halo roughly halves the win, and it moves the optimum tile to 32** — small
-   tiles drown in halo, large ones carry loose bands. The best realisable figure is
-   **34.4%, which is 2.9x**, not 5.2x and not 3.8x.
+   *(Corrected 2026-08-10: the first version of this table used a floor when
+   converting the halo to tile units, so every tile wider than MPAD dilated by ZERO
+   and was charged no halo at all. It read 34.4% at tile 32 and named that the
+   optimum. Both the number and the direction were wrong. At tile 16 with MPAD 16
+   the halo is exactly one tile, so 53.8% is exact; the wider rows are upper bounds,
+   since a 16 px reach out of a 32-wide tile is charged a full neighbouring tile.)*
+
+   **The halo more than halves the win, and bigger tiles are worse, not better** —
+   the halo is paid per tile that wants a plane, so more tiles is not the fix and
+   fewer tiles means looser bands. Best realisable is **53.8%, which is 1.9x**, not
+   5.2x and not 3.8x.
+
+   **Shrinking sigma_s does not rescue it.** The default moved from 12 to 8 the same
+   day (2.2), which takes the halo from ~16 px to ~11. At tile 16 that is still a
+   full neighbouring tile, so the table does not move at all.
 
    ### What the whole chain came to
 
@@ -403,7 +415,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    |---|---|
    | oracle interval, tile 16 | 19.2% = **5.2x** |
    | best real predictor, no halo | 26.3% = **3.8x** |
-   | **the same with the filter halo paid** | **34.4% = 2.9x** |
+   | **the same with the filter halo paid** | **53.8% = 1.9x** |
    | and wall clock | worse again, unmeasured |
    | and accuracy at 93.5% recall | unknown, 0 to 6 points |
 
@@ -412,7 +424,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    trying to avoid. Every step of this chain was a real effect and each one took a
    bite out of the prize.
 
-   **Recommendation: do not build it on the GPU path.** 2.9x of arithmetic before
+   **Recommendation: do not build it on the GPU path.** 1.9x of arithmetic before
    implementation losses, for an unknown accuracy cost, against a pipeline that
    already closes 30 Hz at 96% of budget. The prize this item has carried since it
    was written is real in the oracle and mostly eaten by the time it is realisable.
