@@ -957,13 +957,42 @@ consistent with real sync. Not proof.
 
 ## 4. Open questions from the plan, still open
 
-- **Calibrating λ and γ.** Currently hand-set. The plan's candidate: a small MLP over
+- **Calibrating λ and γ — but they are INERT where they currently sit** (measured
+  2026-08-11, `--lambda/--gamma/--damping` exposed for it). Middlebury v3, all 15
+  scenes, `--threads 1`, both held equal:
+
+  | λ=γ | -0.4 | -0.2 | **-0.1 (default)** | -0.05 | +0.1 | +0.3 | +0.5 |
+  |---|---|---|---|---|---|---|---|
+  | bad-1.0 | 26.09 | 26.08 | **26.04** | 26.02 | 25.59 | 22.01 | 13.02 |
+  | coverage | 80.0% | 80.1% | **80.1%** | 80.1% | 79.7% | 73.4% | 47.2% |
+
+  **Below zero they do nothing at all** — a factor of eight in magnitude moves
+  bad-1.0 by 0.07 and coverage not at all. They sit far under the score
+  distribution, so `cs <= lambda` almost never fires and `max(lambda, excl)` is
+  almost always the other term. The default is not a value, it is *off*.
+
+  **Above zero they work, and they are a second margin gate.** +0.5 costs 33 points
+  of coverage to buy 13 of bad-1.0, which is the same shape of trade `--min-margin`
+  already offers at roughly the same exchange rate. So this is another knob that
+  moves along the precision–coverage curve rather than off it, and it is not tuned
+  here for the same reason the gate is not.
+
+  **What that does to this item.** The plan's candidate was a small MLP over
+  descriptor distance, y-residual, coarse-disparity residual, keypoint response,
+  response ratio and local texture energy → calibrated log-likelihood ratio. That is
+  still interesting, but it would have been trained to predict parameters which, at
+  the scale they are currently set, the output does not respond to. Any such work
+  has to start by putting λ and γ **into** the active range, and it then competes
+  with a one-line gate that already does the same job. Needs ground truth (1.1) to
+  train against, and now also needs a reason to beat `--min-margin`.
+
+  *(Superseded framing, kept: "Currently hand-set. The plan's candidate: a small MLP over
   descriptor distance, y-residual, coarse-disparity residual, keypoint response,
   response ratio and local texture energy → calibrated log-likelihood ratio. Needs
-  ground truth (1.1) to train against. **Survives the no-CNN decision by decision, not
-  by oversight** (2026-08-10): six scalar features, no image plane, no GPU, nothing
-  that competes with the matcher for the device — which is what that decision was
-  about. Do not strike it when applying "no CNN" elsewhere.
+  ground truth (1.1) to train against.")* **Survives the no-CNN decision by decision,
+  not by oversight** (2026-08-10): six scalar features, no image plane, no GPU,
+  nothing that competes with the matcher for the device — which is what that decision
+  was about. Do not strike it when applying "no CNN" elsewhere.
 - **Second use of MASDA for frame-to-frame association** (visual odometry). Same
   machinery; the IMU rotation compensation makes it tractable, and it is the case
   where 3.1's coarse prior should finally pay.

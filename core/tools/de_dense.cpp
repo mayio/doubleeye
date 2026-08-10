@@ -1564,6 +1564,13 @@ int main(int argc, char** argv) {
     else if (a == "--csct") cfg.csct = true;
     else if (a == "--ad" && has) cfg.ad = float(std::atof(argv[++i]));
     else if (a == "--ad-trunc" && has) cfg.ad_trunc = std::atoi(argv[++i]);
+    // lambda = clutter (a LEFT pixel left unmatched), gamma = misdetection (a RIGHT
+    // pixel left unclaimed). Hand-set at -0.1 since the solver was written and never
+    // swept; they are the two parameters that price coverage directly, which is the
+    // axis SGM still leads on. Exposed so that can be measured rather than assumed.
+    else if (a == "--lambda" && has) cfg.lambda = float(std::atof(argv[++i]));
+    else if (a == "--gamma" && has) cfg.gamma = float(std::atof(argv[++i]));
+    else if (a == "--damping" && has) cfg.damping = float(std::atof(argv[++i]));
     else if (a == "--prior" && has) priorp = argv[++i];
     else if (a == "--simd") cfg.simd = true;
     else if (a == "--no-blockwise") cfg.noblock = true;
