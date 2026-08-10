@@ -295,22 +295,54 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    against before implementing it, since `range_predictor.py` only needs the
    candidate's predicted interval, not a working matcher built on it.
 
-   The constructions, now that both the prize and the bar are priced:
+   **ICSG was priced next, and it fails here for a mechanism this project has now
+   met three times.** `article/range_predictor.py --predictor icsg`. Tile 16, same
+   15 scenes, feature = intensity plus scanline derivative, brute-forced over d
+   because the question is whether the reduction is accurate enough to be worth
+   indexing, and the index is the paper's contribution rather than the claim:
 
-   1. **ICSG -- intrinsic curves** (Shahbazi et al., ISPRS Congress 2016). Its own
-      leaderboard entry claims *"83% reduction of the disparity range, individually
-      for each pixel, directly from the original resolution of the image without
-      needing hierarchical search"*, then SGM over eight paths. It dodges **both** of
-      our recorded negatives at once: the restriction is per-pixel range, not
-      offset-indexed planes, so aggregation still sees constant-disparity planes; and
-      it is explicitly not coarse-to-fine, which 3.1 measured as useless here because
-      k is already 2.7. 3.41% bad-1.0 sparse at ~46% coverage on **one** 2.4 GHz core.
-   2. **MTS / MTS2 -- max-trees** (Brandt et al., PRL 2020 / arXiv:2006.15373). Same
-      lever, different construction: a hierarchical max-tree representation restricts
-      the search range per region. MTS2 is the precision leader of the whole sparse
-      table, 0.61% at ~36% coverage.
-   3. **ESPReSSo** -- PatchMatch hypotheses **shared across rectangular tiles**, so the
-      plane is constant within a tile and a recursive edge-aware filter stays legal.
+   | | per-pixel admitted | tile cost | recall |
+   |---|---|---|---|
+   | ICSG tau 8, tile band = min..max | **13.9%** | 87.5% | 96.4% |
+   | ICSG tau 8, band = narrowest 95% of mass | 13.9% | 74.0% | 94.0% |
+   | half-resolution pass | — | **24.1%** | 91.2% |
+   | oracle | — | **19.2%** | **100%** |
+
+   **The paper's claim reproduces and is useless to us.** 13.9% admitted is an 86%
+   per-pixel reduction, right at the 83% claimed. But those admitted disparities are
+   SCATTERED across the range, not contiguous, so the tile that has to sweep their
+   union sweeps almost everything — 87.5%, and still 74.0% if the band is allowed to
+   discard the outer 5% of the mass. The half-resolution pass, which is much worse
+   per pixel, is three times better per tile because its errors are *local*.
+
+   **This is the constant-disparity-plane constraint for the third time.** It killed
+   offset-indexed coarse-to-fine, it is why the range must be restricted per tile
+   rather than per pixel at all, and now it converts a real 86% reduction into
+   nothing. A scattered per-pixel candidate set is usable by a matcher that scores
+   candidates individually — which is what ICSG's own SGM does — and not by one that
+   aggregates over planes. Ours aggregates over planes, and that is where its
+   accuracy comes from.
+
+   **So the ranking changes.** ESPReSSo moves to the front: it is the only candidate
+   that produces a tile-constant hypothesis *by construction* instead of deriving an
+   interval from per-pixel evidence, which is exactly the failure above. Max-trees
+   are untested and now suspect for the same reason — cheap to check, since
+   `range_predictor.py` needs only their predicted interval.
+
+   The constructions, re-ranked by what the measurements say:
+
+   1. **ESPReSSo** -- PatchMatch hypotheses **shared across rectangular tiles**, so
+      the plane is constant within a tile and a recursive edge-aware filter stays
+      legal. Promoted 2026-08-10: tile-constant by construction is precisely what
+      ICSG could not deliver.
+   2. **MTS / MTS2 -- max-trees** (Brandt et al., PRL 2020 / arXiv:2006.15373): a
+      hierarchical max-tree restricts the search range per region. MTS2 is the
+      precision leader of the whole sparse table, 0.61% at ~36% coverage. Untested
+      here, and suspect for ICSG's reason until its intervals are run through
+      `range_predictor.py`.
+   3. ~~**ICSG -- intrinsic curves**~~ (Shahbazi et al., ISPRS Congress 2016).
+      **Measured negative, 2026-08-10**, above: the 83% per-pixel reduction is real
+      and scattered, and a plane-aggregating matcher cannot spend it.
    4. **ELAS** -- sparse support points chosen by the first-to-second-minimum ratio,
       i.e. `Match::margin`, triangulated into a prior. **Speed only, not quality**: its
       own v3 entry is 26.4% bad-1.0 sparse at ~76% coverage, worse than SNCC at the

@@ -4,25 +4,37 @@
 The ceiling says a tile needs 19.2% of the sweep if it KNOWS its interval, and that
 predictor accuracy dominates everything else -- about 2.4 points of the sweep per
 plane of slack. So the question stopped being "which construction" and became "how
-accurately can anything cheap predict the interval". This measures that for the one
-predictor already in the tree: a half-resolution pass.
-
-WHY THIS IS NOT WHAT --c2f ALREADY DOES. `--c2f` prunes by per-PLANE rectangle: for
-each disparity it computes the bounding box of the pixels whose prior admits it, and
-skips the rest of the image. A bounding box over the whole image is nearly the whole
-image as soon as one distant object wants that disparity, which is why c2f measured
-1.24x on the desktop and flat on the TX2. Per-TILE intervals are a different and much
-tighter quantity, and this script measures whether the same coarse prior would do
-better under that scheme.
+accurately can anything cheap predict the interval". This prices candidates on that
+axis, and it needs only a candidate's predicted interval, not a matcher built on it.
 
 Two numbers per configuration, and both matter:
   cost    fraction of the full sweep the tiles would compute
   recall  fraction of pixels whose TRUE disparity is inside its tile's band
 
-A predictor is only usable where recall is high enough that the band is not throwing
-away the answer; the ceiling script's oracle has recall 1.0 by construction.
+A band that excludes the answer does not cost time, it costs the answer, so cost is
+only a saving at a recall you can accept. The oracle is 19.2% at 100% (tile 16,
+pad 4).
+
+PREDICTORS
+
+  half   A half-resolution pass, the one already in the tree. Point prediction per
+         pixel; the tile band is its min..max plus slack.
+
+  icsg   Intrinsic curves (Tomasi & Manduchi 1998; Shahbazi et al., ISPRS 2016,
+         doi:10.5194/isprs-archives-XLI-B3-123-2016), which claim an 83% per-pixel
+         range reduction at full resolution with no hierarchical search. A pixel is
+         a point in a small feature space -- here intensity and its scanline
+         derivative -- and a disparity is admitted when the right pixel it points at
+         is near the left one in THAT space, not in image space.
+
+         Computed here by brute force over d. That is deliberately not how the paper
+         does it: the paper's contribution is finding those neighbours through a
+         spatial index, in less than a sweep. Brute force answers the question that
+         has to come first -- whether the reduction is accurate enough to be worth
+         indexing -- and if it is not, the index never needs writing.
 
     .venv/bin/python article/range_predictor.py --data ~/data/MiddEval3
+    .venv/bin/python article/range_predictor.py --predictor icsg --taus 4,8,16,32
 """
 
 import argparse
@@ -48,19 +60,16 @@ def half(img):
     return (a.sum(axis=(1, 3)) // 4).astype(np.uint8)
 
 
-def coarse_disp(d, ndisp, threads):
-    """Run de_dense at half resolution; return a full-res disparity prediction."""
+def predict_half(d, D, threads, _param):
+    """Run de_dense at half resolution; return per-pixel (lo, hi) = (pred, pred)."""
     L = np.asarray(Image.open(os.path.join(d, "im0.png")).convert("L"), np.uint8)
     R = np.asarray(Image.open(os.path.join(d, "im1.png")).convert("L"), np.uint8)
     Lh, Rh = half(L), half(R)
     h, w = Lh.shape
-    lp = os.path.join(d, ".rp_l.y8")
-    rp = os.path.join(d, ".rp_r.y8")
-    op = os.path.join(d, ".rp_o.f32")
+    lp, rp, op = (os.path.join(d, f".rp_{n}") for n in ("l.y8", "r.y8", "o.f32"))
     Lh.tofile(lp)
     Rh.tofile(rp)
-    dmax = max(2, ndisp // 2)
-    p = subprocess.run([BIN, lp, rp, str(w), str(h), "--dmax", str(dmax),
+    p = subprocess.run([BIN, lp, rp, str(w), str(h), "--dmax", str(max(2, D // 2)),
                         "--threads", str(threads), "--agg", "5", "--iters", "2",
                         "--min-margin", "0.01", "--out", op],
                        capture_output=True, text=True)
@@ -69,8 +78,45 @@ def coarse_disp(d, ndisp, threads):
     dc = np.fromfile(op, np.float32).reshape(h, w)
     for f in (lp, rp, op):
         os.remove(f)
-    # half-res disparity d maps to 2d at full res; nearest-neighbour up
-    return np.repeat(np.repeat(dc * 2.0, 2, 0), 2, 1)
+    up = np.repeat(np.repeat(dc * 2.0, 2, 0), 2, 1)
+    return up, up
+
+
+def predict_icsg(d, D, _threads, tau):
+    """Per-pixel [lo, hi] over the disparities the feature space admits.
+
+    The feature is (I, w * dI/dx) on the scanline. The derivative is what makes the
+    curve informative: intensity alone is hopelessly ambiguous on any real scene,
+    and the pair separates a rising edge from a falling one at the same brightness.
+    """
+    L = np.asarray(Image.open(os.path.join(d, "im0.png")).convert("L"), np.float32)
+    R = np.asarray(Image.open(os.path.join(d, "im1.png")).convert("L"), np.float32)
+    # central difference along the scanline, which is the direction disparity moves
+    Lx = np.gradient(L, axis=1)
+    Rx = np.gradient(R, axis=1)
+    WG = 4.0                      # derivative weight; gradients are ~4x smaller here
+    H, W = L.shape
+    lo = np.full((H, W), np.inf, np.float32)
+    hi = np.full((H, W), -np.inf, np.float32)
+    cnt = np.zeros((H, W), np.int32)
+    # Full admitted stack, D planes of bool (~26 MB at Q), so a tile can be asked
+    # WHERE its admitted mass is and not merely how far apart its extremes are.
+    stack = np.zeros((D, H, W), bool)
+    for k in range(D):
+        dd = 1 + k                                   # cfg.dmin is 1
+        if dd >= W:
+            break
+        dist = (np.abs(L[:, dd:] - R[:, :W - dd]) +
+                WG * np.abs(Lx[:, dd:] - Rx[:, :W - dd]))
+        ok = dist < tau
+        sl = np.s_[:, dd:]
+        lo[sl] = np.where(ok & np.isinf(lo[sl]), float(dd), lo[sl])
+        hi[sl] = np.where(ok, float(dd), hi[sl])
+        cnt[sl] += ok
+        stack[k, :, dd:] = ok
+    predict_icsg.admitted = float(cnt.sum()) / max(1.0, float(cnt.size) * D)
+    predict_icsg.stack = stack
+    return lo, hi
 
 
 def main():
@@ -79,72 +125,99 @@ def main():
     ap.add_argument("--res", default="Q")
     ap.add_argument("--tile", type=int, default=16)
     ap.add_argument("--pads", default="0,2,4,8,16")
+    ap.add_argument("--taus", default="8,16,32,64", help="icsg feature thresholds")
     ap.add_argument("--threads", default="8")
+    ap.add_argument("--predictor", default="half", choices=["half", "icsg"])
+    ap.add_argument("--band", default="minmax", choices=["minmax", "pct"],
+                    help="pct: narrowest interval covering --cover of a tile's votes")
+    ap.add_argument("--cover", type=float, default=0.95)
     a = ap.parse_args()
     if not a.data:
         sys.exit("need --data or $MIDDEVAL3")
-    pads = [int(v) for v in a.pads.split(",")]
     T = a.tile
+    pads = [int(v) for v in a.pads.split(",")]
+    params = [None] if a.predictor == "half" else [float(v) for v in a.taus.split(",")]
+    fn = predict_half if a.predictor == "half" else predict_icsg
 
-    tot_cost = {p: [0.0, 0.0] for p in pads}
-    tot_rec = {p: [0.0, 0.0] for p in pads}
-    empty_pix = 0.0
-    all_pix = 0.0
-
-    for s in sorted(m3.WEIGHTS):
-        d = os.path.join(a.data, f"training{a.res}", s)
-        gt = m3.read_pfm(os.path.join(d, "disp0GT.pfm"))
-        D = int(m3.read_calib(os.path.join(d, "calib.txt"))["ndisp"])
-        pred = coarse_disp(d, D, a.threads)
-        H, W = gt.shape
-        pred = pred[:H, :W]
-        if pred.shape != gt.shape:                       # odd sizes: pad by edge
-            pp = np.full(gt.shape, np.nan, np.float32)
-            pp[:pred.shape[0], :pred.shape[1]] = pred
-            pred = pp
-        gval = np.isfinite(gt)
-        pval = np.isfinite(pred) & (pred > 0)
-
-        for by in range(0, H, T):
-            for bx in range(0, W, T):
-                ys, xs = slice(by, min(H, by + T)), slice(bx, min(W, bx + T))
-                n = (ys.stop - ys.start) * (xs.stop - xs.start)
-                all_pix += n
-                pv = pred[ys, xs][pval[ys, xs]]
-                gv = gt[ys, xs][gval[ys, xs]]
-                if pv.size == 0:
-                    # No coarse evidence: the tile must sweep everything. Counted,
-                    # not hidden -- this is the failure mode the scheme has to own.
-                    empty_pix += n
+    for param in params:
+        cost = {p: [0.0, 0.0] for p in pads}
+        rec = {p: [0.0, 0.0] for p in pads}
+        empty, allp, adm = 0.0, 0.0, []
+        for s in sorted(m3.WEIGHTS):
+            d = os.path.join(a.data, f"training{a.res}", s)
+            gt = m3.read_pfm(os.path.join(d, "disp0GT.pfm"))
+            D = int(m3.read_calib(os.path.join(d, "calib.txt"))["ndisp"])
+            plo, phi = fn(d, D, a.threads, param)
+            stack = (predict_icsg.stack if (a.band == "pct" and
+                                            a.predictor == "icsg") else None)
+            if a.predictor == "icsg":
+                adm.append(predict_icsg.admitted)
+            H, W = gt.shape
+            plo, phi = plo[:H, :W], phi[:H, :W]
+            live = np.isfinite(plo) & np.isfinite(phi) & (phi >= plo)
+            gval = np.isfinite(gt)
+            for by in range(0, H, T):
+                for bx in range(0, W, T):
+                    ys, xs = slice(by, min(H, by + T)), slice(bx, min(W, bx + T))
+                    n = (ys.stop - ys.start) * (xs.stop - xs.start)
+                    allp += n
+                    gv = gt[ys, xs][gval[ys, xs]]
+                    lv = live[ys, xs]
+                    if not lv.any():
+                        # No evidence at all: the tile sweeps everything. Counted,
+                        # never hidden -- it is the scheme's own failure mode.
+                        empty += n
+                        for p in pads:
+                            cost[p][0] += D * n
+                            cost[p][1] += D * n
+                            rec[p][0] += gv.size
+                            rec[p][1] += gv.size
+                        continue
+                    if a.band == "minmax":
+                        lo0 = float(plo[ys, xs][lv].min())
+                        hi0 = float(phi[ys, xs][lv].max())
+                    else:
+                        # Narrowest contiguous interval holding --cover of the
+                        # tile's admitted votes. min..max is hostage to one
+                        # outlying pixel; this asks where the mass actually is.
+                        h = stack[:, ys, xs].sum(axis=(1, 2))
+                        tot_v = h.sum()
+                        if tot_v == 0:
+                            lo0, hi0 = 0.0, float(D - 1)
+                        else:
+                            c = np.concatenate(([0], np.cumsum(h)))
+                            need = a.cover * tot_v
+                            best = (D, 0, D - 1)
+                            j = 0
+                            for i in range(D):
+                                while j < D and c[j + 1] - c[i] < need:
+                                    j += 1
+                                if j >= D:
+                                    break
+                                if j - i < best[0]:
+                                    best = (j - i, i, j)
+                            lo0, hi0 = float(best[1]), float(best[2])
                     for p in pads:
-                        tot_cost[p][0] += D * n
-                        tot_cost[p][1] += D * n
-                        tot_rec[p][0] += gv.size
-                        tot_rec[p][1] += gv.size
-                    continue
-                lo0, hi0 = pv.min(), pv.max()
-                for p in pads:
-                    lo = max(0.0, lo0 - p)
-                    hi = min(D - 1.0, hi0 + p)
-                    tot_cost[p][0] += (hi - lo + 1) * n
-                    tot_cost[p][1] += D * n
-                    if gv.size:
-                        tot_rec[p][0] += float(((gv >= lo) & (gv <= hi)).sum())
-                        tot_rec[p][1] += gv.size
+                        lo = max(0.0, lo0 - p)
+                        hi = min(D - 1.0, hi0 + p)
+                        cost[p][0] += (hi - lo + 1) * n
+                        cost[p][1] += D * n
+                        if gv.size:
+                            rec[p][0] += float(((gv >= lo) & (gv <= hi)).sum())
+                            rec[p][1] += gv.size
 
-    print(f"Half-resolution predictor, tile {T}, Middlebury v3 training{a.res}, "
-          f"15 scenes.\n")
-    print(f"{'pad':>5}{'cost':>10}{'recall':>10}   (oracle at this tile: "
-          f"9.8% / 100% at pad 0)")
-    for p in pads:
-        c = 100 * tot_cost[p][0] / tot_cost[p][1]
-        r = 100 * tot_rec[p][0] / max(1.0, tot_rec[p][1])
-        print(f"{p:>5}{c:>9.1f}%{r:>9.1f}%")
-    print(f"\nTiles with no coarse disparity at all, and so no band: "
-          f"{100*empty_pix/all_pix:.1f}% of pixels.")
-    print("A band that excludes the true disparity does not cost time, it costs the "
-          "answer,\nso read the two columns together: cost is only a saving at a "
-          "recall you can accept.")
+        tag = f"{a.predictor}" + (f", tau {param:g}" if param is not None else "")
+        print(f"\n{tag} -- tile {T}, {len(m3.WEIGHTS)} scenes"
+              + (f", per-pixel admitted {100*np.mean(adm):.1f}% of the range"
+                 if adm else ""))
+        print(f"{'pad':>5}{'cost':>10}{'recall':>10}")
+        for p in pads:
+            print(f"{p:>5}{100*cost[p][0]/cost[p][1]:>9.1f}%"
+                  f"{100*rec[p][0]/max(1.0,rec[p][1]):>9.1f}%")
+        print(f"      tiles with no evidence: {100*empty/allp:.1f}% of pixels")
+
+    print("\nOracle for reference: 9.8% at pad 0, 19.2% at pad 4, both at 100% "
+          "recall.\nCost is only a saving at a recall you can accept.")
 
 
 if __name__ == "__main__":
