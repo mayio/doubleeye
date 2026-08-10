@@ -341,9 +341,51 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    is that at a cost this low it misses about one true disparity in eleven.
 
    **So the target restates.** Not "find a cheaper band" but "find a band with the
-   same cost and 99% recall". That is a statement about the predictor's tail —
-   occlusion boundaries and thin structure — rather than about its typical case,
-   and it is what any candidate should now be screened on.
+   same cost and 99% recall". That is a statement about the predictor's tail rather
+   than its typical case.
+
+   **Where that tail actually is, measured** (`--diagnose`, tile 16, pad 4, official
+   nonocc mask). Not where this project's priors would have put it:
+
+   | bucket | share of pixels | miss rate | share of misses |
+   |---|---|---|---|
+   | disparity gradient <= 0.3 | 90.8% | 7.8% | **87.4%** |
+   | gradient 0.3-0.6 | 2.7% | 3.6% | 1.2% |
+   | gradient > 0.6 (discontinuity) | 6.4% | 14.3% | 11.3% |
+   | **tile coarse coverage < 25%** | **6.5%** | **63.7%** | **51.4%** |
+   | all nonocc | 100% | 8.1% | 100% |
+
+   *(The occluded bucket is reported by the script but omitted here: its share is
+   computed against the nonocc miss total and exceeds 100%, so it is not comparable
+   with these rows.)*
+
+   **Discontinuities are not the problem.** They miss at twice the base rate but
+   hold 6.4% of the pixels, so they are 11.3% of the misses; 87.4% of misses are in
+   smooth regions at a 7.8% rate. What IS concentrated is coverage: **6.5% of pixels
+   sit in tiles the coarse pass barely saw, and they carry 51.4% of all misses.**
+
+   **Acting on it works.** Sweeping in full any tile the predictor covers less than
+   25% of, and pricing that honestly:
+
+   | scheme | cost | recall |
+   |---|---|---|
+   | uniform, pad 4 | 20.9% | 90.7% |
+   | uniform, pad 8 | 30.9% | 93.5% |
+   | **coverage fallback + pad 4** | **26.3%** | **93.5%** |
+   | coverage fallback + pad 8 | 35.8% | 95.7% |
+
+   At equal recall the adaptive scheme costs 26.3% against 30.9% — 15% less work
+   for the same answer, because the slack is spent where the evidence is thin
+   instead of everywhere. **3.8x at 93.5% recall** is the best this predictor
+   family reaches.
+
+   **The decision that leaves.** 93.5% recall means one true disparity in fifteen is
+   outside its tile's band, and what that costs in bad-1.0 is NOT knowable from this
+   screen — many of those pixels we already get wrong, so the accuracy cost is
+   somewhere between nothing and six points. The screen has done its job: it says a
+   coarse-prior tile scheme is worth about 3.8x and cannot be ruled in or out on
+   accuracy without building it. That is now an end-to-end measurement, not a
+   prediction.
 
    **This is the constant-disparity-plane constraint for the third time.** It killed
    offset-indexed coarse-to-fine, it is why the range must be restricted per tile

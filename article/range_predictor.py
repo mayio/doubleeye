@@ -119,6 +119,73 @@ def predict_icsg(d, D, _threads, tau):
     return lo, hi
 
 
+def diagnose(a, fn, T, pad):
+    """Where does a predictor's recall deficit actually live?
+
+    A predictor already at the oracle's COST whose whole deficit is recall is fixed
+    by understanding its tail, not by replacing it. The buckets are the ones this
+    project already has evidence about: disparity gradient (09-matching.md measured
+    error flat to 0.3 px/px and exploding past it, with >0.6 being a discontinuity
+    rather than a slant), occlusion, and tiles the coarse pass barely saw.
+    """
+    import collections
+    tot = collections.Counter()
+    miss = collections.Counter()
+    for sc in sorted(m3.WEIGHTS):
+        d = os.path.join(a.data, f"training{a.res}", sc)
+        gt = m3.read_pfm(os.path.join(d, "disp0GT.pfm"))
+        msk = np.array(Image.open(os.path.join(d, "mask0nocc.png")))
+        D = int(m3.read_calib(os.path.join(d, "calib.txt"))["ndisp"])
+        plo, _ = fn(d, D, a.threads, None)
+        H, W = gt.shape
+        plo = plo[:H, :W]
+        live = np.isfinite(plo) & (plo > 0)
+        gval = np.isfinite(gt)
+        gy, gx = np.gradient(np.where(gval, gt, 0.0))
+        grad = np.maximum(np.abs(gy), np.abs(gx))
+        inband = np.zeros((H, W), bool)
+        cov = np.zeros((H, W), np.float32)
+        for by in range(0, H, T):
+            for bx in range(0, W, T):
+                ys, xs = slice(by, min(H, by + T)), slice(bx, min(W, bx + T))
+                lv = live[ys, xs]
+                cov[ys, xs] = lv.mean()
+                if not lv.any():
+                    continue
+                pv = np.rint(plo[ys, xs][lv]).astype(int) - 1
+                pv = pv[(pv >= 0) & (pv < D)]
+                anyd = np.zeros(D, bool)
+                if pv.size:
+                    anyd[pv] = True
+                aa = anyd.copy()
+                for j in range(1, pad + 1):
+                    aa[j:] |= anyd[:-j]
+                    aa[:-j] |= anyd[j:]
+                gi = np.clip(np.rint(gt[ys, xs]).astype(int) - 1, 0, D - 1)
+                inband[ys, xs] = aa[gi]
+        use = gval & (msk == 255)          # the official nonocc mask
+        for name, sel in (("grad <= 0.3", grad <= 0.3),
+                          ("grad 0.3-0.6", (grad > 0.3) & (grad <= 0.6)),
+                          ("grad > 0.6 (discontinuity)", grad > 0.6),
+                          ("occluded (mask 128)", gval & (msk == 128)),
+                          ("tile coarse cov < 25%", cov < 0.25)):
+            m = sel & (use if "occluded" not in name else gval)
+            tot[name] += int(m.sum())
+            miss[name] += int((m & ~inband).sum())
+        tot["ALL nonocc"] += int(use.sum())
+        miss["ALL nonocc"] += int((use & ~inband).sum())
+    print(f"\nHalf-res predictor, tile {T}, pad {pad}: where the misses are\n")
+    print(f"{'bucket':<30}{'pixels':>9}{'miss rate':>11}{'share of misses':>17}")
+    allm = miss["ALL nonocc"]
+    for k in ["grad <= 0.3", "grad 0.3-0.6", "grad > 0.6 (discontinuity)",
+              "occluded (mask 128)", "tile coarse cov < 25%", "ALL nonocc"]:
+        n = tot[k]
+        print(f"{k:<30}{100*n/max(1,tot['ALL nonocc']):>8.1f}%"
+              f"{100*miss[k]/max(1,n):>10.1f}%{100*miss[k]/max(1,allm):>16.1f}%")
+    print("\nShare-of-misses is the column to act on: a bucket can have a terrible "
+          "miss\nrate and still not be worth fixing if almost nothing lives in it.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=os.environ.get("MIDDEVAL3", ""))
@@ -131,6 +198,10 @@ def main():
     ap.add_argument("--band", default="minmax", choices=["minmax", "pct", "set"],
                     help="pct: narrowest interval covering --cover of a tile's votes")
     ap.add_argument("--cover", type=float, default=0.95)
+    ap.add_argument("--fallback-cov", type=float, default=0.0,
+                    help="tiles the predictor covers less than this sweep in full")
+    ap.add_argument("--diagnose", type=int, default=-1, metavar="PAD",
+                    help="at this pad, report WHERE the recall misses are")
     a = ap.parse_args()
     if not a.data:
         sys.exit("need --data or $MIDDEVAL3")
@@ -138,6 +209,8 @@ def main():
     pads = [int(v) for v in a.pads.split(",")]
     params = [None] if a.predictor == "half" else [float(v) for v in a.taus.split(",")]
     fn = predict_half if a.predictor == "half" else predict_icsg
+    if a.diagnose >= 0:
+        return diagnose(a, fn, T, a.diagnose)
 
     for param in params:
         cost = {p: [0.0, 0.0] for p in pads}
@@ -168,6 +241,18 @@ def main():
                         # No evidence at all: the tile sweeps everything. Counted,
                         # never hidden -- it is the scheme's own failure mode.
                         empty += n
+                        for p in pads:
+                            cost[p][0] += D * n
+                            cost[p][1] += D * n
+                            rec[p][0] += gv.size
+                            rec[p][1] += gv.size
+                        continue
+                    if a.band == "set" and stack is None and \
+                            lv.mean() < a.fallback_cov:
+                        # Where the predictor barely saw anything, believing its
+                        # band is the mistake. Sweeping the tile costs its planes
+                        # and nothing else; the diagnosis says these tiles carry
+                        # half the misses while holding 6.5% of the pixels.
                         for p in pads:
                             cost[p][0] += D * n
                             cost[p][1] += D * n
