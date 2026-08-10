@@ -781,7 +781,7 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
   // 40 MB back. The blockwise form reads each filtered slice once (40 MB total)
   // and compares against a 675 KB runner-up plane that stays resident across all
   // D slices, so the common path is one streaming read and a cached compare.
-  const bool blockwise = (cfg.topk == 2) && volp.empty();
+  const bool blockwise = (cfg.topk == 2) && volp.empty() && !cfg.noblock;
   const size_t WH = size_t(W) * H;
   // --- the prior as a MASK on absolute-disparity planes ---------------------------
   //
@@ -915,6 +915,19 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
   // of a separate merge pass writing 8 MB of merged candidates nothing else read.
   std::vector<std::vector<int16_t>> as0(nthreads), as1(nthreads);
   std::vector<std::vector<int16_t>> ad0(nthreads), ad1(nthreads);
+  // --- sub-pixel: the two costs either side of each thread's own best ------------
+  //
+  // The fit needs cost(k*-1), cost(k*), cost(k*+1), and k* is not known until every
+  // plane has been seen -- which is exactly what the blockwise design threw away to
+  // avoid holding a 40 MB volume. Retaining a 3-wide window around the RUNNING best
+  // recovers it, but only if planes arrive in increasing k with no gaps: then the
+  // left neighbour is the plane just seen and the right neighbour is the plane about
+  // to be seen. Hence the contiguous chunks below; with single-plane stealing a
+  // thread sees an arbitrary subset of k and neither neighbour is its own.
+  //
+  // A winner on the first or last plane of a chunk still loses one side and falls
+  // back to integer, which is why the chunk is large rather than 1.
+  std::vector<std::vector<int16_t>> am0(nthreads), ap0(nthreads), apv(nthreads);
   {
     const int r = std::max(0, cfg.agg);
     // Disparity is processed in BLOCKS, and each thread owns whole blocks.
@@ -942,7 +955,12 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
     // scalar path. At D=60 and SIMD_G=8 that is seven full groups and a group of
     // four, over six threads -- worse balance than one disparity at a time, and the
     // reason the wall-clock win is smaller than the score-loop win.
-    const int KB = blockwise ? (cfg.simd ? SIMD_G : 1) : 16;
+    // Single planes for the default path: the work quantum was measured, and a
+    // coarser one hands back more than it wins (the --simd finding). --subpixel
+    // needs consecutive k within a thread, so it takes chunks instead -- a
+    // scheduling change confined to the flag, and one whose wall-clock cost has
+    // NOT been measured on the TX2. Rule 2: do not assume the desktop's answer.
+    const int KB = blockwise ? (cfg.simd ? SIMD_G : (cfg.subpixel ? 16 : 1)) : 16;
     const int nblocks = (D + KB - 1) / KB;
     std::atomic<int> next_block(0);
     std::vector<std::thread> cpool;
@@ -995,15 +1013,24 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
     if (blockwise) {
       as0[t].assign(WH, -32768); as1[t].assign(WH, -32768);
       ad0[t].assign(WH, -1);     ad1[t].assign(WH, -1);
+      if (cfg.subpixel) {
+        am0[t].assign(WH, -32768); ap0[t].assign(WH, -32768);
+        apv[t].assign(WH, -32768);
+      }
     }
     int16_t* ts0 = blockwise ? as0[t].data() : nullptr;
     int16_t* ts1 = blockwise ? as1[t].data() : nullptr;
     int16_t* td0 = blockwise ? ad0[t].data() : nullptr;
     int16_t* td1 = blockwise ? ad1[t].data() : nullptr;
+    const bool sub = blockwise && cfg.subpixel && !mask;
+    int16_t* tm0 = sub ? am0[t].data() : nullptr;
+    int16_t* tp0 = sub ? ap0[t].data() : nullptr;
+    int16_t* tpv = sub ? apv[t].data() : nullptr;
     const size_t NS = cfg.rf ? 0 : ((F == 1) ? size_t(W) * H : size_t(Ws) * Hs);
     std::vector<float> ps(NS), ips(NS), mps(NS), mips(NS), ts(NS);
     std::vector<float> abs_(NS), bbs(NS), mas(NS), mbs(NS);
     ts_alloc[t] += now_ms() - ta0;
+    int last_k = -2;   // last plane THIS thread inserted; see tm0 below
     for (int b = next_block.fetch_add(1); b < nblocks;
          b = next_block.fetch_add(1)) {
     const int klo = b * KB, khi = std::min(D, klo + KB);
@@ -1173,6 +1200,17 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
             // 11.6% pooled): the slack admits extra candidates, and everything
             // measured on this matcher says candidates decide the outcome.
             const int16_t v = islice[i];
+            if (sub) {
+              // Both captures happen BEFORE the top-2 update, which is what makes
+              // them refer to the best as it stood when plane k-1 and plane k+1
+              // were the neighbours of it.
+              if (td0[i] == kk - 1) tp0[i] = v;   // this plane is best+1
+              if (v > ts0[i]) {                   // a new best starts here
+                tm0[i] = (k == last_k + 1) ? tpv[i] : int16_t(-32768);
+                tp0[i] = -32768;                  // its right neighbour is unseen
+              }
+              tpv[i] = v;                         // unconditional: the next plane's
+            }                                     // left neighbour is this one
             if (v <= ts1[i]) continue;
             if (v > ts0[i]) {
               ts1[i] = ts0[i]; td1[i] = td0[i];
@@ -1183,6 +1221,7 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
           }
         }
         ts_ins[t] += now_ms() - tm;
+        last_k = k;
         continue;
       }
       // Left in index form deliberately. Hoisting row pointers out of this loop --
@@ -1355,6 +1394,10 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
       std::vector<float> sbeta(size_t(W) * std::max(1, K));
       std::vector<float> srho(size_t(W) * std::max(1, K));
       std::vector<int> cd(CN), cn(CN ? size_t(W) : 0);
+      // Row-local, like the candidates themselves: two costs per pixel, written by
+      // the merge below and read by the solver's fit a few lines later.
+      const bool sub2 = blockwise && cfg.subpixel && !mask;
+      std::vector<float> cnb(sub2 ? size_t(W) * 2 : 0);
       std::vector<int> bstart(size_t(W) + 1), bitems(size_t(W) * std::max(1, K));
       std::vector<int> cursor(W);
       for (int y = t; y < H; y += nthreads) {
@@ -1373,12 +1416,23 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
               const size_t i = row + x;
               int16_t b0 = -32768, b1 = -32768;
               int i0 = -1, i1 = -1;
+              // Neighbours travel with the winner, and only a thread's OWN best
+              // carries them: as1 is a runner-up this thread never centred its
+              // window on, so a global best sourced from one has no fit and says
+              // so with the sentinel.
+              int16_t m0 = -32768, p0 = -32768;
               for (int tt = 0; tt < nthreads; ++tt) {
                 const int16_t v0 = as0[tt][i], v1 = as1[tt][i];
-                if (v0 > b0)      { b1 = b0; i1 = i0; b0 = v0; i0 = ad0[tt][i]; }
+                if (v0 > b0)      { b1 = b0; i1 = i0; b0 = v0; i0 = ad0[tt][i];
+                                    if (sub2) { m0 = am0[tt][i]; p0 = ap0[tt][i]; } }
                 else if (v0 > b1) { b1 = v0; i1 = ad0[tt][i]; }
-                if (v1 > b0)      { b1 = b0; i1 = i0; b0 = v1; i0 = ad1[tt][i]; }
+                if (v1 > b0)      { b1 = b0; i1 = i0; b0 = v1; i0 = ad1[tt][i];
+                                    m0 = -32768; p0 = -32768; }
                 else if (v1 > b1) { b1 = v1; i1 = ad1[tt][i]; }
+              }
+              if (sub2) {
+                cnb[size_t(x) * 2]     = (m0 == -32768) ? -1e30f : float(m0) * q;
+                cnb[size_t(x) * 2 + 1] = (p0 == -32768) ? -1e30f : float(p0) * q;
               }
               int n = 0;
               // Back to float here: the solver's lambda/gamma comparisons and the
@@ -1395,7 +1449,8 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
                            sbeta.data(), srho.data(),
                            &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
                            bstart.data(), bitems.data(), cursor.data(),
-                           best.data(), bestk.data(), order.data(), taken.data());
+                           best.data(), bestk.data(), order.data(), taken.data(),
+                           sub2 ? cnb.data() : nullptr);
           continue;
         }
         solve_row(y, W, D, cfg, &vol[size_t(y) * W * D],
@@ -1422,10 +1477,25 @@ int main(int argc, char** argv) {
   if (argc < 5) {
     std::fprintf(stderr,
         "usage: %s LEFT.y8 RIGHT.y8 W H [--dmax N] [--iters N] [--threads N]\n"
-        "          [--min-margin F] [--out disp.f32] [--simd]\n"
+        "          [--min-margin F] [--out disp.f32] [--simd] [--subpixel]\n"
+        "          [--no-blockwise]\n"
         "  --simd  NEON score kernel, AArch64 only, bit-identical, off by default:\n"
         "          1.6x on the score loop and 0.92x on the stage at D=60. See\n"
-        "          doc/09-matching.md.\n", argv[0]);
+        "          doc/09-matching.md.\n"
+        "  --subpixel  parabola fit on the aggregated cost at the winner's two\n"
+        "          neighbouring disparities. Worth 12.7 points of bad-1.0 on\n"
+        "          Middlebury v3 at quarter resolution (41.93 -> 29.20) at\n"
+        "          UNCHANGED coverage; integer output cannot get inside a metric\n"
+        "          whose threshold is a quarter of a disparity step. Costs an\n"
+        "          extra store per pixel-plane in the insert and takes the cost\n"
+        "          stage in chunks of 16 planes instead of 1, NEITHER of which has\n"
+        "          been timed on the TX2. Off by default until it has been.\n"
+        "  --no-blockwise  keep the full cost volume at --topk 2. Slow and\n"
+        "          memory-hungry; exists so a change needing neighbouring\n"
+        "          disparities can be A/B'd against the shipping algorithm in\n"
+        "          float. Not bit-identical to the default: int16 scores flip\n"
+        "          near-ties, which the greedy claim order then amplifies.\n",
+        argv[0]);
     return 2;
   }
   const std::string lp = argv[1], rp = argv[2];
@@ -1457,6 +1527,7 @@ int main(int argc, char** argv) {
     else if (a == "--ad-trunc" && has) cfg.ad_trunc = std::atoi(argv[++i]);
     else if (a == "--prior" && has) priorp = argv[++i];
     else if (a == "--simd") cfg.simd = true;
+    else if (a == "--no-blockwise") cfg.noblock = true;
     else if (a == "--c2f") cfg.c2f = true;
   }
   Image8 L, R;
@@ -1531,6 +1602,15 @@ int main(int argc, char** argv) {
     // running a full sweep under a flag that says otherwise.
     std::fprintf(stderr, "--c2f/--prior require the default path (--rf, --topk 2, "
                          "no --dump-vol, no --csct, no --simd)\n");
+    return 1;
+  }
+  if (cfg.subpixel && (cfg.c2f || !priorp.empty())) {
+    // Under a mask each plane's x-range is whatever the prior admits, so "valid at
+    // k+1 implies valid at k" stops holding -- and that invariant is the only
+    // reason the previous plane's value is the left neighbour. Refusing beats
+    // fitting through a cost from some other disparity.
+    std::fprintf(stderr, "--subpixel does not compose with --c2f/--prior: the "
+                         "masked planes break the neighbour invariant it needs\n");
     return 1;
   }
   if (cfg.c2f && !priorp.empty()) {

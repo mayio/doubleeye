@@ -33,6 +33,10 @@ struct Cfg {
   int threads = 0;
   bool simd = false;           // NEON score kernel, disparity in the lanes
   bool c2f = false;            // half-res coarse pass, prior as a mask (--band)
+  bool noblock = false;        // keep the full volume even at --topk 2. Slow and
+                               // memory-hungry, and the only way to A/B a change
+                               // that needs neighbouring disparities against the
+                               // shipping top-2 algorithm rather than the dense one.
 };
 
 
@@ -69,12 +73,19 @@ inline
 // O(k*W) per row, entirely within the row and cache-resident at 28 KB. That
 // diagonal walk was the one genuinely awkward thing the dense layout imposed, and
 // this removes it rather than reorganising it.
+// `cnb`, when given, is two floats per pixel: the aggregated cost one disparity
+// either side of candidate 0, or -1e30 where that neighbour does not exist. It is
+// what the blockwise cost stage can supply and the full volume cannot be asked for,
+// and it exists only to feed the sub-pixel fit below. Null is fine; with a volume
+// the fit reads the volume directly and covers every candidate rather than just
+// the first.
 void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
                       float* cs, int* cd, int* cn,
                       float* beta, float* rho,
                       float* out_disp, float* out_margin, int hw,
                       int* bstart, int* bitems, int* cursor,
-                      float* best, int* bestj, int* order, char* taken) {
+                      float* best, int* bestj, int* order, char* taken,
+                      const float* cnb = nullptr) {
   if (W < 1 || K < 1) return;      // states the obvious to the compiler, which
   const size_t KS = size_t(K);      // otherwise cannot bound the fills below and
   const int dmin = cfg.dmin;        // warns that they may exceed any object size
@@ -188,7 +199,49 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
     const int xr = x - d;
     if (xr < 0 || taken[xr]) continue;
     taken[xr] = 1;
-    out_disp[x] = float(d);
+
+    // Sub-pixel by parabola through the aggregated cost at k-1, k, k+1.
+    //
+    // Integer output forfeits up to half a pixel before any matching error. That
+    // is invisible at bad-1.0 on 450x375 -- which is why an earlier measurement
+    // called this useless -- and decisive under Middlebury v3's own metric, which
+    // is one pixel of FULL resolution and therefore a quarter pixel of what we
+    // compute at Q. Measured there, on the dense path which already had this fit:
+    // 42.22 -> 26.03 bad-1.0 at identical coverage, 16.2 points, taking the error
+    // rate over filled pixels from 52.2% to 32.2% against SGM's 31.8%.
+    // See doc/TODO.md 2.2.
+    float off = 0.f;
+    if (cfg.subpixel) {
+      const int k = cd[size_t(x) * KS + bestj[x]];
+      const float c0 = cs[size_t(x) * KS + bestj[x]];
+      float cm = -1e30f, cp = -1e30f;
+      if (vol) {
+        // The same valid window the selection above used; outside it the volume
+        // holds the -1e30 sentinel, and fitting through that is meaningless.
+        int lo = 0, hi = 0;
+        if (x >= hw && x < W - hw) {
+          lo = std::max(0, x - (W - hw) + 1 - dmin + 1);
+          hi = std::min(D, x - hw - dmin + 1);
+          if (hi < lo) hi = lo;
+        }
+        if (k - 1 >= lo) cm = vol[size_t(x) * D + k - 1];
+        if (k + 1 < hi)  cp = vol[size_t(x) * D + k + 1];
+      } else if (cnb && bestj[x] == 0) {
+        cm = cnb[size_t(x) * 2];
+        cp = cnb[size_t(x) * 2 + 1];
+      }
+      if (cm > -1e29f && cp > -1e29f) {
+        const float den = 2.f * c0 - cm - cp;
+        // Only where the three samples really do bracket a maximum; a flat or
+        // inverted triple has no vertex to find and the clamp would invent one.
+        if (den > 1e-6f) {
+          off = 0.5f * (cp - cm) / den;
+          if (off > 0.5f) off = 0.5f;
+          if (off < -0.5f) off = -0.5f;
+        }
+      }
+    }
+    out_disp[x] = float(d) + off;
   }
 }
 

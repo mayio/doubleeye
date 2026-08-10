@@ -498,15 +498,45 @@ publishes: a perfect integer answer at Q scores 45.55% bad-1.0 where a perfect f
 answer scores 0.80%. Our dense output is 0% fractional; SGM's is 99.3%. That is a
 bigger lever than anything ranked in 0.3, and it needs no hardware.
 
-Two things to fix, and they are different bugs:
+**Done for the dense path, 2026-08-10.** `de_dense --subpixel` now fits a parabola
+through the aggregated cost at the winner's two neighbouring disparities, in the
+shipping blockwise path:
 
-1. **The dense path emits integers and its `--subpixel` flag is dead code** — 3 pixels
-   of 136,219 changed on Teddy, no fractional output at all, because the blockwise
-   top-2 change removed the cost volume the parabola fit reads. The negative recorded
-   in `de_dense.cpp` predates that change and is not reproducible.
-2. **The sparse path differences two independently refined positions**, which is the
-   original item, and the article records the consequence: median disparity error
-   0.50 px, exactly integer-vs-quarter-pixel quantisation.
+| Middlebury v3, training Q, official bad-1.0 | bad | coverage |
+|---|---|---|
+| blockwise, baseline | 41.93 | 80.2% |
+| **blockwise `--subpixel`** | **29.20** | 80.2% |
+| float volume (`--no-blockwise`), baseline | 42.02 | 80.6% |
+| float volume `--subpixel` | **25.75** | 80.6% |
+
+**12.7 points in the shipping path, at coverage that does not move** — the fit
+changes values, never the decision. The default is untouched and bit-identical
+without the flag.
+
+Two things this leaves open, both recorded rather than assumed:
+
+1. **Blockwise captures 12.7 of the 16.3 points the float path shows.** 97.4% of
+   pixels get a fit against the float path's 99.5%, so ~0.5 points is the fallback
+   at chunk edges and where the solver picks the runner-up (which carries no
+   neighbours). The remaining ~3 points is fit *quality*, and the leading suspicion
+   is int16: `SCORE_Q` is 14, which is ample for an argmax and much less so for a
+   second difference like `2*c0 - cm - cp`. **Untested.** The test is to widen the
+   fit's three inputs and re-measure.
+2. **Nothing here is timed on the TX2** (rule 2). `--subpixel` adds a store per
+   pixel-plane to the insert and takes the cost stage in 16-plane chunks instead of
+   single planes — and the `--simd` work already showed a coarser work quantum can
+   hand back more than the inner loop wins. Off by default until `tools/tx2_ab.py`
+   says what it costs.
+
+**Still open: the CUDA path and the sparse matcher.**
+
+- `de_dense_cuda` is unchanged and still emits integers, so the 34.6 Hz pipeline gets
+  none of this yet. It should be *easier* there: the volume is `[y][x][k]` with k
+  innermost and the top-2 is a warp shuffle tree, so both neighbours of the argmax
+  are already in registers. No chunking, no extra plane, no int16 second difference.
+- The sparse matcher still differences two independently refined keypoint positions,
+  which is the original item and unaddressed. The article records the consequence:
+  median disparity error 0.50 px, exactly integer-vs-quarter-pixel quantisation.
 
 `article/middeval3.py --ceiling` measures the floor for any change here, and
 `--check` guards the evaluator.
