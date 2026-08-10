@@ -222,6 +222,47 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    needs constant-disparity planes. **Re-ranked 2026-08-10 after reading the Middlebury
    v3 board (section 4.2); per-pixel range restriction now leads.**
 
+   **The ceiling was measured first, 2026-08-10, and the family is alive.**
+   `article/range_ceiling.py`. Restricting the range PER PIXEL is a recorded
+   negative with a known mechanism -- the filter aggregates over a plane, so a
+   plane must hold one constant disparity -- so what is bounded here is the
+   per-TILE range, which keeps the filter legal and is ESPReSSo's trick. Oracle
+   intervals from ground truth over the 15 v3 training scenes, pooled over pixels,
+   as a fraction of the full sweep:
+
+   | tile | pad 0 | pad 2 | pad 4 | pad 8 |
+   |---|---|---|---|---|
+   | 8 | 5.8% | 10.5% | 15.2% | 24.6% |
+   | **16** | 9.8% | 14.5% | **19.2%** | 28.7% |
+   | 32 | 15.8% | 20.5% | 25.2% | 34.7% |
+   | 64 | 24.5% | 29.3% | 34.0% | 43.4% |
+
+   **19.2% at tile 16 with 4 planes of slack is 5.2x** — which independently
+   reproduces the 5.2x this item has claimed all along from a completely different
+   experiment (correct-over-known against delivered). Two numbers from two methods
+   agreeing is the strongest evidence this project has for the size of this prize.
+
+   Three things the table says that change how it should be built:
+
+   - **Predictor accuracy is the whole game, not tile size.** At tile 16 the pad
+     column runs 9.8% to 28.7%. Slack costs about 2.4 points of the sweep per
+     plane, so a construction that predicts the interval to +-2 wins 6.9x and one
+     good to +-8 wins 3.5x. Effort belongs in the predictor.
+   - **It survives the worst scene.** ArtL is 28.5% (3.5x) and Vintage 7.0% (14x)
+     at tile 16 pad 4. Nothing here is carried by an easy scene.
+   - **It is not bimodal**, so this does not need a fallback scheme: at tile 16
+     pad 4, 78.6% of pixels are in tiles needing under a quarter of the sweep and
+     only 5.0% need half or more. A uniform narrow band is a legitimate design.
+
+   **What this is not.** An oracle: it assumes the interval is known, which is
+   exactly what a real construction must predict cheaply and imperfectly, and the
+   pad column is the price of getting that wrong. It bounds ARITHMETIC, not wall
+   clock -- the filter's recurrences and per-tile overhead do not scale with plane
+   count -- and rule 5 says measure after, not just before. And the intervals come
+   from ground truth, so tiles are bounded only where ground truth is known.
+
+   The constructions, now that the prize is priced:
+
    1. **ICSG -- intrinsic curves** (Shahbazi et al., ISPRS Congress 2016). Its own
       leaderboard entry claims *"83% reduction of the disparity range, individually
       for each pixel, directly from the original resolution of the image without
