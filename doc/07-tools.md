@@ -308,6 +308,52 @@ Three things it refuses to let you get wrong: it says when the data is **filtere
 by the batch sampler's windowing and labels bias instability beyond it as an
 artefact, and it checks that **stationary gravity reads 9.807 m/s²**.
 
+### `article/middeval3.py` — score the matcher the way the leaderboard scores it
+
+```sh
+# one-time: ~620 MB, from vision.middlebury.edu/stereo/submit3/zip/
+#   MiddEval3-data-Q.zip  GT0-Q.zip  SDK-1.6.zip   (the benchmark)
+#   MiddEval3-GT0-F.zip   data-F.zip               (the official full-res GT + masks)
+export MIDDEVAL3=/path/to/MiddEval3
+.venv/bin/python article/middeval3.py --check   --gt-full $MIDDEVAL3   # validate first
+.venv/bin/python article/middeval3.py --ceiling --gt-full $MIDDEVAL3   # read this second
+.venv/bin/python article/middeval3.py --prepare                        # PNG -> y8
+.venv/bin/python article/middeval3.py --gt-full $MIDDEVAL3 --threads 8
+```
+
+Middlebury v3 is where the field publishes; our own scenes are 2003/2005 at 450x375,
+which nobody reports on any more. The training set ships its ground truth, so this
+needs no submission.
+
+**`--check` before believing anything it says.** The training data ships `disp0SGM.pfm`
+and `disp0SGM_s.pfm`, SGM's own results, which are on the public leaderboard. `--check`
+scores them and compares: it must print 37.33 against a published 37.3 and 29.08
+against 29.1. It exits non-zero if not. An evaluator that cannot reproduce a known row
+is not evidence about our matcher — and this one did not, twice, before it did.
+
+**The trap it exists to prevent.** The official evaluation is at FULL resolution and
+upsamples your result, so disparities and their errors are multiplied by 4 at Q.
+Scoring a Q result against Q ground truth at bad-1.0 gives **13.03 where the board says
+37.3** — a 2.9x flattery, and the naive thing to write. Middlebury's README gives the
+conversion; `--gt-full` does it properly.
+
+**`--ceiling` is the interpretive key, not a curiosity.** It scores the ground truth
+itself as though it were a result, float and rounded. At Q that reads **1.15% float
+against 46.05% integer** — so a matcher emitting integer disparities forfeits 45 points
+before a single match is judged, and no number from this tool means anything until you
+know which side of that you are on. See TODO 4.1.
+
+Metric definitions are transcribed from the SDK's `code/evaldisp.cpp`, including the
+two details that are easy to get wrong and change the answer: `maxdisp` comes from the
+*result's* calib while `isint` comes from the *ground truth's* (set on exactly ArtL and
+Teddy), and `bad` counts wrong pixels over all masked pixels *including* the ones the
+matcher left empty — so it is not an error rate over filled pixels, and dividing by
+coverage is what turns it into one.
+
+Scenes needing more disparities than `--dmax-cap` are **skipped and named**, and the
+tool says the average excludes them. At Q that is Jadeplant (ndisp 160) and Vintage
+(190).
+
 ### `mavlink_probe.py`
 
 ```sh

@@ -8,36 +8,35 @@ actionable list.
 
 ---
 
-## 0. Architecture: what runs on the GPU, what runs on the CPU — **first priority**
+## 0. Architecture: **DECIDED 2026-08-10 — the matcher runs on the GPU**
 
-**Deferred by decision, not forgotten.** Mario has postponed this; it stays at the
-top of the list because it constrains the shape of everything after it.
+**Mario's call: the stereo matcher has to run on the GPU; there is no other choice.**
+The decision, what it constrains and what expired with it are recorded in
+[10-architecture.md](10-architecture.md).
 
-The reasoning, the measurements and a proposed answer are already written up in
-[10-architecture.md](10-architecture.md). Nothing needs to be re-derived; what is
-outstanding is the decision itself.
+The boundary proposed there survives intact — **GPU owns the image plane, CPU owns
+the graph, and the interface is a compact candidate buffer rather than an image.**
+What did not survive is the *"no CUDA yet"* schedule attached to it, whose premise
+was 10 ms of slack measured against the **sparse** pipeline. Dense at 848x480 was 6x
+over budget on the CPU with the GPU at load 0, and `de_dense_cuda` now runs it at
+34.6 Hz bit-identical to the CPU path (section 0.3).
 
-**Why it is first.** The system is meant to grow object tracking, SLAM, ground
-detection and trajectory estimation. Each of those consumes the sparse feature set,
-and the boundary between GPU and CPU determines what the stages hand each other.
-Choosing it is one page of reasoning; retrofitting it means rewriting the interfaces
-between every stage.
+**And no CNN** (Mario, 2026-08-10). That settles what the GPU is for: 26.0 ms of the
+28.9 is kernels, so at 30 Hz and full resolution the device is close to saturated, and
+it is the matcher's. Object detection and tracking are the graph side instead — the
+same MASDA machinery, on the four CPU cores that are still idle, over keypoints and
+now a dense disparity map.
 
-**What is already measured**, so the decision does not need new data:
+**What the decision leaves open**, in order:
 
-- 2 of 6 CPU cores in use. GPU load 0. 23.07 ms of a 33.3 ms budget.
-- Dense per-pixel work is 12.29 ms of that (FAST 8.30, NMS 3.74, Census 0.25).
-- Sparse irregular work is 7.86 ms (MASDA).
-
-**The proposal on the table**: GPU owns the image plane, CPU owns the graph, and the
-interface between them is a compact keypoint-plus-descriptor buffer rather than an
-image. No CUDA yet, because there is 10 ms of slack and four idle cores, and because
-a CNN for object detection would want the GPU to itself.
-
-**The one piece of work that should not wait for the decision**, since it is
-expensive either way: every tool currently re-runs detection itself. With four
-consumers that is four redundant detections. Make the sparse feature set a single
-first-class output with one producer.
+1. **One producer for the sparse feature set.** Unchanged and still worth doing:
+   every tool re-runs detection itself, and with four consumers that is four
+   redundant detections.
+2. **CUDA for the sparse front end (FAST, NMS) stays deferred**, and the reason is
+   now stronger — it would compete with the dense kernels for a saturated device
+   rather than claim idle silicon.
+3. **Pin stages to cores explicitly.** The Denver/A57 asymmetry still bites, and the
+   CUDA tool's solve threads already pin themselves to the A57 cluster.
 
 ---
 
@@ -142,17 +141,19 @@ Held in reserve, in order: **the filter** (32% of stage CPU, vertical passes hav
 recurrence in x), **`--simd`** (exists, 11% stage ceiling, off by default), and
 **resolution** (640x480 is 0.75x the pixels).
 
-### The deferral in section 0 is now on the critical path
+### The deferral in section 0 went to the critical path, and then was decided
 
-Section 0 defers the GPU/CPU decision, and its stated reason is *"No CUDA yet, because
-there is 10 ms of slack and four idle cores."* **That premise was measured against the
-sparse pipeline.** For dense at 848x480 there is no slack — it is 6x over — and the GPU
-is still at load 0. Dense stereo is the canonical CUDA workload; ReS2tAC's own CUDA path
-and libSGM both do VGA on Jetson hardware at rates the CPU cannot approach.
+Written when section 0 still deferred the GPU/CPU decision: its stated reason was *"No
+CUDA yet, because there is 10 ms of slack and four idle cores"*, and **that premise was
+measured against the sparse pipeline.** For dense at 848x480 there was no slack — 6x
+over — and the GPU was still at load 0. Dense stereo is the canonical CUDA workload;
+ReS2tAC's own CUDA path and libSGM both do VGA on Jetson hardware at rates the CPU
+cannot approach.
 
-So if real time is the goal, section 0 is not deferrable any longer: either the answer is
-CUDA, or the CPU plan above has to deliver its 8.1x. That is a decision, not a
-measurement, and it should be made before either path is built.
+**Resolved 2026-08-10: the answer is CUDA**, and the CPU's 8.1x plan is not being built.
+The two levers it rested on are not wasted — "stop computing all D planes" is still the
+biggest measured lever in the project and applies to the GPU path too — but the 1.56x
+occupancy half is now moot.
 
 ## Reference: where it stands against SGM at 450x375
 
@@ -209,16 +210,38 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    passes are serial recurrences in x but the vertical ones are pure row-wise SIMD.
 2. **Coverage**, the only axis SGM still leads and untouched all day. The margin gate is
    deliberately trading it for precision; the question is whether a better-calibrated gate
-   holds the precision at higher coverage.
+   holds the precision at higher coverage. **Reframed 2026-08-10:** the v3 board says
+   coverage-for-precision is *the* axis the whole field trades on, and everyone picks a
+   single point on it and publishes that. Sweeping the gate and **publishing the
+   precision-coverage curve** is nearly free here -- `Match::margin` and the
+   precision-by-quartile numbers already exist -- and it is a contribution rather than
+   a catch-up, because the board structurally cannot report one. See 4.2.
 3. **Stop computing all D planes -- the biggest measured lever in the project, 5.2x.**
    Our own ceiling says 81.5% correct-over-known is available against 67.9% delivered.
    The offset-indexed version is a measured negative with a known mechanism: aggregation
-   needs constant-disparity planes. Two published constructions avoid that failure mode
-   and both overlap what is already built -- **ELAS** (sparse support points chosen by
-   the first-to-second-minimum ratio, i.e. `Match::margin`, triangulated into a prior)
-   and **ESPReSSo** (PatchMatch hypotheses **shared across rectangular tiles**, so the
-   plane is constant within a tile and a recursive edge-aware filter stays legal). See
-   09-matching.md. Either is a bigger prize than anything in the inner loops.
+   needs constant-disparity planes. **Re-ranked 2026-08-10 after reading the Middlebury
+   v3 board (section 4.2); per-pixel range restriction now leads.**
+
+   1. **ICSG -- intrinsic curves** (Shahbazi et al., ISPRS Congress 2016). Its own
+      leaderboard entry claims *"83% reduction of the disparity range, individually
+      for each pixel, directly from the original resolution of the image without
+      needing hierarchical search"*, then SGM over eight paths. It dodges **both** of
+      our recorded negatives at once: the restriction is per-pixel range, not
+      offset-indexed planes, so aggregation still sees constant-disparity planes; and
+      it is explicitly not coarse-to-fine, which 3.1 measured as useless here because
+      k is already 2.7. 3.41% bad-1.0 sparse at ~46% coverage on **one** 2.4 GHz core.
+   2. **MTS / MTS2 -- max-trees** (Brandt et al., PRL 2020 / arXiv:2006.15373). Same
+      lever, different construction: a hierarchical max-tree representation restricts
+      the search range per region. MTS2 is the precision leader of the whole sparse
+      table, 0.61% at ~36% coverage.
+   3. **ESPReSSo** -- PatchMatch hypotheses **shared across rectangular tiles**, so the
+      plane is constant within a tile and a recursive edge-aware filter stays legal.
+   4. **ELAS** -- sparse support points chosen by the first-to-second-minimum ratio,
+      i.e. `Match::margin`, triangulated into a prior. **Speed only, not quality**: its
+      own v3 entry is 26.4% bad-1.0 sparse at ~76% coverage, worse than SNCC at the
+      same coverage. Do not expect the support-point prior to buy accuracy.
+
+   See 09-matching.md. Any of these is a bigger prize than anything in the inner loops.
 4. **Idle cores.** Desktop 3.27 of 4, TX2 2.9x of 6.
 
 ### Do not retry without new information
@@ -343,6 +366,11 @@ a different thing, and `dense_baseline.py` is now the yardstick.
   flat wall, scored against a fitted plane, and (b) an emitter-off scene where
   texture is scarce and the uniqueness constraint should matter most. Reasoning and
   the expected shape of the answer in [01-hardware.md](01-hardware.md).
+  **A free partial answer already exists**: the Middlebury v3 leaderboard carries
+  `r200high` — "Custom ASIC", the RealSense stereo pipeline, the D4's ancestor — at
+  48.7% bad-1.0 against ground truth (section 4). Not this camera and not our scenes,
+  so it does not replace the experiment, but it says what the silicon scores when
+  someone else measures it.
 
 - **Measure denser detection against ground truth.** `--cell 12 --per-cell 2` gives
   ~3x the matches and looks clearly better live, but "reads better" is not
@@ -458,13 +486,30 @@ Not yet written: the IMU side of the converter, and the time-alignment between t
 camera's host timestamps and the Pixhawk's clock. `TIMESYNC` is present in the
 MAVLink stream and is ArduPilot's own mechanism for this.
 
-### 2.2 Sub-pixel disparity refinement
+### 2.2 Sub-pixel disparity refinement — **PROMOTED 2026-08-10, biggest measured lever**
 
 The plan: "Depth accuracy hinges entirely on this." Keypoint positions are already
 sub-pixel refined, but the *disparity* is just the difference of two independently
 refined positions rather than a fit to the correlation surface between them.
 
-Cannot be validated without 1.1.
+~~Cannot be validated without 1.1.~~ **False as of 4.1.** It is measurable today
+against Middlebury v3, and it is worth up to **45 points** on the metric the field
+publishes: a perfect integer answer at Q scores 45.55% bad-1.0 where a perfect float
+answer scores 0.80%. Our dense output is 0% fractional; SGM's is 99.3%. That is a
+bigger lever than anything ranked in 0.3, and it needs no hardware.
+
+Two things to fix, and they are different bugs:
+
+1. **The dense path emits integers and its `--subpixel` flag is dead code** — 3 pixels
+   of 136,219 changed on Teddy, no fractional output at all, because the blockwise
+   top-2 change removed the cost volume the parabola fit reads. The negative recorded
+   in `de_dense.cpp` predates that change and is not reproducible.
+2. **The sparse path differences two independently refined positions**, which is the
+   original item, and the article records the consequence: median disparity error
+   0.50 px, exactly integer-vs-quarter-pixel quantisation.
+
+`article/middeval3.py --ceiling` measures the floor for any change here, and
+`--check` guards the evaluator.
 
 ### 2.3 Fix the timing comparison in `de_match`
 
@@ -541,15 +586,248 @@ consistent with real sync. Not proof.
 - **Calibrating λ and γ.** Currently hand-set. The plan's candidate: a small MLP over
   descriptor distance, y-residual, coarse-disparity residual, keypoint response,
   response ratio and local texture energy → calibrated log-likelihood ratio. Needs
-  ground truth (1.1) to train against.
+  ground truth (1.1) to train against. **Survives the no-CNN decision by decision, not
+  by oversight** (2026-08-10): six scalar features, no image plane, no GPU, nothing
+  that competes with the matcher for the device — which is what that decision was
+  about. Do not strike it when applying "no CNN" elsewhere.
 - **Second use of MASDA for frame-to-frame association** (visual odometry). Same
   machinery; the IMU rotation compensation makes it tractable, and it is the case
   where 3.1's coarse prior should finally pay.
-- **DL baseline for comparison** (RoMa / ELoFTR / LoMa) offline on the desktop
-  against recorded bags. Never on the TX2.
 - **`INS_LOG_BAT_OPT` semantics** — batch data is windowed at ~1 s. Not blocking any
   more, since long-τ parameters come from the continuous stream instead, but worth
   understanding if raw continuous data is ever wanted.
+- **DL baseline: cite, do not run** (Mario, 2026-08-10). The earlier plan was to run
+  RoMa / ELoFTR / LoMa offline on the desktop against recorded bags. Dropped —
+  nothing learned runs in this project, on the board or off it, so the experiment has
+  no decision attached to it. Compare against the **published** numbers instead.
+
+  **What that comparison can and cannot say.** A cited number is not a measurement
+  here (rule 2), and the gap is wider than usual: those methods are wide-baseline
+  two-view matchers reported on relative-pose and homography benchmarks, while every
+  number in this project is rectified stereo scored as bad-1.0 and coverage on
+  Middlebury. There is no shared metric, so "RoMa scores X" and "MASDA scores 9.7%
+  bad-1.0" are not two points on one axis. Reported runtimes are worse still —
+  desktop-GPU figures against a TX2 budget is exactly the 3x error obstacle 15 cost
+  us.
+
+  **Numbers pulled 2026-08-10, so nobody has to fetch them again.** From the papers:
+  RoMa MegaDepth-1500 AUC@5 62.6, ScanNet-1500 31.8; ELoFTR MegaDepth-1500 AUC@5/10/20
+  56.4/72.2/83.5, ScanNet 19.2/37.0/53.6, 40.1 ms (27.0 optimised) at 640x480 on an
+  RTX 3090, evaluating on MegaDepth, ScanNet, HPatches, InLoc and Aachen — **no stereo
+  benchmark at all**. *"LoMa" could not be identified and is probably a typo in the
+  original plan; do not cite it.*
+
+  **The Middlebury v3 leaderboard is the closer comparison**, same metric name at
+  least. `vision.middlebury.edu/stereo/eval3/`, bad 1.0 / nonocc / test dense,
+  weighted average, read 2026-08-10 (parse `table.php`, not the page — the table is
+  loaded by JS):
+
+  | | bad 1.0 | hardware |
+  |---|---|---|
+  | MatchAttention / S2M2 / FoundationStereo | 3.49 / 3.57 / 4.39 | RTX PRO 6000, 4090, A100 |
+  | NOSS_ROB, CRLE, LocalExp-RC, 3DMST-CM, LocalExp | 13.2 - 13.9 | 4-8 core CPU |
+  | PMSC | 14.8 | i7 + TITAN X |
+  | OVOD — fully connected CRF solved by **BP** | 17.1 | Xeon |
+  | SGBM2 (OpenCV SGM) / ELAS | 44.2 / 44.4 | 1 core |
+  | **r200high — "Custom ASIC", the RealSense stereo pipeline** | 48.7 | ASIC |
+
+  Two readings of that table, both worth keeping:
+
+  - **The 13.2-13.9 cluster is not "the best traditional method".** LocalExp's own
+    entry says its raw costs come from MC-CNN-acrt — a *learned* cost volume with a
+    classical optimiser on top — and the whole cluster descends from LocalExp. The
+    page gives no description for NOSS_ROB, CRLE or 3DMST-CM, so none of them can be
+    certified learning-free from the leaderboard alone. The best entry verifiable as
+    hand-crafted is **OVOD at 17.1**, which is a fully connected CRF solved by belief
+    propagation — the nearest relative on that board to what this project is.
+  - **`r200high` is the D4's ancestor, and on the sparse table it scores 2.76.**
+    48.7 is its *dense* number, where every pixel it declines to fill counts as an
+    error. Judged on what it actually outputs it is 2.76% bad-1.0 — the silicon is
+    not a weak baseline, it is a high-precision low-coverage one, which is the same
+    operating point the margin gate puts us at. See the sparse-table note below.
+
+  **The sparse table is our table, and it moves everything.** Gated, semi-dense
+  output belongs there. Test dense vs test sparse, bad-1.0 nonocc: r200high 48.7 ->
+  **2.76**, SNCC 32.9 -> 12.7, IDR 29.7 -> 11.8, ELAS 44.4 -> 26.4, SGBM2 44.2 ->
+  33.3. The dense leaders do not move (MatchAttention 3.49 either way) because they
+  fill everything.
+
+  *Correction, from reading the SDK's `evaldisp.cpp` while building 4.1:* the two
+  tables are **two submitted files**, not two metrics — the SDK ships `disp0SGM.pfm`
+  and `disp0SGM_s.pfm` — and `bad` is wrong pixels over all masked pixels *including*
+  the empty ones, so it is not an error rate over filled pixels either. Dividing by
+  coverage is what makes it one. The coverage column below is therefore an estimate
+  good to about two points, not a derivation: measured directly, SGM_s is 90.2%
+  covered where the dense-minus-sparse estimate predicts 91.8%.
+
+  **But the leaderboard has no density column** — the stats are bad 0.5/1.0/2.0/4.0,
+  avgerr, rms, A50/90/95/99 and three time normalisations, and nothing reports what
+  fraction of pixels a sparse entry filled. So "r200high 2.76" is uninterpretable on
+  its own, and ours would be too. Any sparse number we quote has to carry its
+  coverage or it is not a claim.
+
+  **Do not put our 9.7% next to any of these.** Different dataset: v3 is the 2014
+  high-res set, ours is Teddy/Cones (2003) plus the six 2005 scenes at 450x375. The
+  leaderboard demonstrates the gap itself — we score SGM at **10.9%** on our eight
+  scenes and OpenCV's SGBM2 scores **44.2%** on v3. Same algorithm family, 4x apart,
+  entirely from the dataset. Quoting "MASDA 9.7 vs LocalExp 13.9" would say we beat
+  LocalExp, and the data does not support that.
+
+  Anything written into the article from a paper or a leaderboard must carry its
+  source, its dataset and its hardware, and must say it is cited rather than measured
+  — the ceiling experiments (81.5% available vs 67.9% delivered, the 0.697 re-ranking
+  cap) remain the only statements about attainability measured on our data.
+
+### 4.1 Scoring ourselves against that table — **BUILT AND RUN 2026-08-10**
+
+`article/middeval3.py` (see 07-tools.md). Validated first: it reproduces the published
+SGM row exactly, **37.33 against 37.3 dense and 29.08 against 29.1 sparse**, and exits
+non-zero if it ever stops doing so.
+
+**The headline is not the score, it is what the score is made of.**
+
+| training Q, official bad-1.0 | bad | invalid | coverage |
+|---|---|---|---|
+| **dense MASDA**, 13 of 15 scenes | **41.93** | 19.77 | 80.2% |
+| SGM reference, same 13 scenes | 29.13 | 8.51 | 91.5% |
+| **a PERFECT INTEGER answer** | **45.55** | 0.13 | 99.9% |
+| a perfect float answer | 0.80 | 0.13 | 99.9% |
+
+As an error rate over the pixels each one actually fills: MASDA **52.3%**, the
+perfect-integer floor **45.6%**, SGM **31.8%**.
+
+**So the matching is within about seven points of a perfect integer matcher, and the
+metric is otherwise measuring sub-pixel output.** The official threshold is one pixel
+at full resolution, which is a quarter pixel of the disparities we compute at Q; an
+integer answer cannot get inside it however right it is. SGM's reference is 99.3%
+fractional, ours is 0%.
+
+**`--subpixel` is a dead code path**, not a disabled one: on Teddy it changes 3 pixels
+of 136,219 and produces no fractional values at all. The negative recorded in
+`de_dense.cpp` ("measured, it makes things slightly WORSE -- 8.8% against 8.6%")
+predates the blockwise top-2 change that removed the cost volume, and the guard
+`k > k0[x] && k + 1 < k1[x]` now almost never holds. That negative cannot be reproduced
+because the code no longer runs. **Re-derive it before believing it** (rule 6).
+
+**Consequences for the list.** 2.2 said sub-pixel disparity "cannot be validated
+without 1.1". That is now false — it is measurable today, it is worth up to 45 points
+on the metric the field publishes, and it is a bigger lever than anything currently
+ranked in 0.3. Promoted.
+
+**Jadeplant (ndisp 160) and Vintage (190) are skipped** at `--dmax-cap 96`, and every
+average above says so. The comparison rows are recomputed over the same 13 scenes;
+the published 15-scene SGM row is 29.08, so dropping the two hardest scenes barely
+moves SGM and the gap is real, not an artefact of the exclusion.
+
+#### How it works, for the next person
+
+**The training set's ground truth is public**, so this is a local benchmark, not a
+submission. Submission buys a public rank and nothing else.
+
+**Quarter resolution is nearly our operating point**, which is what made this cheap. Full res is ~2900x1950 with ndisp 240-740; at Q that is **~740x490 with
+ndisp 60-185** against our 848x480 D=60. Measured from `calib.txt`:
+
+| scene | ndisp F | ndisp Q | scene | ndisp F | ndisp Q |
+|---|---|---|---|---|---|
+| Shelves | 240 | 60 | Playroom | 330 | 83 |
+| Piano, Recycle | 260 | 65 | **Jadeplant** | **640** | **160** |
+| Motorcycle | 270 | 68 | **Vintage** | **740** | **185** |
+| Adirondack | 280 | 70 | Playtable | 290 | 73 |
+| Pipes | 300 | 75 | | | |
+
+So 13 of 15 training scenes fit under D=96 at Q, and **Jadeplant and Vintage do
+not** — they need D=192. That is the one real piece of work, and the CUDA path has
+already been bitten once by a compile-time `DPAD=64` silently breaking D=80 (0.3), so
+this is exactly the axis that has a known failure mode.
+
+The price of Q: **the official evaluation is always at full resolution and upsamples
+your result**, which is most of why SGBM2 (submitted at Q) sits at 44.2 dense. The
+penalty is real but it is the same one our honest peers on that board already pay.
+Middlebury's own advice is to submit the largest resolution the algorithm supports.
+
+**Scoring Q against Q ground truth is not that evaluation and is worth 2.9x.** The
+shipped SGM reference reads 13.03 that way against its published 37.3 — bad-1.0 at Q
+is roughly the board's bad-4.0. The README gives the conversion (1.0 at F is 0.25 at
+Q) and warns the converted number still differs; measured here, the conversion alone
+lands 39.29 against 37.3, so the full-res ground truth is not optional. This is
+exactly rule 3: the first evaluator produced a plausible, wrong, flattering number,
+and only the fixture caught it.
+
+What to fetch, all from `vision.middlebury.edu/stereo/submit3/zip/`:
+
+| file | size | what |
+|---|---|---|
+| `MiddEval3-data-Q.zip` | 31 MB | images + calib, 15 training + 15 test |
+| `MiddEval3-GT0-Q.zip` | 14 MB | ground-truth disparities, training only |
+| `MiddEval3-algSGM-Q.zip` | 16 MB | **SGM reference output, already scored on the board** |
+| `MiddEval3-SDK-1.6.zip` | | `runeval`, PFM I/O, submission packaging |
+
+**`algSGM-Q` is the fixture that makes our evaluator falsifiable** (rule 3). Score
+the shipped SGM output with our own code and it must reproduce the leaderboard's SGM
+row. An evaluator that cannot reproduce a known row is not evidence about MASDA.
+
+Then: PFM out at Q, score `bad100` under `mask0nocc.png`, report the **sparse** number
+**with its coverage**, and quote the dense number too so the gate's cost is visible.
+
+### 4.2 What the board says we should learn — read 2026-08-10
+
+Read before running anything, because it re-ranks work we already had planned.
+
+**The board hides its density column, but it is recoverable.** Dense and sparse
+entries differ only in whether unfilled pixels count as errors, so
+`coverage ~= (100 - dense) / (100 - sparse)`. **The check that this is sound: every
+method known to be fully dense comes back at exactly 100.0%** -- MatchAttention,
+LocalExp, CRLE, NOSS_ROB, OVOD, PMSC, MeshStereo, 3DMST-CM, S2M2, FoundationStereo,
+ten of them. So the coverage column below is derived, not published, and it is the
+only way to read the sparse table at all.
+
+bad-1.0, nonocc, test set, weighted average:
+
+| method | dense | sparse | ~cov | s/Gdisp | hardware |
+|---|---|---|---|---|---|
+| MTS2 (max-tree) | 64.3 | **0.61** | 36% | 44.5 | i7 4-core |
+| MTS | 71.6 | **0.70** | 29% | 1.29 | i7 4-core |
+| **r200high** (the D4's ancestor) | 48.7 | 2.76 | 53% | **0.03** | ASIC |
+| ICSG (intrinsic curves) | 55.2 | 3.41 | 46% | 89.3 | **1 CPU core** |
+| MotionStereo | 52.3 | 7.56 | 52% | 0.25 | **1 phone core** |
+| IDR | 29.7 | 11.8 | 80% | 0.82 | CUDA, TITAN Black |
+| SNCC | 32.9 | 12.7 | 77% | 2.42 | 1 core |
+| ELAS | 44.4 | 26.4 | 76% | 1.45 | 1 core |
+| NOSS_ROB / CRLE / LocalExp | 13.2 / 13.4 / 13.9 | same | 100% | 1327 / 3107 / 1870 | CPU |
+| MatchAttention / S2M2 | 3.49 / 3.57 | same | 100% | 1.17 / 1.30 | RTX PRO 6000 / 4090 |
+
+**Where we stand on accuracy: still unknown**, and 4.1 is the only way to find out.
+9.7% at 76% coverage is 2003/2005 scenes at 450x375; v3 is harder and the number does
+not transfer.
+
+**Where we stand on efficiency: competitive, by the board's own normalisation.**
+`de_dense_cuda` is 28.9 ms at 848x480 D=60 = **1.18 s/Gdisp on a TX2**, against
+MatchAttention's 1.17 on an RTX PRO 6000 and IDR's 0.82 on a TITAN Black (~5 TFLOPS
+against the TX2's ~0.75). Per FLOP the k-minor port is several times more efficient
+than IDR. Two entries beat it and both are informative: **r200high at 0.03** is
+fixed-function silicon and is the honest ceiling, and **MotionStereo at 0.25 on a
+single Snapdragon core** is motion stereo with a narrow temporal search range -- our
+own temporal-prior result (0.3) arriving from the other direction.
+
+Four things to take from it:
+
+1. **The precision leaders win by covering less, not by matching better.** MTS2 is
+   0.61% at ~36% coverage, r200high 2.76 at ~53%, against our ~76-86%. Same frontier,
+   same knob as the margin gate. Hence the reframing of item 2 above: publish the
+   curve, since the board can only publish points.
+2. **Per-pixel disparity-range restriction is the lever, and ICSG/max-trees are how.**
+   Promoted into item 3 above, ahead of ELAS and ESPReSSo.
+3. **ELAS is a speed construction, not a quality one** -- 26.4% sparse at ~76%
+   coverage, worse than SNCC at the same coverage. Demoted in item 3.
+4. **Do not chase the 13% dense-classical cluster.** NOSS_ROB, CRLE and LocalExp cost
+   1327-3107 s/Gdisp -- about 1000x r200high and ~1500x our budget -- and are mostly
+   MC-CNN-cost hybrids anyway. No version of that cluster runs at 30 Hz on a TX2.
+
+**IDR is the closest operating point on the board** and worth reading for one specific
+thing: CUDA, census+gradient cost (our graded cost is the same idea), ~80% coverage,
+real time, and it adds *iterative cost penalisation and disparity re-selection* for
+local smoothness. That is a cheap smoothness mechanism which is **not** the
+self-confirming two-pass prior that failed in 3.2.
 
 ---
 
@@ -619,8 +897,10 @@ Done:
   `article/contrast_study.py`. Do not raise `min_local_std` above its current 2.0.
 
 Open:
-- The published article still carries the 1.67 ms figure attributed to the Jetson
-  frame budget. Mario's call whether to correct it.
+- ~~The published article still carries the 1.67 ms figure attributed to the Jetson
+  frame budget.~~ **Already gone** (checked 2026-08-10 against
+  `mayio/mayio.github.io` master): the string appears in no post. It went in
+  `daaa295`, the Part 1 reframe, on 2026-08-09.
 - Detector repeatability: only 48-51% of left keypoints have a right keypoint
   within 1 px of their true correspondence. `article/repeatability.py` tests
   over-proposing on the right with a cheaper gamma.

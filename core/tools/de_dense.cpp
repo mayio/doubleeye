@@ -678,11 +678,23 @@ void solve_row(int y, int W, int D, const Cfg& cfg,
     //
     // Clamped to +-0.5 and skipped where the three samples are not a maximum.
     //
-    // OFF BY DEFAULT: measured, it makes things slightly WORSE -- 8.8% bad
+    // OFF BY DEFAULT, and AS OF 2026-08-10 THIS PATH NO LONGER RUNS AT ALL.
+    // The old note read: "measured, it makes things slightly WORSE -- 8.8% bad
     // against 8.6% at matched coverage. The window-aggregated Census cost is a
     // mean of 49-level Hamming scores over a 7x7 block, which is not locally
     // parabolic enough for a three-point fit to find a real vertex. The theory
-    // that integer quantisation was costing accuracy was reasonable and wrong.
+    // that integer quantisation was costing accuracy was reasonable and wrong."
+    //
+    // That measurement predates the blockwise top-2 change, which removed the
+    // cost volume this fit reads: [k0,k1) is now the candidate's own span, so
+    // the guard below almost never holds. With --subpixel on, Teddy changes 3
+    // pixels of 136,219 and the output is still 100% integer. The negative is
+    // therefore unreproducible, not confirmed -- do not cite it.
+    //
+    // The theory it dismissed also turns out to be right where it matters:
+    // Middlebury v3 scores at one pixel of FULL resolution, a quarter pixel of
+    // what we compute at Q, and a perfect integer answer scores 45.6% bad
+    // against a perfect float answer's 0.8%. See doc/TODO.md 2.2 and 4.1.
     float off = 0.f;
     const float* sp2 = s + size_t(x) * D;
     if (cfg.subpixel && k > k0[x] && k + 1 < k1[x]) {
