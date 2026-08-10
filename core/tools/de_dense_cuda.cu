@@ -243,8 +243,23 @@ __global__ void k_vert_fwd(int16_t* vol, const uint16_t* ay, int W, int H,
 // with stable-by-k tie order is associative, which is what makes the reduction
 // exact rather than approximately right; cmp against the CPU is the referee.
 template <int G>
+// `cnb`, when non-null, receives the filtered cost one disparity either side of the
+// winning candidate, for the host's sub-pixel fit. On the GPU this is exact and
+// nearly free: the whole disparity range for this pixel is live in registers across
+// the warp at the moment the argmax is known, so both neighbours are one broadcast
+// and one shuffle away. The CPU tool works much harder for the same answer -- it
+// streams planes and keeps a 3-wide window around the running best.
+//
+// Bit-identity survives --subpixel, which was not obvious and is the reason it was
+// checked rather than assumed. The CPU's window falls back to integer at the edges
+// of a thread's chunk, so a MULTI-threaded CPU run genuinely has fewer fits than
+// this kernel -- but the reference is `de_dense --threads 1`, where one thread walks
+// every chunk consecutively and never loses a neighbour. Verified on teddy and Art:
+// coverage identical, every fitted pixel identical, and the 4.3% / 8.2% the CPU
+// leaves integer are the legitimate refusals (no vertex, or k at the range edge)
+// which this kernel refuses too.
 __global__ void k_vert_bwd_top2(const int16_t* vol, const uint16_t* ay,
-                                float* cs, int* cd, int* cn,
+                                float* cs, int* cd, int* cn, float* cnb,
                                 int W, int H, int D, int Dpad, int dmin,
                                 int nthreads_total) {
   const int t = blockIdx.x * blockDim.x + threadIdx.x;
@@ -307,6 +322,36 @@ __global__ void k_vert_bwd_top2(const int16_t* vol, const uint16_t* ay,
     const int i0 = pk0 ? 255 - (pk0 & 255) : -1;
     const int16_t b1 = int16_t((pk1 >> 8) - 32768);
     const int i1 = pk1 ? 255 - (pk1 & 255) : -1;
+    if (cnb) {
+      // The reduction leaves the answer in lane 0, so the winner has to come back
+      // out before the other lanes can say whether they hold its neighbours.
+      const int kw = __shfl_sync(0xffffffffu, i0, 0);
+      const int km = kw - 1, kp = kw + 1;
+      int16_t mym = -32768, myp = -32768;
+#pragma unroll
+      for (int g = 0; g < G; ++g) {
+        const int k2 = g * 64 + lane * 2;
+        if (k2 <= kmax) {
+          if (k2 == km) mym = p0[g];
+          if (k2 == kp) myp = p0[g];
+        }
+        if (k2 + 1 <= kmax) {
+          if (k2 + 1 == km) mym = p1[g];
+          if (k2 + 1 == kp) myp = p1[g];
+        }
+      }
+      // Exactly one lane owns a given k, and which one is arithmetic rather than a
+      // search: k's lane is (k % 64) / 2 whatever group it fell in. So this is two
+      // shuffles, not two more reduction trees.
+      const int16_t vm = int16_t(__shfl_sync(0xffffffffu, int(mym), (km & 63) >> 1));
+      const int16_t vp = int16_t(__shfl_sync(0xffffffffu, int(myp), (kp & 63) >> 1));
+      if (lane == 0) {
+        const size_t i = size_t(y) * W + x;
+        const bool ok = (kw >= 0);
+        cnb[i * 2]     = (ok && km >= 0 && vm != -32768) ? float(vm) * q : -1e30f;
+        cnb[i * 2 + 1] = (ok && vp != -32768) ? float(vp) * q : -1e30f;
+      }
+    }
     if (lane == 0) {
       const size_t i = size_t(y) * W + x;
       int n = 0;
@@ -354,6 +399,7 @@ int main(int argc, char** argv) {
     else if (a == "--ad-trunc" && has) cfg.ad_trunc = std::atoi(argv[++i]);
     else if (a == "--out" && has) outp = argv[++i];
     else if (a == "--frames" && has) frames = std::max(1, std::atoi(argv[++i]));
+    else if (a == "--subpixel") cfg.subpixel = true;
     else if (a == "--agg" && has) ++i;   // accepted for flag-compat; rf ignores it
     else {
       std::fprintf(stderr, "unknown or unsupported flag: %s\n", a.c_str());
@@ -420,11 +466,17 @@ int main(int argc, char** argv) {
                               std::vector<float>(WH * 2)};
   std::vector<int> cd[2] = {std::vector<int>(WH * 2), std::vector<int>(WH * 2)};
   std::vector<int> cn[2] = {std::vector<int>(WH), std::vector<int>(WH)};
+  // Same double-buffering and the same pageable-memory rule as the candidates:
+  // the solver reads this on the CPU, so it must not be cudaHostAlloc'd.
+  std::vector<float> cnb[2] = {std::vector<float>(cfg.subpixel ? WH * 2 : 0),
+                               std::vector<float>(cfg.subpixel ? WH * 2 : 0)};
   float* dcs;
   int *dcd, *dcn;
   CK(cudaMalloc(&dcs, WH * 2 * sizeof(float)));
   CK(cudaMalloc(&dcd, WH * 2 * sizeof(int)));
   CK(cudaMalloc(&dcn, WH * sizeof(int)));
+  float* dcnb = nullptr;
+  if (cfg.subpixel) CK(cudaMalloc(&dcnb, WH * 2 * sizeof(float)));
   // Pageable host-to-device copies on Tegra were 7.4 ms for 0.8 MB of images.
   // cudaHostRegister is not supported here (CUDA 10.0 on Tegra returns
   // "operation not supported"), so the images go through pinned staging buffers
@@ -471,13 +523,13 @@ int main(int argc, char** argv) {
   };
   auto vert_bwd_top2 = [&]() {
     switch (Dpad >> 6) {
-      case 1: k_vert_bwd_top2<1><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, W, H,
+      case 1: k_vert_bwd_top2<1><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, dcnb, W, H,
                                                    D, Dpad, cfg.dmin, vthreads); break;
-      case 2: k_vert_bwd_top2<2><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, W, H,
+      case 2: k_vert_bwd_top2<2><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, dcnb, W, H,
                                                    D, Dpad, cfg.dmin, vthreads); break;
-      case 3: k_vert_bwd_top2<3><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, W, H,
+      case 3: k_vert_bwd_top2<3><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, dcnb, W, H,
                                                    D, Dpad, cfg.dmin, vthreads); break;
-      default: k_vert_bwd_top2<4><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, W, H,
+      default: k_vert_bwd_top2<4><<<vblocks, 256>>>(dvol, day, dcs, dcd, dcn, dcnb, W, H,
                                                     D, Dpad, cfg.dmin, vthreads);
     }
   };
@@ -494,6 +546,9 @@ int main(int argc, char** argv) {
                 cudaMemcpyDeviceToHost));
   CK(cudaMemcpy(cd[0].data(), dcd, WH * 2 * sizeof(int), cudaMemcpyDeviceToHost));
   CK(cudaMemcpy(cn[0].data(), dcn, WH * sizeof(int), cudaMemcpyDeviceToHost));
+  if (cfg.subpixel)
+    CK(cudaMemcpy(cnb[0].data(), dcnb, WH * 2 * sizeof(float),
+                  cudaMemcpyDeviceToHost));
   CK(cudaDeviceSynchronize());
   CK(cudaGetLastError());
   const double t_gpu = now_ms() - tg0;
@@ -505,7 +560,8 @@ int main(int argc, char** argv) {
   // 30-45 ms run to run; pinned it sits near its minimum. The Denvers are left
   // to the CUDA driver and the fetch thread.
   static const int A57[] = {0, 3, 4, 5};
-  auto solve_all = [&](const float* pcs, const int* pcd, const int* pcn) {
+  auto solve_all = [&](const float* pcs, const int* pcd, const int* pcn,
+                       const float* pcnb) {
     std::vector<std::thread> pool;
     for (int t = 0; t < nthreads; ++t) pool.emplace_back([&, t]() {
       cpu_set_t set;
@@ -526,12 +582,14 @@ int main(int argc, char** argv) {
                          sbeta.data(), srho.data(),
                          &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
                          bstart.data(), bitems.data(), cursor.data(),
-                         best.data(), bestk.data(), order.data(), taken.data());
+                         best.data(), bestk.data(), order.data(), taken.data(),
+                         pcnb ? pcnb + size_t(y) * W * 2 : nullptr);
     });
     for (auto& th : pool) th.join();
   };
   const double t1 = now_ms();
-  solve_all(cs[0].data(), cd[0].data(), cn[0].data());
+  solve_all(cs[0].data(), cd[0].data(), cn[0].data(),
+            cfg.subpixel ? cnb[0].data() : nullptr);
   const double t_solve = now_ms() - t1;
 
   // --- pipelined steady state: GPU on frame t+1 while the CPU solves frame t ------
@@ -565,6 +623,9 @@ int main(int argc, char** argv) {
                     cudaMemcpyDeviceToHost));
       CK(cudaMemcpy(cn[buf].data(), dcn, WH * sizeof(int),
                     cudaMemcpyDeviceToHost));
+      if (cfg.subpixel)
+        CK(cudaMemcpy(cnb[buf].data(), dcnb, WH * 2 * sizeof(float),
+                      cudaMemcpyDeviceToHost));
     };
     gpu_pass();
     fetch(0);                                // implicit sync: pageable D2H
@@ -576,11 +637,13 @@ int main(int argc, char** argv) {
       // solve instead of sitting serially in the loop.
       std::thread fetcher([&, f]() { fetch(f % 2); });
       solve_all(cs[(f - 1) % 2].data(), cd[(f - 1) % 2].data(),
-                cn[(f - 1) % 2].data());     // CPU solves frame f-1 meanwhile
+                cn[(f - 1) % 2].data(),
+                cfg.subpixel ? cnb[(f - 1) % 2].data() : nullptr);     // CPU solves frame f-1 meanwhile
       fetcher.join();
     }
     solve_all(cs[(frames - 1) % 2].data(), cd[(frames - 1) % 2].data(),
-              cn[(frames - 1) % 2].data());
+              cn[(frames - 1) % 2].data(),
+              cfg.subpixel ? cnb[(frames - 1) % 2].data() : nullptr);
     t_pipe = (now_ms() - tp0) / frames;
   }
 

@@ -311,10 +311,14 @@ artefact, and it checks that **stationary gravity reads 9.807 m/s²**.
 ### `article/middeval3.py` — score the matcher the way the leaderboard scores it
 
 ```sh
-# one-time: ~620 MB, from vision.middlebury.edu/stereo/submit3/zip/
+# Unpacked at ~/data/MiddEval3 on the desktop (387 MB). NOT in the repo and not
+# in git: Middlebury is provided for research use and this project deliberately
+# does not redistribute it -- same reason article/README.md gives.
+export MIDDEVAL3=~/data/MiddEval3
+# To recreate it, ~620 MB from vision.middlebury.edu/stereo/submit3/zip/
 #   MiddEval3-data-Q.zip  GT0-Q.zip  SDK-1.6.zip   (the benchmark)
 #   MiddEval3-GT0-F.zip   data-F.zip               (the official full-res GT + masks)
-export MIDDEVAL3=/path/to/MiddEval3
+# The nonocc masks are in GT0-*.zip, not data-*.zip, which is not where you look.
 .venv/bin/python article/middeval3.py --check   --gt-full $MIDDEVAL3   # validate first
 .venv/bin/python article/middeval3.py --ceiling --gt-full $MIDDEVAL3   # read this second
 .venv/bin/python article/middeval3.py --prepare                        # PNG -> y8

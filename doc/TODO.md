@@ -522,21 +522,70 @@ Two things this leaves open, both recorded rather than assumed:
    is int16: `SCORE_Q` is 14, which is ample for an argmax and much less so for a
    second difference like `2*c0 - cm - cp`. **Untested.** The test is to widen the
    fit's three inputs and re-measure.
-2. **Nothing here is timed on the TX2** (rule 2). `--subpixel` adds a store per
-   pixel-plane to the insert and takes the cost stage in 16-plane chunks instead of
-   single planes — and the `--simd` work already showed a coarser work quantum can
-   hand back more than the inner loop wins. Off by default until `tools/tx2_ab.py`
-   says what it costs.
+2. ~~Nothing here is timed on the TX2.~~ **Timed 2026-08-10: it costs 1.53x, and
+   stays off by default.** `tx2_ab.py "" "--subpixel" -n 8`, interleaved, minima:
 
-**Still open: the CUDA path and the sparse matcher.**
+   | | default | `--subpixel` | |
+   |---|---|---|---|
+   | total | 78.1 ms | 119.5 ms | **0.65x** |
+   | cost stage wall | 50.2 | 85.3 | 0.59x |
+   | c_insert (CPU) | 66.5 | 131.0 | 0.51x |
+   | c_alloc (CPU) | 17.0 | 26.9 | |
+   | cost-stage occupancy | **5.34 of 6** | **3.71 of 6** | |
 
-- `de_dense_cuda` is unchanged and still emits integers, so the 34.6 Hz pipeline gets
-  none of this yet. It should be *easier* there: the volume is `[y][x][k]` with k
-  innermost and the top-2 is a warp shuffle tree, so both neighbours of the argmax
-  are already in registers. No chunking, no extra plane, no int16 second difference.
-- The sparse matcher still differences two independently refined keypoint positions,
-  which is the original item and unaddressed. The article records the consequence:
-  median disparity error 0.50 px, exactly integer-vs-quarter-pixel quantisation.
+   Both predicted costs are there and they are separable. The insert doubles: that
+   is the unconditional `tpv` store per pixel-plane. And occupancy falls by 1.6
+   cores: that is the 16-plane chunk, which is the `--simd` finding repeating
+   itself — a coarser work quantum hands back more than the inner loop wins.
+   (`c_score` and `c_filter` CPU both *fell*, 77.6 -> 62.0 and 94.8 -> 83.3, which
+   is chunk locality; it does not rescue the wall clock.)
+
+   **The obvious fix, not yet built:** double-buffer `islice` instead of keeping a
+   separate `tpv` plane. The previous plane's value is then just the other buffer,
+   so the unconditional store disappears and only two conditional reads remain on
+   the insert's fast path. That should recover most of the insert regression; the
+   chunking cost is separate and needs the chunk size swept. Re-time before
+   believing any of it.
+
+**The CUDA path has it too, 2026-08-10, and it is much cheaper there.** As predicted:
+the volume is `[y][x][k]` with k innermost and the top-2 is a warp shuffle tree, so
+both neighbours of the argmax are already in registers — one broadcast to publish the
+winner, two shuffles to fetch its neighbours from the lanes that own them, since k's
+lane is `(k % 64) / 2` by arithmetic rather than by search.
+
+| TX2, pipelined `--frames 30`, best of 3 | baseline | `--subpixel` | |
+|---|---|---|---|
+| teddy 450x375 D=60 | 12.6 ms (79.6 Hz) | 14.1 ms (70.7 Hz) | 0.89x |
+| 848x480 D=60 *(synthetic pair, timing only)* | 29.4 ms (34.0 Hz) | 32.6 ms (30.6 Hz) | 0.90x |
+| CPU `de_dense`, same flag, for contrast | 78.1 ms | 119.5 ms | 0.65x |
+
+**1.12x on the GPU against 1.53x on the CPU**, coverage unchanged (filled 85.9%
+either way). **Real time survives, with almost nothing left**: 32.6 ms of a 33.3 ms
+budget is 98%, where the baseline used 88%. That is a real decision, not a free win.
+
+*The 848x480 row is a synthetic pair* — two consecutive `ir1` frames as left and
+right, because no rectified 848x480 L/R dump exists in `bags/`. The kernels sweep a
+fixed D and are data-independent, so the timing carries; the solver's work is mildly
+data-dependent, so treat the absolute as approximate and the ratio as the result.
+The baseline lands at 29.4 against the 28.9 recorded in 0.3, which is the size of
+that effect.
+
+**Bit-identity survives**, which was checked rather than assumed: all eight scenes
+identical without the flag, and with it, coverage identical and every fitted pixel
+identical on teddy and Art. The CPU's chunk-edge fallback does not bite at
+`--threads 1`, where one thread walks every chunk consecutively — so the reference
+config is exactly the case where the CPU loses nothing.
+
+**The cheap win not taken:** `cnb` crosses the bus as float, 3.3 MB a frame at
+848x480 against ~8 MB of existing candidate traffic. The device holds those values as
+int16 and only dequantises for the host, so sending int16 would halve it — worth
+perhaps 0.85 ms of the 3.2, on the ~0.5 ms/MB the pageable staged copy has measured.
+Untested.
+
+**Still open: the sparse matcher.** It differences two independently refined keypoint
+positions, which is the original item and unaddressed. The article records the
+consequence: median disparity error 0.50 px, exactly integer-vs-quarter-pixel
+quantisation.
 
 `article/middeval3.py --ceiling` measures the floor for any change here, and
 `--check` guards the evaluator.
