@@ -24,7 +24,7 @@ duplicates it; this is the engineering record that sits underneath it.
 | [07-tools.md](07-tools.md) | **Every tool, what it answers, how to run it** — start here when returning to the project. Includes the **ROS 2 / rviz2 setup** and both viewer paths, live and offline |
 | [08-imu.md](08-imu.md) | Pixhawk/ArduPilot: links, isolated venv, parameters applied, and what is still open |
 | [09-matching.md](09-matching.md) | **MASDA** — messages, validation against brute force, the advantage over nearest-neighbour, ground-truth results on Middlebury, and the frame budget |
-- [10-architecture.md](10-architecture.md) — what runs on the GPU, what runs on the CPU, and why nothing is on the GPU yet.
+- [10-architecture.md](10-architecture.md) — what runs on the GPU, what runs on the CPU, and the 2026-08-10 decision that put the matcher's image-plane half on the GPU.
 
 ## Status at time of writing
 
@@ -106,7 +106,7 @@ across them is the same: **on this platform the expensive failures are silent.**
 | `lambda` and `gamma` were **transposed** relative to the article. Harmless only because every run held them equal, which stereo has good reason not to | [09](09-matching.md) |
 | Seeded synthetic scenes were **not reproducible at all** — `hash()` is salted per process — and it cost a published conclusion that flipped sign between runs | [03](03-obstacles.md) obstacle 16 |
 | **Sub-pixel disparity by parabola fit on the inter-window cost** more than halves the tail outside half a pixel, 12.7% → 5.5% | [09](09-matching.md) |
-| 2 of 6 CPU cores are used and the **GPU has never been touched** (load 0). Four cores and the whole GPU are idle | [10](10-architecture.md) |
+| The sparse pipeline used 2 of 6 CPU cores and **never touched the GPU** (load 0) — 10 ms of slack that was then quoted at the *dense* matcher, which was 6x over budget. **Decided 2026-08-10: the matcher's image-plane half is CUDA**, 34.6 Hz at 848x480 | [10](10-architecture.md) |
 | The messages **never formally converge** yet the decision is stable from 20 iterations; oscillation is real but currently benign | [09](09-matching.md) |
 | Belief **sign is not a match/no-match decision** — gating on it returned zero matches on tied problems whose optimum matched everything | [09](09-matching.md) |
 | **Coarse-to-fine does not help here**: k is already 2.7 not 100–200, and inflating it 5× leaves the answer *identical*, so there are no false candidates to remove | [09](09-matching.md) |

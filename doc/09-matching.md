@@ -3021,8 +3021,11 @@ fill (28.7% of pixels here) is doing real work that a moving scene would stress.
 and the solve do not shrink with the band -- but unlike c2f it costs nothing to
 produce the prior.
 
-The GPU tool does not take a prior and does not need one at 34 Hz; if the CNN ever
-squeezes its budget, this is the lever that composes with it.
+The GPU tool does not take a prior and does not need one at 34 Hz. The squeeze this
+sentence used to hedge against was a CNN sharing the device, and there will not be one
+(2026-08-10, 10-architecture.md); the lever still composes with whatever does squeeze
+the budget — higher resolution, a wider disparity range, or a second image-plane
+consumer.
 
 ## The Part 1 reframe: dense MASDA on sparse matrices, measured against exact assignment
 

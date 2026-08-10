@@ -2,26 +2,73 @@
 
 The system is meant to grow object tracking, SLAM, ground detection and trajectory
 estimation on top of stereo correspondence. That raises two questions worth
-separating, because they have different answers:
+separating, because they had different answers:
 
-- **What is the boundary between GPU and CPU?** Decide now. It is one page of
-  reasoning and it is expensive to retrofit, because it determines what the stages
-  hand each other.
-- **When do we write CUDA?** Later. Nothing currently needs it, and writing it now
-  would be optimising against a budget that has 10 ms spare.
+- **What is the boundary between GPU and CPU?** Decided: the GPU owns the image
+  plane, the CPU owns the graph, and the interface is a compact candidate buffer
+  rather than an image. That is the rest of this page.
+- **When do we write CUDA?** Decided 2026-08-10: now, for the stereo matcher. The
+  deferral below was argued against the *sparse* pipeline's 10 ms of slack, and
+  dense correspondence at the sensor's own resolution has no slack at all. See
+  [the decision](#the-decision-2026-08-10-the-matcher-is-gpu-work).
+
+## The decision, 2026-08-10: the matcher is GPU work
+
+**Mario's call: the stereo matcher runs on the GPU. There is no other choice.**
+
+More precisely, and this is what `core/tools/de_dense_cuda.cu` already ships: the
+*image-plane half* of the matcher is GPU work — census, graded cost, the recursive
+filter, the running top-2. The MASDA solve stays on the CPU and hides under the next
+frame's kernels. So the boundary proposed on this page survived; what did not survive
+is the "no CUDA yet" schedule attached to it.
+
+**Measured, TX2, 848x480 D=60, pipelined over 30 frames** (TODO 0.3, 09-matching.md):
+
+| | CPU, six cores | GPU + CPU, pipelined |
+|---|---|---|
+| 848x480 D=60 | 200 ms | **28.9 ms = 34.6 Hz** |
+| 450x375 D=60 | 70 ms | **12.6 ms = 79 Hz** |
+
+Bit-identical to `de_dense --threads 1` on all eight Middlebury scenes and the real
+pair, verified with `cmp`, including through the pipelined frames.
+
+**Why the deferral ended, in one line:** its premise was 10 ms of slack, and that
+number was measured against the sparse pipeline. Dense at 848x480 was 6.0x over the
+30 Hz budget on the CPU, the GPU was at load 0, and the CPU plan needed 8.1x from two
+levers that would have underdelivered. Rule 2 again — a number measured in one
+context is not a measurement in another, including when the context is *which
+pipeline*.
+
+**What this now constrains.** The kernels sum to 26.0 ms of the 28.9 (census+coeffs
+1.5, score+hfwd 8.8, hbwd 5.0, vfwd 3.3, vbwd+top2 7.4), so at 30 Hz and full
+resolution the GPU is close to saturated. That would have been a contention question
+with reason 3 below — "if object detection ends up being a CNN it will want the GPU
+essentially to itself" — except that **Mario has ruled out a CNN (2026-08-10)**. So
+the device is the matcher's, and the constraint is simpler than it looked: anything
+else wanting the GPU has to fit in what dense stereo leaves, and today that is not
+much at 848x480.
+
+**What object detection is instead**, given no CNN: the sparse product this page
+already routes to the CPU. Detection and tracking come from the same graph machinery
+as matching — temporal association is MASDA again — over keypoints and, now, a dense
+disparity map that did not exist when this was written. That is CPU work on four
+cores that are still idle, and it needs no second producer.
 
 ## What the hardware actually gives us
 
-Measured on the TX2, not read off a spec sheet:
+Measured on the TX2, not read off a spec sheet. The "in use" column is the **sparse**
+pipeline, which is what the rest of this section was written against:
 
-| resource | total | in use today |
+| resource | total | in use by the sparse pipeline |
 |---|---|---|
 | CPU cores | 6 (4x Cortex-A57 + 2x Denver) | **2** — the L/R detection threads in `de_preprocess` |
 | GPU | 256-core Pascal, CUDA 10.0, `nvcc` present | **0** — `/sys/devices/gpu.0/load` reads 0 |
 | frame budget at 30 Hz | 33.3 ms | 23.07 ms (69.3%) |
 
-So four cores and the entire GPU are idle, and there is ~10 ms of slack. We are not
-short of compute; we have never used most of it.
+So for the sparse pipeline four cores and the entire GPU are idle, and there is ~10 ms
+of slack. That slack is exactly what the deferral rested on, and it is not the dense
+matcher's situation: `de_dense_cuda` runs 26.0 ms of kernels and 23 ms of CPU solve,
+overlapped, for 28.9 ms a frame.
 
 One TX2 detail that matters for thread placement: the two Denver cores and the four
 A57s are not interchangeable, and `nvpmodel -m 0` is what brings the Denvers online
@@ -57,7 +104,26 @@ a frame buffer. Everything downstream consumes the same sparse product:
     CPU:  keypoints  -> matches (+ margin) -> 3D points (+ confidence)
     CPU:  3D points  -> tracking / ground / SLAM / trajectory
 
-## Why not GPU-accelerate anything yet
+**The dense path is the same shape, and it is the one that exists.** `de_dense_cuda`
+hands the CPU two scored disparities per pixel — score, disparity and count planes —
+which is precisely what the MASDA solver consumes. Not a cost volume, not a filtered
+volume, neither of which is ever stored. The boundary predicted the interface a port
+written months later actually needed, which is the one piece of evidence that it was
+the right boundary.
+
+One thing the port added that this page did not anticipate: **the buffer has to be
+ordinary pageable memory.** Every `cudaHostAlloc` flavour is CPU-uncached on Tegra,
+and the solver reading uncached candidates measured ~300 ms against ~40. A staged
+copy at the pipeline's natural sync point costs ~4 ms and is the fast path. That is a
+property of the boundary, not of the port.
+
+## Why nothing was on the GPU until 2026-08-10 — superseded, kept for the reasoning
+
+**Superseded by the decision above.** Reasons 1 and 2 expired when the workload
+changed from sparse to dense. Reason 3 expired differently: the contingency it hedged
+against was ruled out rather than realised — **no CNN** — so the GPU is not going to
+be claimed by inference and the hedge cost nothing either way. Kept because the shape
+of the argument is worth re-reading before deferring the next thing.
 
 Three reasons, in order of weight.
 
@@ -70,6 +136,8 @@ Three reasons, in order of weight.
    ends up being a CNN, it will dominate everything else on this board and it will
    want the GPU essentially to itself. Hand-writing CUDA for FAST now, and then
    discovering the GPU is committed to inference, would be work done twice.
+   — *Resolved 2026-08-10: there will be no CNN. The expensive component is dense
+   stereo, and it is on the GPU.*
 
 The exception, if one appears: if a component needs *dense* depth — ground detection
 over a full depth map rather than over sparse points is the likely candidate — then
@@ -91,9 +159,14 @@ Cheap, and expensive to retrofit later:
 
 Deliberately deferred until something needs it:
 
-- Any CUDA at all.
+- ~~Any CUDA at all.~~ Decided 2026-08-10: the matcher's image-plane half is CUDA and
+  ships. What is *still* deferred is CUDA for the **sparse** front end — the FAST scan
+  and NMS — which nothing has yet shown to need it, and which now competes with the
+  dense kernels for the same saturated device rather than for idle silicon.
 - Choosing between dense and sparse ground detection, which is really a question
-  about what the vehicle needs to see.
+  about what the vehicle needs to see. Cheaper to answer now than when this page was
+  written: dense depth at 34.6 Hz is no longer hypothetical, so "dense ground
+  detection" costs a consumer of an existing product rather than a new producer.
 - A scheduler. A fixed-rate pipeline with bounded queues is enough for four stages,
   and a bounded queue makes back-pressure visible instead of turning it into
   dropped frames — which is the failure mode this project has already paid for once.
