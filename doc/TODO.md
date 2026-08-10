@@ -576,11 +576,16 @@ identical on teddy and Art. The CPU's chunk-edge fallback does not bite at
 `--threads 1`, where one thread walks every chunk consecutively — so the reference
 config is exactly the case where the CPU loses nothing.
 
-**The cheap win not taken:** `cnb` crosses the bus as float, 3.3 MB a frame at
-848x480 against ~8 MB of existing candidate traffic. The device holds those values as
-int16 and only dequantises for the host, so sending int16 would halve it — worth
-perhaps 0.85 ms of the 3.2, on the ~0.5 ms/MB the pageable staged copy has measured.
-Untested.
+**The cheap win, taken 2026-08-10.** `cnb` crossed the bus as float, 3.3 MB a frame
+at 848x480 against ~8 MB of existing candidate traffic, while the device never had
+more than int16 to give. Sending Q14 and dequantising in the solve thread halves it.
+Predicted 0.85 ms of the 3.2; **measured 0.65** — 32.6 -> 31.9 ms, best of 4, against
+a 29.0 baseline. So `--subpixel` now costs 2.9 ms rather than 3.2, and 848x480 runs
+**31.3 Hz at 96% of the 33.3 ms budget** instead of 30.6 Hz at 98%. Bit-identity
+re-checked on all eight scenes after the change.
+
+The remaining 2.9 ms is the two shuffles and the register pressure in the top-2
+kernel plus the host-side fit, and is not obviously worth chasing further.
 
 **Still open: the sparse matcher.** It differences two independently refined keypoint
 positions, which is the original item and unaddressed. The article records the
@@ -793,10 +798,45 @@ without 1.1". That is now false — it is measurable today, it is worth up to 45
 on the metric the field publishes, and it is a bigger lever than anything currently
 ranked in 0.3. Promoted.
 
-**Jadeplant (ndisp 160) and Vintage (190) are skipped** at `--dmax-cap 96`, and every
-average above says so. The comparison rows are recomputed over the same 13 scenes;
-the published 15-scene SGM row is 29.08, so dropping the two hardest scenes barely
-moves SGM and the gap is real, not an artefact of the exclusion.
+~~Jadeplant and Vintage are skipped at `--dmax-cap 96`.~~ **They run fine** (checked
+2026-08-10): nothing in either tool caps D below ~220 — the CUDA top-2 packs k in 8
+bits and `G` covers 256 disparities — and the cap was a conservative default of mine,
+not a limit. `--dmax-cap 200` scores all 15.
+
+### The margin sweep, 2026-08-10: SGM dominates the curve
+
+With `--subpixel` on, sweeping the gate (13 scenes; the 15-scene default lands at
+29.15 / 79.3%, so the shape holds):
+
+| `--min-margin` | bad | coverage | error over filled |
+|---|---|---|---|
+| 0.0 (no gate) | 37.96 | 91.8% | 41.4% |
+| **0.01 (default)** | **29.20** | **80.2%** | 36.4% |
+| 0.03 | 19.93 | 64.5% | 30.9% |
+| 0.05 | 14.61 | 53.3% | 27.4% |
+| 0.10 | 7.52 | 34.3% | 22.0% |
+| 0.20 | 2.29 | 14.5% | 15.8% |
+| **SGM reference** | **29.08** | **90.2%** | **32.2%** |
+
+**Read at matched coverage, SGM is ahead by about nine points.** At 91.8% coverage we
+are at 37.96 against SGM's 29.08 at 90.2%. Read the other way, at matched *error* we
+give up ten points of coverage: 29.20 at 80.2% against 29.08 at 90.2%. Both readings
+say the same thing — on this benchmark SGM dominates our whole curve, and the gate
+moves along it rather than off it.
+
+**This corrects a comparison made earlier today.** "Level with SGM" was 29.20 against
+29.13 — true numbers, unequal coverage, and therefore not a comparison. The gate is
+exactly the knob that makes such a pairing meaningless, which is the argument for
+publishing the curve and is now also an argument against quoting any single point of
+it.
+
+It does not contradict the article's 9.7% against SGM's 10.9%: that is eight
+2003/2005 scenes at 450x375 scored at native resolution, this is fifteen 2014 scenes
+scored at full resolution after 4x upsampling. Different benchmark, harder, and the
+one the field publishes on.
+
+**So sub-pixel was the improvement that was on the table, and it has been taken.**
+12.7 points. The gate is not a second one.
 
 #### How it works, for the next person
 

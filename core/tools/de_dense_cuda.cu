@@ -259,7 +259,7 @@ template <int G>
 // leaves integer are the legitimate refusals (no vertex, or k at the range edge)
 // which this kernel refuses too.
 __global__ void k_vert_bwd_top2(const int16_t* vol, const uint16_t* ay,
-                                float* cs, int* cd, int* cn, float* cnb,
+                                float* cs, int* cd, int* cn, int16_t* cnb,
                                 int W, int H, int D, int Dpad, int dmin,
                                 int nthreads_total) {
   const int t = blockIdx.x * blockDim.x + threadIdx.x;
@@ -348,8 +348,12 @@ __global__ void k_vert_bwd_top2(const int16_t* vol, const uint16_t* ay,
       if (lane == 0) {
         const size_t i = size_t(y) * W + x;
         const bool ok = (kw >= 0);
-        cnb[i * 2]     = (ok && km >= 0 && vm != -32768) ? float(vm) * q : -1e30f;
-        cnb[i * 2 + 1] = (ok && vp != -32768) ? float(vp) * q : -1e30f;
+        // Left in Q14 and dequantised by the solve thread. The bus is the scarce
+        // thing here, not the multiply: this is a pageable staged copy on a board
+        // with no I/O coherency, and float doubled it for no added information --
+        // the device never had more than int16 to give.
+        cnb[i * 2]     = (ok && km >= 0) ? vm : int16_t(-32768);
+        cnb[i * 2 + 1] = ok ? vp : int16_t(-32768);
       }
     }
     if (lane == 0) {
@@ -468,15 +472,15 @@ int main(int argc, char** argv) {
   std::vector<int> cn[2] = {std::vector<int>(WH), std::vector<int>(WH)};
   // Same double-buffering and the same pageable-memory rule as the candidates:
   // the solver reads this on the CPU, so it must not be cudaHostAlloc'd.
-  std::vector<float> cnb[2] = {std::vector<float>(cfg.subpixel ? WH * 2 : 0),
-                               std::vector<float>(cfg.subpixel ? WH * 2 : 0)};
+  std::vector<int16_t> cnb[2] = {std::vector<int16_t>(cfg.subpixel ? WH * 2 : 0),
+                                 std::vector<int16_t>(cfg.subpixel ? WH * 2 : 0)};
   float* dcs;
   int *dcd, *dcn;
   CK(cudaMalloc(&dcs, WH * 2 * sizeof(float)));
   CK(cudaMalloc(&dcd, WH * 2 * sizeof(int)));
   CK(cudaMalloc(&dcn, WH * sizeof(int)));
-  float* dcnb = nullptr;
-  if (cfg.subpixel) CK(cudaMalloc(&dcnb, WH * 2 * sizeof(float)));
+  int16_t* dcnb = nullptr;
+  if (cfg.subpixel) CK(cudaMalloc(&dcnb, WH * 2 * sizeof(int16_t)));
   // Pageable host-to-device copies on Tegra were 7.4 ms for 0.8 MB of images.
   // cudaHostRegister is not supported here (CUDA 10.0 on Tegra returns
   // "operation not supported"), so the images go through pinned staging buffers
@@ -547,7 +551,7 @@ int main(int argc, char** argv) {
   CK(cudaMemcpy(cd[0].data(), dcd, WH * 2 * sizeof(int), cudaMemcpyDeviceToHost));
   CK(cudaMemcpy(cn[0].data(), dcn, WH * sizeof(int), cudaMemcpyDeviceToHost));
   if (cfg.subpixel)
-    CK(cudaMemcpy(cnb[0].data(), dcnb, WH * 2 * sizeof(float),
+    CK(cudaMemcpy(cnb[0].data(), dcnb, WH * 2 * sizeof(int16_t),
                   cudaMemcpyDeviceToHost));
   CK(cudaDeviceSynchronize());
   CK(cudaGetLastError());
@@ -561,7 +565,7 @@ int main(int argc, char** argv) {
   // to the CUDA driver and the fetch thread.
   static const int A57[] = {0, 3, 4, 5};
   auto solve_all = [&](const float* pcs, const int* pcd, const int* pcn,
-                       const float* pcnb) {
+                       const int16_t* pcnb) {
     std::vector<std::thread> pool;
     for (int t = 0; t < nthreads; ++t) pool.emplace_back([&, t]() {
       cpu_set_t set;
@@ -574,7 +578,14 @@ int main(int argc, char** argv) {
       std::vector<float> best(W);
       std::vector<int> bestk(W), order(W);
       std::vector<char> taken(W);
-      for (int y = t; y < H; y += nthreads)
+      std::vector<float> nb(pcnb ? size_t(W) * 2 : 0);
+      const float qs = 1.f / float(SCORE_ONE);
+      for (int y = t; y < H; y += nthreads) {
+        if (pcnb) {
+          const int16_t* src = pcnb + size_t(y) * W * 2;
+          for (int j = 0; j < W * 2; ++j)
+            nb[j] = (src[j] == int16_t(-32768)) ? -1e30f : float(src[j]) * qs;
+        }
         solve_row_sparse(W, D, K, cfg, nullptr,
                          const_cast<float*>(pcs) + size_t(y) * W * 2,
                          const_cast<int*>(pcd) + size_t(y) * W * 2,
@@ -583,7 +594,8 @@ int main(int argc, char** argv) {
                          &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
                          bstart.data(), bitems.data(), cursor.data(),
                          best.data(), bestk.data(), order.data(), taken.data(),
-                         pcnb ? pcnb + size_t(y) * W * 2 : nullptr);
+                         pcnb ? nb.data() : nullptr);
+      }
     });
     for (auto& th : pool) th.join();
   };
@@ -624,7 +636,7 @@ int main(int argc, char** argv) {
       CK(cudaMemcpy(cn[buf].data(), dcn, WH * sizeof(int),
                     cudaMemcpyDeviceToHost));
       if (cfg.subpixel)
-        CK(cudaMemcpy(cnb[buf].data(), dcnb, WH * 2 * sizeof(float),
+        CK(cudaMemcpy(cnb[buf].data(), dcnb, WH * 2 * sizeof(int16_t),
                       cudaMemcpyDeviceToHost));
     };
     gpu_pass();
