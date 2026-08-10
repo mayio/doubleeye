@@ -379,13 +379,47 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    instead of everywhere. **3.8x at 93.5% recall** is the best this predictor
    family reaches.
 
-   **The decision that leaves.** 93.5% recall means one true disparity in fifteen is
-   outside its tile's band, and what that costs in bad-1.0 is NOT knowable from this
-   screen — many of those pixels we already get wrong, so the accuracy cost is
-   somewhere between nothing and six points. The screen has done its job: it says a
-   coarse-prior tile scheme is worth about 3.8x and cannot be ruled in or out on
-   accuracy without building it. That is now an end-to-end measurement, not a
-   prediction.
+   **And then the halo, which none of the above had paid for.** A tile can only
+   skip a plane if it also skips it for the pixels the FILTER would have read. rf's
+   influence decays ~0.89 per pixel at sigma_s 12, which is why `de_dense` already
+   pads a masked rectangle by `MPAD` = 16 px before scoring it. So a 16x16 tile
+   wanting one plane costs a 48x48 patch of it. Measured as the area of the dilated
+   union per plane (neighbouring tiles share halos, so the naive `(1+2*MPAD/T)^2`
+   overstates it), at the fallback-0.25 + pad-4 operating point:
+
+   | tile | cost, no halo | **cost with halo** |
+   |---|---|---|
+   | 16 | 26.3% | **53.8%** |
+   | 32 | — | **34.4%** |
+   | 64 | — | 44.2% |
+
+   **The halo roughly halves the win, and it moves the optimum tile to 32** — small
+   tiles drown in halo, large ones carry loose bands. The best realisable figure is
+   **34.4%, which is 2.9x**, not 5.2x and not 3.8x.
+
+   ### What the whole chain came to
+
+   | | arithmetic |
+   |---|---|
+   | oracle interval, tile 16 | 19.2% = **5.2x** |
+   | best real predictor, no halo | 26.3% = **3.8x** |
+   | **the same with the filter halo paid** | **34.4% = 2.9x** |
+   | and wall clock | worse again, unmeasured |
+   | and accuracy at 93.5% recall | unknown, 0 to 6 points |
+
+   **This is why `--c2f` measured 1.24x.** Not a loose scheme, not a bad prior: the
+   aggregation has to be fed, and feeding it is most of the work the restriction was
+   trying to avoid. Every step of this chain was a real effect and each one took a
+   bite out of the prize.
+
+   **Recommendation: do not build it on the GPU path.** 2.9x of arithmetic before
+   implementation losses, for an unknown accuracy cost, against a pipeline that
+   already closes 30 Hz at 96% of budget. The prize this item has carried since it
+   was written is real in the oracle and mostly eaten by the time it is realisable.
+   If it is ever revisited, tile 32 is the operating point and the halo is the thing
+   to attack -- a cheaper aggregation with a shorter reach would change the whole
+   table, which points back at 0.35's edge-aware support rather than at range
+   restriction.
 
    **This is the constant-disparity-plane constraint for the third time.** It killed
    offset-indexed coarse-to-fine, it is why the range must be restricted per tile

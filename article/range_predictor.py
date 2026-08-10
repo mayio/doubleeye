@@ -186,6 +186,64 @@ def diagnose(a, fn, T, pad):
           "miss\nrate and still not be worth fixing if almost nothing lives in it.")
 
 
+def halo_cost(a, fn, T):
+    """Cost when the filter's halo is paid for, which is the cost that exists.
+
+    A tile can only skip a plane if it also skips it for the pixels the filter would
+    have read. rf's influence decays by ~0.89 per pixel at sigma_s 12, so de_dense
+    pads a masked rectangle by MPAD = 16 before scoring it. A 16x16 tile that wants
+    one plane therefore costs a 48x48 patch of that plane, and neighbouring tiles
+    wanting the same plane share their halos -- which is why this measures the area
+    of the DILATED UNION per plane rather than multiplying by (1 + 2*MPAD/T)^2.
+    """
+    from scipy.ndimage import binary_dilation
+    pads = [int(v) for v in a.pads.split(",")]
+    tot = {p: [0.0, 0.0] for p in pads}
+    for sc in sorted(m3.WEIGHTS):
+        d = os.path.join(a.data, f"training{a.res}", sc)
+        gt = m3.read_pfm(os.path.join(d, "disp0GT.pfm"))
+        D = int(m3.read_calib(os.path.join(d, "calib.txt"))["ndisp"])
+        plo, _ = fn(d, D, a.threads, None)
+        H, W = gt.shape
+        plo = plo[:H, :W]
+        live = np.isfinite(plo) & (plo > 0)
+        ty, tx = (H + T - 1) // T, (W + T - 1) // T
+        want = np.zeros((D, ty, tx), bool)
+        for by in range(ty):
+            for bx in range(tx):
+                ys, xs = slice(by*T, min(H, (by+1)*T)), slice(bx*T, min(W, (bx+1)*T))
+                lv = live[ys, xs]
+                if not lv.any() or lv.mean() < a.fallback_cov:
+                    want[:, by, bx] = True          # no evidence: sweep it all
+                    continue
+                pv = np.rint(plo[ys, xs][lv]).astype(int) - 1
+                pv = pv[(pv >= 0) & (pv < D)]
+                if pv.size:
+                    want[pv, by, bx] = True
+        st = np.ones((1 + 2 * (a.mpad // T), 1 + 2 * (a.mpad // T)), bool)
+        for p in pads:
+            area = 0.0
+            for k in range(D):
+                w = want[k]
+                if p:                                # slack dilates in disparity
+                    w = want[max(0, k - p):k + p + 1].any(axis=0)
+                if not w.any():
+                    continue
+                # halo in TILE units, rounded up: the plane must be scored over
+                # every tile the filter will read from a tile that wants it
+                area += float(binary_dilation(w, st).sum()) * T * T
+            tot[p][0] += area
+            tot[p][1] += float(D) * H * W
+    print(f"\nCost WITH the filter halo, tile {T}, MPAD {a.mpad}px, "
+          f"fallback {a.fallback_cov}:\n")
+    print(f"{'pad':>5}{'cost':>10}")
+    for p in pads:
+        print(f"{p:>5}{100*tot[p][0]/tot[p][1]:>9.1f}%")
+    print("\nCompare the same rows without the halo. The difference is what the "
+          "aggregation\ncosts, and it is not optional: it is where the accuracy "
+          "comes from.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=os.environ.get("MIDDEVAL3", ""))
@@ -198,6 +256,8 @@ def main():
     ap.add_argument("--band", default="minmax", choices=["minmax", "pct", "set"],
                     help="pct: narrowest interval covering --cover of a tile's votes")
     ap.add_argument("--cover", type=float, default=0.95)
+    ap.add_argument("--mpad", type=int, default=0,
+                    help="filter halo in px each side; the cost model pays for it")
     ap.add_argument("--fallback-cov", type=float, default=0.0,
                     help="tiles the predictor covers less than this sweep in full")
     ap.add_argument("--diagnose", type=int, default=-1, metavar="PAD",
@@ -211,6 +271,8 @@ def main():
     fn = predict_half if a.predictor == "half" else predict_icsg
     if a.diagnose >= 0:
         return diagnose(a, fn, T, a.diagnose)
+    if a.mpad > 0:
+        return halo_cost(a, fn, T)
 
     for param in params:
         cost = {p: [0.0, 0.0] for p in pads}
