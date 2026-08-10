@@ -711,6 +711,36 @@ Not yet written: the IMU side of the converter, and the time-alignment between t
 camera's host timestamps and the Pixhawk's clock. `TIMESYNC` is present in the
 MAVLink stream and is ArduPilot's own mechanism for this.
 
+### 2.2a The graded cost and the sub-pixel fit interact — measured 2026-08-10
+
+`--ad` blends a truncated absolute difference into the Census score, and was measured
+at 10.3 -> 9.7% bad-1.0 when it was added. On Middlebury v3 it now measures the other
+way, all 15 scenes at `--threads 1`:
+
+| `--ad` | 0 | 0.08 | 0.15 (default) | 0.25 |
+|---|---|---|---|---|
+| bad-1.0 | **25.38** | 25.57 | 26.04 | 26.96 |
+
+**The whole effect is the sub-pixel fit.** With `--no-subpixel`, ad 0 measures 42.00
+and ad 0.15 measures 42.04 — indistinguishable. With the fit on, the gap is 0.66. The
+truncated AD saturates and is piecewise linear, so blending it into the cost changes
+its SHAPE near the minimum; the argmax does not care and a parabola through three
+samples does.
+
+**Both benchmarks are right and they are measuring different tolerances.** On the
+project's own eight scenes at 450x375, scored at native resolution, the graded cost
+still helps *with the fit on*: 9.8% against 10.3%, and coverage 76.2% against 75.8%.
+On v3 the threshold is one pixel of FULL resolution, a quarter pixel of what we
+compute — so v3 can see the fit's quality and the older benchmark cannot. AD improves
+which disparity is chosen and degrades how well that choice is refined.
+
+**So the default stays at 0.15**, since it wins where the shipping resolution is
+measured and on coverage, and the disagreement is recorded rather than tuned away.
+**The change that would win on both is to fit on the Census cost alone** while still
+selecting on the graded one — two costs where there is now one, which is cheap on the
+CPU and another filtered volume on the GPU. Not built; it is the first thing to try if
+sub-pixel accuracy is ever worth more than a plane of memory.
+
 ### 2.2 Sub-pixel disparity refinement — **PROMOTED 2026-08-10, biggest measured lever**
 
 The plan: "Depth accuracy hinges entirely on this." Keypoint positions are already

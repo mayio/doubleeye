@@ -65,10 +65,18 @@ $(PROF): tools/de_profile.cpp $(OBJS)
 $(PIPE): tools/de_pipe.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $^ -o $@
 
-# The header is a prerequisite AND the recipe uses $< rather than $^, because $^ would
-# hand a .hpp to g++ as an input file. Without the prerequisite, editing the NEON kernel
-# relinks a stale de_dense and the change appears simply not to work -- obstacle 10.
-$(DENSE): tools/de_dense.cpp include/doubleeye/simd_score.hpp $(OBJS)
+# EVERY header this tool includes is a prerequisite, AND the recipe uses $< rather
+# than $^, because $^ would hand a .hpp to g++ as an input file. Without the
+# prerequisite, editing a header relinks a stale de_dense and the change appears
+# simply not to work -- obstacle 10.
+#
+# It happened a second time on 2026-08-10: dense_solve.hpp was added to the CUDA
+# rule below when the solver moved into it, and not to this one. A header-only
+# change (the sigma_s default) then produced a benchmark run that silently measured
+# the OLD value, and it was caught only because the number came back exactly equal
+# to a figure that should have changed. Add the header here when you add an include.
+$(DENSE): tools/de_dense.cpp include/doubleeye/simd_score.hpp \
+          include/doubleeye/dense_solve.hpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $< $(OBJS) -o $@
 
 $(TESTBIN): tests/test_preproc.cpp $(OBJS)

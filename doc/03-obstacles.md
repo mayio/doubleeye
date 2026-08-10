@@ -594,3 +594,35 @@ median margin of 0.657 against 0.388, and 11% doubtful against 31.5%. See
 
 A search range is a physical claim about the scene. Leaving it at a library default
 is not a neutral choice.
+
+## 23. A header added to one build rule and not the other, and the measurement it faked
+
+`core/Makefile` lists each tool's headers as explicit prerequisites, because a `.hpp`
+cannot go in `$^` (g++ would compile it as an input). Obstacle 10 is the first time
+that bit: editing `simd_score.hpp` relinked a stale `de_dense` and the change looked
+simply not to work, so the header was added to the rule and a comment written above it.
+
+Then `dense_solve.hpp` was created when the solver moved out of `de_dense.cpp` to be
+shared with the CUDA tool. It was added to `$(DENSECU)`'s prerequisites and **not** to
+`$(DENSE)`'s. Six weeks later a header-only change -- the `sigma_s` default, which
+lives in that struct -- was made, `make` printed a normal build line for the CUDA tool
+and nothing for the CPU one, and a fifteen-scene benchmark then ran the OLD value and
+reported it as the new one.
+
+**What caught it was not the build.** It was that the number came back *exactly* equal
+to a figure that should have changed: 26.94, the pre-change value, to the last digit.
+An unchanged measurement is a weaker signal than an error, and a slightly different one
+would have been believed.
+
+- **The rule was right and the list was stale.** The comment above the rule described
+  the failure mode precisely and did not stop it happening a second time, because a
+  comment cannot enumerate headers that do not exist yet.
+- **`make` reported success.** Exit 0, no output for the target that did not rebuild,
+  which is indistinguishable from "already up to date" -- because that is exactly what
+  it was.
+- **`tools/tx2_ab.py` already guards against this on the Jetson** by refusing a binary
+  older than its sources. Nothing guarded the desktop, where the accuracy benchmarks run.
+
+The fix is the prerequisite. The check that would have caught it faster is to verify a
+default change is live before measuring it: run the tool with the flag set explicitly
+to the OLD value and confirm the output differs from the default.
