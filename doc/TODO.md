@@ -538,6 +538,40 @@ the far-field rate takes 36.6% -> 32.0% overall. That is optimistic — it assum
 perfect edge handling — and it is the best-founded target left on this list, well
 above what the remaining knobs offer and well below what sub-pixel gave.
 
+**But the 4.6 points are probably NOT reachable by a better support region**
+(measured 2026-08-11, and this is the finding that matters here). Two independent
+knobs that should move near-edge error both leave it flat:
+
+| | near edge (<=8 px) | far field | all |
+|---|---|---|---|
+| sigma_r 0.10 (sharpest edge response) | 57.8% | 33.3% | 37.8% |
+| **sigma_r 0.20 (default)** | **57.1%** | 32.0% | 36.6% |
+| sigma_r 0.40 (softest) | 57.8% | 31.7% | 36.5% |
+| `--topk 8` | 57.0% | 31.0% | 35.7% |
+| **`--topk 0`, no pruning at all** | **56.4%** | 30.6% | 35.3% |
+
+**Edge sensitivity does nothing to it.** A 4x range of `sigma_r` moves the far field
+(33.3 -> 31.7) and the near-edge population not at all. The aggregation is already
+edge-aware -- `rf` is a recursive edge-aware filter, not a box, so 0.35's "edge-aware
+support instead of a box" was in fact already done -- and making it more or less
+edge-aware does not touch the population it was supposed to help.
+
+**Candidate pruning does nothing to it either.** Handing the solver the entire
+disparity range instead of two candidates leaves near-edge error at 56.4%.
+
+**What that leaves is half-occlusion**, and no weighting scheme fixes it: for a pixel
+beside a foreground edge, part of its support has no correspondence in the other
+view at all. The choice of which neighbours to trust cannot help when the correct
+ones are not visible. The smooth decay with distance -- 65.1% within 2 px, 57.1%
+within 8, 32.0% beyond -- is the shape of window contamination whose reach matches
+the aggregation's, which is consistent with that reading.
+
+**So the recommendation changes: build a left-right consistency check, not AGAP.**
+Occlusion is what SGM handles and we do not, it is the mechanism the measurements
+point at, and it targets coverage -- the axis we are actually behind on (80.1%
+against SGM's 90.2%). AGAP would be a better version of the thing that was already
+measured not to matter here.
+
 **The slanted-plane half is now clearly the smaller prize**: genuinely slanted
 surfaces (0.3-0.6) are 3.2% of pixels and 4.8% of error. The order 0.35 already
 argues for — edge-aware support first — is confirmed, by a wider margin than it
