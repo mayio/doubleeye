@@ -179,7 +179,7 @@ cropping.
    overlays the board and interferes with corner detection. You then need enough
    ambient IR, so do it in a well-lit room or add IR illumination.
 
-### A4 is honestly marginal — know why before relying on it
+### A4 is marginal — know why before relying on it
 
 At the measured fx = 430.55 px, the 250 mm board spans roughly:
 

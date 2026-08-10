@@ -247,7 +247,7 @@ claim the same right keypoint can.
 
 ## Are we better than the ASIC? Unknown, and it is measurable
 
-The honest answer is that nobody has checked, and the comparison needs stating
+Nobody has checked, and the comparison needs stating
 carefully because the two produce different things.
 
 | | D4 ASIC | this project |

@@ -13,7 +13,7 @@
 //      pixel-bound, so halving the pixels ought to halve it. Ought to.
 //
 // Resolution is varied by box-downsampling the captured 848x480 frames rather
-// than re-capturing. That measures the algorithm's scaling honestly; it does not
+// than re-capturing. That measures the algorithm's scaling; it does not
 // measure what the sensor would deliver at a native lower mode, which differs in
 // noise and in how much real texture survives. The keypoint counts here are
 // therefore indicative and the timings are the point.

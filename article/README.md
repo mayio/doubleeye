@@ -1,19 +1,15 @@
-# Article: MASDA for Sparse Stereo Matching
+# Article: the MASDA stereo series
 
-Draft post for [mariolueder.com](https://www.mariolueder.com), a follow-up to the
-original MASDA post applying it to sparse stereo.
+The three posts are published, and their markdown lives in `_posts/` in
+`mayio/mayio.github.io`, not here — with a shared glossary of terms and sources at
+[/masda-glossary/](https://www.mariolueder.com/masda-glossary/). This directory
+holds the experiments behind them.
 
-## Files
-
-| file | goes to |
+| file | what |
 |---|---|
-| `2026-08-07-MASDA-for-Sparse-Stereo-Matching.md` | `_posts/` in `mayio/mayio.github.io` |
-| `figures/*.png` | `assets/img/2026-08-07-MASDA-for-Sparse-Stereo-Matching_files/` |
-| `masda_stereo.py` | wherever you want it referenced from; nothing depends on its location |
-
-The figure URLs in the markdown already point at
-`raw.githubusercontent.com/mayio/mayio.github.io/master/assets/img/2026-08-07-MASDA-for-Sparse-Stereo-Matching_files/`,
-matching the convention of the existing MASDA post.
+| `dense_sparse_matrices.py` | regenerates every number in Part 1, from the shipping binary's own cost volume |
+| `masda_middlebury.py`, `ordering_real.py`, `regen_all.py` | the Middlebury runs and the one command that reproduces all of them |
+| `masda_stereo.py`, `figures/*.png` | the earlier synthetic study; nothing published depends on it |
 
 ## Licensing
 
@@ -137,7 +133,7 @@ rarer still as the range tightens.
 plus a bounded disparity range yields largely ordered solutions for free, which is
 why an explicit ordering factor buys ~1% however favourable the scene.
 
-The honest conclusion: ordering is *expressible* (cleanly, as a clamp, inside the
+The conclusion: ordering is *expressible* (cleanly, as a clamp, inside the
 existing closed form) and *nearly redundant* in a geometrically gated sparse
 matcher. It would matter where the gating is weak — a wide disparity range, an
 uncalibrated pair, or 2-D temporal association where no ordering comes for free.
@@ -154,9 +150,9 @@ many draws preceded it: `run_regime` called directly gave 1163 matches where
 `main()` gave 1109. Each generator now takes its own purpose-seeded `Generator` via
 `rng_for(name)`, verified stable across interleaved calls.
 
-Note this means figures regenerated now will differ slightly from the numbers in the
-current draft of the post, which were produced under the old call-order-dependent
-scheme. **Re-run `masda_stereo.py` and update the tables before publishing.**
+Note this means figures regenerated now will differ slightly from any numbers
+produced under the old call-order-dependent scheme; re-run `masda_stereo.py` for
+current ones.
 
 ## Table provenance
 

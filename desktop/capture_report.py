@@ -483,7 +483,7 @@ def local_std(img: np.ndarray, w: int = 7) -> np.ndarray:
     mean intensity does not detect the IR projector at all -- a bright window
     dominates the mean while the projector contributes only high-frequency
     local structure. Census reads exactly that local structure, so local
-    contrast is the honest measure of whether the projector is buying
+    contrast is the measure of whether the projector is buying
     discriminability.
     """
     f = img.astype(np.float64)

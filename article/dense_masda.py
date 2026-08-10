@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MASDA as a dense stereo matcher, and an honest runtime comparison.
+"""MASDA as a dense stereo matcher, and a like-for-like runtime comparison.
 
 Everything so far ran MASDA over keypoints. This runs it over *every pixel*, which
 is possible because the problem decomposes: correspondences lie on the same image

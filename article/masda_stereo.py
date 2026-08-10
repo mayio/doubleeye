@@ -180,7 +180,7 @@ def render_pair(texture: np.ndarray, disp: np.ndarray, noise=1.5):
     Forward warping means occlusions appear on their own: where a near surface
     covers a far one, the far one has no right-image counterpart. Those keypoints
     genuinely have no correct match, which is exactly what the clutter and
-    misdetection terms exist to absorb -- so the example exercises them honestly
+    misdetection terms exist to absorb -- so the example actually exercises them
     rather than assuming every keypoint is matchable.
     """
     left = texture.copy()

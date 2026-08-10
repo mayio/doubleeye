@@ -5,7 +5,7 @@ The synthetic scene in masda_stereo.py controls texture exactly, which is what
 makes the ambiguity sweep meaningful, but it renders the right image by warping
 the left one. Every descriptor difference therefore comes from resampling and
 added noise, never from two physically different cameras. This script runs the
-same matcher on real photographs so the descriptor side is honest: real lenses,
+same matcher on real photographs, so the descriptor side is real: real lenses,
 real vignetting, real sensor noise, real non-Lambertian surfaces.
 
 Data: Middlebury 2003 stereo pairs, which state "We grant permission to use and

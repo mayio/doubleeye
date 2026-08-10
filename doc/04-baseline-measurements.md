@@ -113,7 +113,7 @@ generator, 90 s at 848×480@30, `--save-every 0`. Load average reached **5.69**.
 the delivered rate holds. This closes the load caveat: the timing budget that
 justified skipping the uvcvideo patch survives a saturated machine.
 
-Two honest qualifications:
+Two qualifications:
 
 - The **3.574 ms maximum** in the idle run did not reproduce. Across roughly 9000
   frames over three recordings it was seen once. It is not explained by disk
@@ -220,9 +220,9 @@ produced this one is fine.
 The auto-collect duplicate rejection did its job: 82 accepted poses out of a
 several-minute session, rather than hundreds of near-identical frames.
 
-**The honest caveat is scale.** Median board area is 5.7% of the frame and median
+**The caveat is scale.** Median board area is 5.7% of the frame and median
 width 186 px of 848 — small, and exactly the A4 limitation predicted in
-[05-operations.md](05-operations.md#a4-is-honestly-marginal--know-why-before-relying-on-it).
+[05-operations.md](05-operations.md#a4-is-marginal--know-why-before-relying-on-it).
 A larger board would constrain focal length and distortion better. This set is
 good enough to run the calibration toolchain end to end and to get a usable first
 answer; treat the resulting numbers as provisional until either a bigger target or

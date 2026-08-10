@@ -272,8 +272,8 @@ Monotonic in every column, with no optimum at any positive weight. **The best va
 of `w_smooth` is 0.**
 
 Note the objective is scored *without* the smoothness term, which is the only
-honest comparison — adding a term to an objective and then reporting the objective
-rose would measure nothing.
+comparison that means anything — adding a term to an objective and then reporting
+that the objective rose would measure nothing.
 
 ### Why, probably
 
@@ -292,7 +292,7 @@ none of them can distinguish "removed 100 wrong matches" from "removed 100 right
 ones". Median |dy| barely moved across every configuration tried, so it is not
 sensitive enough to arbitrate.
 
-So the honest reading is narrower than "smoothness does not help": *at this
+So the reading is narrower than "smoothness does not help": *at this
 operating point, on this one static scene, with no way to check correctness, both
 priors reduce match count and neither improves the only independent quality metric
 available.* That is a reason to stop adding priors, not proof that the information
@@ -716,7 +716,7 @@ Three things keep it from being the whole story:
 
 ### What this changes
 
-The honest reading is that the current matcher is not competitive with a
+The reading is that the current matcher is not competitive with a
 well-implemented dense method on accuracy, and the gap is explained by a missing
 prior rather than by anything about max-sum. That makes the smoothness factor the
 highest-value piece of work on the matcher, ahead of everything currently in
@@ -796,7 +796,7 @@ across different denominators and concluding semi-dense was worse when it produc
 margin is that it becomes *more* informative as candidates multiply: winning against
 70 rivals means something that winning against 4 does not.
 
-Two honest qualifications:
+Two qualifications:
 
 - The comparison is not perfectly like-for-like. SGM's 0.858 is measured at MASDA's
   2916 keypoints; the gated semi-dense numbers are over its own surviving matches,
@@ -869,8 +869,8 @@ mostly manufactures speckle.
 21 s against 24 ms is a factor of ~900, and it is not an algorithmic comparison.
 MASDA here is NumPy with `np.maximum.at` scatter-reductions over 9.15M edges; SGM is
 compiled C++ with SIMD and decades of optimisation. The C++ MASDA on a sparse
-problem is already ~200x faster than the NumPy one, so the honest statement is that
-the constant is large and unmeasured, not that the algorithm is 900x slower.
+problem is already ~200x faster than the NumPy one, so the statement to make is
+that the constant is large and unmeasured, not that the algorithm is 900x slower.
 
 What *is* algorithmic: 9.15M edges for a 168k-pixel image is 54 candidates per
 pixel, and the margin gate then discards most of what was scored. Coarse-to-fine or
@@ -2604,7 +2604,7 @@ three vector registers. That is the same trade `--csct` measured here -- 24 bits
 cost 1.2 points of bad-1.0. They pay it for the SIMD fit; whether we should is a decision
 with a measured price rather than a guess.
 
-**The honest caveat: they did not test on a TX2.** Their embedded target is a Jetson
+**The caveat: they did not test on a TX2.** Their embedded target is a Jetson
 Xavier AGX with an 8-core ARMv8.2 CPU, so the reported 46 FPS at VGA is not a TX2 number
 and must not be quoted as one.
 
@@ -3072,7 +3072,7 @@ scenes, every fourth row, paired against the factor off, kappa 0.3, damping 0.6)
 The structural result survives and is the reason the section stays: the factor folds
 additively into the score, so it reuses the same two segment reductions with (s + o)
 for s -- no new message type. That composability is what an exact LAP solver cannot
-offer, and it is the honest argument for MASDA over JV, given section 4.2 shows JV
+offer, and it is the argument for MASDA over JV, given section 4.2 shows JV
 matches it on precision.
 
 Left as an open question rather than claimed: whether a neighbourhood smoothness

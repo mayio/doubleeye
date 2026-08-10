@@ -20,7 +20,7 @@ If a dense depth image is wanted for its own sake, the D435 computes one in the
 ASIC and it can be recorded as a stream -- it is simply not what this pipeline
 produces. --dilate N thickens each sample into an N x N block so the sparse depth
 is actually visible on screen; it invents nothing, it just draws each sample
-bigger, and it is off by default so the honest picture is the default one.
+bigger, and it is off by default so the unflattered picture is the default one.
 
 ## Point colour
 
