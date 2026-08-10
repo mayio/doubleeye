@@ -514,6 +514,40 @@ discontinuity*, not a slanted surface, and the discontinuity population is 2-3x
 larger than the genuinely slanted one. A warped window still straddles an occlusion
 boundary.
 
+**Re-measured on Middlebury v3, 2026-08-11** (`middeval3.py --by-gradient`, 15
+scenes, official tolerance, error over filled pixels). The premise holds
+directionally and its magnitude was overstated:
+
+| bucket | pixels | error | share of error |
+|---|---|---|---|
+| slope <= 0.3 | 94.5% | 35.2% | 90.8% |
+| slope 0.3-0.6 (genuinely slanted) | 3.2% | 54.0% | 4.8% |
+| slope > 0.6 (discontinuity) | 2.3% | 70.6% | 4.4% |
+| **within 2 px of a discontinuity** | 6.5% | 65.1% | 11.5% |
+| **within 8 px of a discontinuity** | **18.3%** | **57.1%** | **28.6%** |
+| further than 8 px | 81.7% | 32.0% | 71.4% |
+
+**Not "about half", and not 9% either — the bucket has to be the right one.** By
+slope alone, high-gradient pixels carry 9.2% of error and the item looks dead. But
+edge-aware support does not help discontinuity pixels, it helps pixels whose
+SUPPORT WINDOW straddles one, and by distance that population is 18.3% of pixels
+carrying **28.6% of all error at 57.1% against a 32.0% far-field rate.**
+
+**So the ceiling is about 4.6 points.** Bringing the near-edge population down to
+the far-field rate takes 36.6% -> 32.0% overall. That is optimistic — it assumes
+perfect edge handling — and it is the best-founded target left on this list, well
+above what the remaining knobs offer and well below what sub-pixel gave.
+
+**The slanted-plane half is now clearly the smaller prize**: genuinely slanted
+surfaces (0.3-0.6) are 3.2% of pixels and 4.8% of error. The order 0.35 already
+argues for — edge-aware support first — is confirmed, by a wider margin than it
+claimed.
+
+*(A first version of this table divided the gradient by the resolution scale factor
+and put 98.4% of pixels in the flattest bucket, which would have retired this item
+outright. Disparity gradient is scale-invariant: at Q the disparities are a quarter
+and one pixel spans four.)*
+
 So: **edge-aware support first** (AGAP, doi:10.1049/iet-ipr.2018.5801), slanted
 planes second (PatchMatch, doi:10.5244/C.25.14). That is the reverse of the order
 the papers suggested, and the reversal came from the data.

@@ -221,6 +221,75 @@ def prepare(data, res):
         print(f"{s:<13} {c['width']}x{c['height']}  ndisp={c['ndisp']}")
 
 
+def by_gradient(a, run):
+    """Where does the error actually live, by ground-truth disparity slope?
+
+    0.35 ranks edge-aware support ahead of slanted planes on the grounds that
+    high-gradient regions carry about half of all error, measured on two scenes at
+    450x375 scored at native resolution. This re-tests that premise on v3 at the
+    official tolerance, because a fronto-parallel window's failure is exactly the
+    kind of thing a quarter-pixel threshold sees and a one-pixel one does not.
+
+    The gradient is computed on the GROUND TRUTH, so the buckets do not depend on
+    what the matcher did. >0.6 px/px is a depth discontinuity rather than a slant --
+    0.35's own reading -- so the two are reported apart.
+    """
+    import collections
+    tot, bad = collections.Counter(), collections.Counter()
+    for s in sorted(WEIGHTS):
+        d = os.path.join(a.data, f"training{a.res}", s)
+        disp = run(s, d)
+        if disp is None:
+            continue
+        g = os.path.join(a.gt_full, "trainingF", s) if a.gt_full else d
+        gt = read_pfm(os.path.join(g, "disp0GT.pfm"))
+        mask = _png(os.path.join(g, "mask0nocc.png"))
+        ndisp = int(read_calib(os.path.join(d, "calib.txt"))["ndisp"])
+        isint = read_calib(os.path.join(g, "calib.txt")).get("isint", "0") == "1"
+        H, W = gt.shape
+        sc = W // disp.shape[1]
+        up = np.repeat(np.repeat(disp, sc, 0), sc, 1) * sc
+        valid = np.isfinite(up)
+        up = np.where(valid, np.clip(up, 0, sc * ndisp), np.inf)
+        if isint:
+            up = np.where(valid, np.round(up), np.inf)
+        gv = np.isfinite(gt)
+        gy, gx = np.gradient(np.where(gv, gt, 0.0))
+        # NO division by the scale factor. Disparity gradient is scale-invariant:
+        # at Q the disparities are a quarter and one pixel spans four, so the ratio
+        # is unchanged. Dividing by sc made every slope four times too shallow and
+        # put 98.4% of pixels in the flattest bucket.
+        grad = np.maximum(np.abs(gy), np.abs(gx))        # disparity px per image px
+        with np.errstate(invalid="ignore"):
+            wrong = valid & (np.abs(up - gt) > 1.0)
+        use = gv & (mask == 255) & valid       # error rate over what we filled
+        # Distance to the nearest discontinuity is the population edge-aware
+        # support actually addresses: a pixel two pixels from a depth edge has its
+        # support window straddling that edge even though its own slope is flat.
+        from scipy.ndimage import distance_transform_edt
+        dist = distance_transform_edt(~(grad > 0.6))
+        for name, sel in (("slope <= 0.3", grad <= 0.3),
+                          ("slope 0.3-0.6 (slanted)", (grad > 0.3) & (grad <= 0.6)),
+                          ("slope > 0.6 (discontinuity)", grad > 0.6),
+                          ("within 2px of an edge", dist <= 2),
+                          ("within 8px of an edge", dist <= 8),
+                          ("further than 8px", dist > 8)):
+            m = sel & use
+            tot[name] += int(m.sum())
+            bad[name] += int((m & wrong).sum())
+        tot["ALL"] += int(use.sum())
+        bad["ALL"] += int((use & wrong).sum())
+    print("\nWhere the error lives, by ground-truth disparity slope "
+          "(bad-1.0 over FILLED pixels)\n")
+    print(f"{'bucket':<30}{'pixels':>9}{'error':>9}{'share of error':>16}")
+    for k in ["slope <= 0.3", "slope 0.3-0.6 (slanted)",
+              "slope > 0.6 (discontinuity)", "within 2px of an edge",
+              "within 8px of an edge", "further than 8px", "ALL"]:
+        print(f"{k:<30}{100*tot[k]/max(1,tot['ALL']):>8.1f}%"
+              f"{100*bad[k]/max(1,tot[k]):>8.1f}%"
+              f"{100*bad[k]/max(1,bad['ALL']):>15.1f}%")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=os.environ.get("MIDDEVAL3", ""),
@@ -232,6 +301,8 @@ def main():
     ap.add_argument("--ceiling", action="store_true",
                     help="score the ground truth itself, float and integer, and exit")
     ap.add_argument("--prepare", action="store_true", help="write y8+meta and exit")
+    ap.add_argument("--by-gradient", action="store_true",
+                    help="report where the error lives, by ground-truth slope")
     ap.add_argument("--dmax-cap", type=int, default=96,
                     help="skip scenes needing more; de_dense is built for D<=96")
     ap.add_argument("--threads", default="4")
@@ -279,6 +350,8 @@ def main():
         # wants INF, which is what Middlebury means by an unfilled pixel.
         return np.where(disp > 0, disp, np.inf)
 
+    if a.by_gradient:
+        return by_gradient(a, run)
     thresh, label = official(a.res, a.gt_full)
     print(f"de_dense --agg {a.agg} --iters {a.iters} --min-margin {a.min_margin} "
           f"--threads {a.threads} {a.extra}\n{label}\n")
