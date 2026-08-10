@@ -315,6 +315,36 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    discard the outer 5% of the mass. The half-resolution pass, which is much worse
    per pixel, is three times better per tile because its errors are *local*.
 
+   **Correction, same day: the interval cost model above was too strict, and the
+   conclusion survives being corrected.** The constraint is only that a plane be
+   constant-disparity across the tile, so a tile may legally compute a SCATTERED
+   SET of planes — which is exactly ICSG's shape, and pricing it by `min..max` was
+   unfair. Re-measured with cost = |union of admitted disparities over the tile|:
+
+   | tile | ICSG tau 8, set model | recall |
+   |---|---|---|
+   | 16 | 79.3% (pad 0) | 91.0% |
+   | 8 | 57.2% | 83.0% |
+   | 4 | 43.6% | 77.3% |
+
+   Still nowhere near 19.2%, and the mechanism is now sharper than "scattered":
+   **the admitted sets of neighbouring pixels do not agree.** 13.9% per pixel, yet
+   the union over even a 4x4 tile is 43.6% — and shrinking the tile to buy
+   agreement costs recall (77.3%) and leaves 9.6% of pixels with no evidence at
+   all. Any tiling scheme needs spatial agreement about which disparities matter,
+   and this evidence has none.
+
+   **The half-resolution pass, re-measured on the same fair terms**, improves to
+   **20.9% at 90.7%** (pad 4) from 24.1% at 91.2%. That is worth restating: its
+   cost is now essentially at the oracle's 19.2%, and the entire remaining deficit
+   is **recall**. The problem was never that the coarse prior sweeps too much; it
+   is that at a cost this low it misses about one true disparity in eleven.
+
+   **So the target restates.** Not "find a cheaper band" but "find a band with the
+   same cost and 99% recall". That is a statement about the predictor's tail —
+   occlusion boundaries and thin structure — rather than about its typical case,
+   and it is what any candidate should now be screened on.
+
    **This is the constant-disparity-plane constraint for the third time.** It killed
    offset-indexed coarse-to-fine, it is why the range must be restricted per tile
    rather than per pixel at all, and now it converts a real 86% reduction into

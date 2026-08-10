@@ -128,7 +128,7 @@ def main():
     ap.add_argument("--taus", default="8,16,32,64", help="icsg feature thresholds")
     ap.add_argument("--threads", default="8")
     ap.add_argument("--predictor", default="half", choices=["half", "icsg"])
-    ap.add_argument("--band", default="minmax", choices=["minmax", "pct"],
+    ap.add_argument("--band", default="minmax", choices=["minmax", "pct", "set"],
                     help="pct: narrowest interval covering --cover of a tile's votes")
     ap.add_argument("--cover", type=float, default=0.95)
     a = ap.parse_args()
@@ -148,8 +148,9 @@ def main():
             gt = m3.read_pfm(os.path.join(d, "disp0GT.pfm"))
             D = int(m3.read_calib(os.path.join(d, "calib.txt"))["ndisp"])
             plo, phi = fn(d, D, a.threads, param)
-            stack = (predict_icsg.stack if (a.band == "pct" and
-                                            a.predictor == "icsg") else None)
+            stack = (predict_icsg.stack
+                     if (a.band in ("pct", "set") and a.predictor == "icsg")
+                     else None)
             if a.predictor == "icsg":
                 adm.append(predict_icsg.admitted)
             H, W = gt.shape
@@ -172,6 +173,51 @@ def main():
                             cost[p][1] += D * n
                             rec[p][0] += gv.size
                             rec[p][1] += gv.size
+                        continue
+                    if a.band == "set" and stack is None:
+                        # A point predictor still defines a SET per tile: the
+                        # distinct disparities its pixels vote for. Union, not
+                        # min..max, so it is judged on the same terms as ICSG.
+                        pv = np.rint(plo[ys, xs][lv]).astype(int) - 1
+                        pv = pv[(pv >= 0) & (pv < D)]
+                        anyd = np.zeros(D, bool)
+                        if pv.size:
+                            anyd[pv] = True
+                        k = int(anyd.sum())
+                        for p in pads:
+                            aa = anyd.copy()
+                            for j in range(1, p + 1):
+                                aa[j:] |= anyd[:-j]
+                                aa[:-j] |= anyd[j:]
+                            kk = int(aa.sum()) if k else D
+                            cost[p][0] += kk * n
+                            cost[p][1] += D * n
+                            if gv.size:
+                                gi = np.clip(np.rint(gv).astype(int) - 1, 0, D - 1)
+                                rec[p][0] += float(aa[gi].sum() if k else gv.size)
+                                rec[p][1] += gv.size
+                        continue
+                    if a.band == "set":
+                        # A tile may legally compute a SCATTERED set of planes:
+                        # each is still constant-disparity across the tile, which
+                        # is all the filter requires. Pricing by interval was the
+                        # stricter assumption and it is not the binding one.
+                        anyd = stack[:, ys, xs].any(axis=(1, 2))
+                        k = int(anyd.sum())
+                        cost_pix = k if k else D
+                        for p in pads:
+                            # pad dilates the set rather than the interval
+                            aa = anyd.copy()
+                            for j in range(1, p + 1):
+                                aa[j:] |= anyd[:-j]
+                                aa[:-j] |= anyd[j:]
+                            kk = int(aa.sum()) if k else D
+                            cost[p][0] += kk * n
+                            cost[p][1] += D * n
+                            if gv.size:
+                                gi = np.clip(np.rint(gv).astype(int) - 1, 0, D - 1)
+                                rec[p][0] += float(aa[gi].sum() if k else gv.size)
+                                rec[p][1] += gv.size
                         continue
                     if a.band == "minmax":
                         lo0 = float(plo[ys, xs][lv].min())
