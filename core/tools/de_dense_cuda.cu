@@ -403,7 +403,8 @@ int main(int argc, char** argv) {
     else if (a == "--ad-trunc" && has) cfg.ad_trunc = std::atoi(argv[++i]);
     else if (a == "--out" && has) outp = argv[++i];
     else if (a == "--frames" && has) frames = std::max(1, std::atoi(argv[++i]));
-    else if (a == "--subpixel") cfg.subpixel = true;
+    else if (a == "--subpixel") cfg.subpixel = true;   // now the default
+    else if (a == "--no-subpixel") cfg.subpixel = false;
     else if (a == "--agg" && has) ++i;   // accepted for flag-compat; rf ignores it
     else {
       std::fprintf(stderr, "unknown or unsupported flag: %s\n", a.c_str());

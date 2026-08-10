@@ -927,7 +927,7 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
   //
   // A winner on the first or last plane of a chunk still loses one side and falls
   // back to integer, which is why the chunk is large rather than 1.
-  std::vector<std::vector<int16_t>> am0(nthreads), ap0(nthreads), apv(nthreads);
+  std::vector<std::vector<int16_t>> am0(nthreads), ap0(nthreads);
   {
     const int r = std::max(0, cfg.agg);
     // Disparity is processed in BLOCKS, and each thread owns whole blocks.
@@ -960,7 +960,34 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
     // needs consecutive k within a thread, so it takes chunks instead -- a
     // scheduling change confined to the flag, and one whose wall-clock cost has
     // NOT been measured on the TX2. Rule 2: do not assume the desktop's answer.
-    const int KB = blockwise ? (cfg.simd ? SIMD_G : (cfg.subpixel ? 16 : 1)) : 16;
+    const bool sub = blockwise && cfg.subpixel && !mask;
+    const int KB = blockwise ? (cfg.simd ? SIMD_G : 1) : 16;
+    // --subpixel wants the opposite scheduler from everything else here. Dynamic
+    // single-plane stealing is right for the default path and useless for this
+    // flag, which needs consecutive k inside one thread; and chunked stealing was
+    // measured bad on BOTH axes -- 16 planes at D=60 is four chunks for six
+    // threads (occupancy 3.37 of 6), while small chunks land on different threads
+    // so contiguity breaks anyway (42.8% of pixels fell back to integer at six).
+    //
+    // So: one contiguous range per thread, sized by WORK rather than plane count.
+    // A plane costs about its valid width W-6-d, which shrinks as d grows, so
+    // equal plane counts would leave the low-k thread holding the most. Equal-work
+    // ranges balance without stealing, and a thread then loses at most the
+    // neighbours of its first and last plane.
+    std::vector<int> part;
+    if (sub) {
+      part.assign(size_t(nthreads) + 1, D);
+      part[0] = 0;
+      double tot = 0;
+      for (int k = 0; k < D; ++k) tot += std::max(0, W - 6 - (cfg.dmin + k));
+      double acc = 0;
+      int tt = 1;
+      for (int k = 0; k < D && tt < nthreads; ++k) {
+        acc += std::max(0, W - 6 - (cfg.dmin + k));
+        if (acc * nthreads >= tot * tt) part[tt++] = k + 1;
+      }
+      for (; tt <= nthreads; ++tt) part[tt] = D;
+    }
     const int nblocks = (D + KB - 1) / KB;
     std::atomic<int> next_block(0);
     std::vector<std::thread> cpool;
@@ -981,7 +1008,13 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
     // the critical path for buffers the recursive filter never touches.
     const size_t FN = cfg.rf ? 0 : size_t(W) * H;
     const bool i16 = cfg.rf && blockwise;
-    std::vector<int16_t> islice(i16 ? size_t(W) * H : 0);
+    // --subpixel needs the PREVIOUS plane's filtered costs, which used to mean an
+    // unconditional store into a third plane on the insert's fast path -- measured
+    // on the TX2 at 2x the insert and 1.53x the frame. Double-buffering the slice
+    // makes the previous plane simply the other half: the store disappears, and
+    // what remains is one extra plane read where a new best is set.
+    const size_t SL = size_t(W) * H;
+    std::vector<int16_t> islice(i16 ? SL * (sub ? 2 : 1) : 0);
     // SIMD_G planes live at once instead of one: 2.7 MB a thread at 450x375, against
     // 2 MB of L2 shared across the A57 cluster. So a plane can no longer stay
     // resident from score through filter to insert, which is the one real cost of
@@ -1015,25 +1048,23 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
       ad0[t].assign(WH, -1);     ad1[t].assign(WH, -1);
       if (cfg.subpixel) {
         am0[t].assign(WH, -32768); ap0[t].assign(WH, -32768);
-        apv[t].assign(WH, -32768);
       }
     }
     int16_t* ts0 = blockwise ? as0[t].data() : nullptr;
     int16_t* ts1 = blockwise ? as1[t].data() : nullptr;
     int16_t* td0 = blockwise ? ad0[t].data() : nullptr;
     int16_t* td1 = blockwise ? ad1[t].data() : nullptr;
-    const bool sub = blockwise && cfg.subpixel && !mask;
     int16_t* tm0 = sub ? am0[t].data() : nullptr;
     int16_t* tp0 = sub ? ap0[t].data() : nullptr;
-    int16_t* tpv = sub ? apv[t].data() : nullptr;
     const size_t NS = cfg.rf ? 0 : ((F == 1) ? size_t(W) * H : size_t(Ws) * Hs);
     std::vector<float> ps(NS), ips(NS), mps(NS), mips(NS), ts(NS);
     std::vector<float> abs_(NS), bbs(NS), mas(NS), mbs(NS);
     ts_alloc[t] += now_ms() - ta0;
     int last_k = -2;   // last plane THIS thread inserted; see tm0 below
-    for (int b = next_block.fetch_add(1); b < nblocks;
-         b = next_block.fetch_add(1)) {
-    const int klo = b * KB, khi = std::min(D, klo + KB);
+    for (int b = sub ? t : next_block.fetch_add(1); b < (sub ? nthreads : nblocks);
+         b = sub ? nthreads : next_block.fetch_add(1)) {
+    const int klo = sub ? part[b] : b * KB;
+    const int khi = sub ? part[b + 1] : std::min(D, klo + KB);
 #ifdef DE_HAVE_NEON
     // Vector path: score SIMD_G disparities with disparity in the lanes, then run
     // the unchanged filter and insert over each of the SIMD_G planes it produced.
@@ -1097,6 +1128,11 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
 #endif
     for (int k = klo; k < khi; ++k) {
       const int d = cfg.dmin + k;
+      // Alternating halves. Parity by k is enough: a thread only trusts the other
+      // half when it processed k-1 itself, which is exactly the last_k test at the
+      // insert, so the two never disagree about which half holds what.
+      int16_t* const cur_slice =
+          i16 ? islice.data() + (sub ? size_t(k & 1) * SL : 0) : nullptr;
       // Masked: this plane's rectangle, or nothing at all. The score is computed
       // MPAD beyond the interval so the filter aggregates real neighbours, the
       // filter runs over the padded rectangle, and the insert stays strictly inside
@@ -1114,10 +1150,10 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
       if (mask && i16) {
         // Zero the rectangle only: the filter reads nothing outside it.
         for (int y = rylo; y < ryhi; ++y)
-          std::fill(islice.begin() + size_t(y) * W + rxlo,
-                    islice.begin() + size_t(y) * W + rxhi, int16_t(0));
+          std::fill(cur_slice + size_t(y) * W + rxlo,
+                    cur_slice + size_t(y) * W + rxhi, int16_t(0));
       }
-      else if (i16) std::fill(islice.begin(), islice.end(), int16_t(0));
+      else if (i16) std::fill(cur_slice, cur_slice + SL, int16_t(0));
       else std::fill(slice.begin(), slice.end(), 0.f);
       ts_fill[t] += now_ms() - tm; tm = now_ms();
       // Multiply by the reciprocal, do not divide.
@@ -1166,24 +1202,26 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
               const size_t i = size_t(y) * W + x;
               const int32_t c = tbl[popcnt64(cl[i] ^ cr[i - size_t(d)])];
               const int32_t a = adt[std::abs(int(Ld[i]) - int(Rd[i - size_t(d)]))];
-              islice[i] = int16_t((c * (1024 - wq) + a * wq) >> 10);
+              cur_slice[i] = int16_t((c * (1024 - wq) + a * wq) >> 10);
             }
         } else if (cfg.csct) {
           for (int y = 3; y < H - 3; ++y)
             for (int x = 3 + d; x < W - 3; ++x)
-              islice[size_t(y) * W + x] = tbl[__builtin_popcount(
+              cur_slice[size_t(y) * W + x] = tbl[__builtin_popcount(
                   cl32[size_t(y) * W + x] ^ cr32[size_t(y) * W + x - d])];
         } else
         for (int y = rylo; y < ryhi; ++y)
           for (int x = rxlo; x < rxhi; ++x)
-            islice[size_t(y) * W + x] =
+            cur_slice[size_t(y) * W + x] =
                 tbl[popcnt64(cl[size_t(y) * W + x] ^ cr[size_t(y) * W + x - d])];
         ts_score[t] += now_ms() - tm; tm = now_ms();
-        if (mask) rf_filter_i16_rect(islice.data(), axp, ayp, W,
+        if (mask) rf_filter_i16_rect(cur_slice, axp, ayp, W,
                                      rylo, ryhi, rxlo, rxhi);
-        else      rf_filter_i16(islice.data(), axp, ayp, W, H);
+        else      rf_filter_i16(cur_slice, axp, ayp, W, H);
         ts_filt[t] += now_ms() - tm; tm = now_ms();
         const int16_t kk = int16_t(k);
+        const int16_t* const prv =
+            islice.data() + (sub ? size_t(1 - (k & 1)) * SL : 0);
         for (int y = mask ? std::max(rylo, pylo[k]) : rylo;
              y < (mask ? std::min(ryhi, pyhi[k] + 1) : ryhi); ++y) {
           const size_t row = size_t(y) * W;
@@ -1199,18 +1237,17 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
             // |d - prior| <= band was measured at a full point worse (10.6% ->
             // 11.6% pooled): the slack admits extra candidates, and everything
             // measured on this matcher says candidates decide the outcome.
-            const int16_t v = islice[i];
+            const int16_t v = cur_slice[i];
             if (sub) {
               // Both captures happen BEFORE the top-2 update, which is what makes
               // them refer to the best as it stood when plane k-1 and plane k+1
               // were the neighbours of it.
               if (td0[i] == kk - 1) tp0[i] = v;   // this plane is best+1
               if (v > ts0[i]) {                   // a new best starts here
-                tm0[i] = (k == last_k + 1) ? tpv[i] : int16_t(-32768);
+                tm0[i] = (k == last_k + 1) ? prv[i] : int16_t(-32768);
                 tp0[i] = -32768;                  // its right neighbour is unseen
               }
-              tpv[i] = v;                         // unconditional: the next plane's
-            }                                     // left neighbour is this one
+            }
             if (v <= ts1[i]) continue;
             if (v > ts0[i]) {
               ts1[i] = ts0[i]; td1[i] = td0[i];
@@ -1501,6 +1538,7 @@ int main(int argc, char** argv) {
   const std::string lp = argv[1], rp = argv[2];
   const int W = std::atoi(argv[3]), H = std::atoi(argv[4]);
   Cfg cfg;
+  bool sub_explicit = false;
   std::string outp, volp, priorp;
   for (int i = 5; i < argc; ++i) {
     const std::string a = argv[i];
@@ -1508,7 +1546,8 @@ int main(int argc, char** argv) {
     if (a == "--dmax" && has) cfg.dmax = std::atoi(argv[++i]);
     else if (a == "--iters" && has) cfg.iters = std::atoi(argv[++i]);
     else if (a == "--agg" && has) cfg.agg = std::atoi(argv[++i]);
-    else if (a == "--subpixel") cfg.subpixel = true;
+    else if (a == "--subpixel") { cfg.subpixel = true; sub_explicit = true; }
+    else if (a == "--no-subpixel") cfg.subpixel = false;
     else if (a == "--box") cfg.guided = false;
     else if (a == "--rf") cfg.rf = true;
     else if (a == "--guided") cfg.rf = false;
@@ -1607,11 +1646,19 @@ int main(int argc, char** argv) {
   if (cfg.subpixel && (cfg.c2f || !priorp.empty())) {
     // Under a mask each plane's x-range is whatever the prior admits, so "valid at
     // k+1 implies valid at k" stops holding -- and that invariant is the only
-    // reason the previous plane's value is the left neighbour. Refusing beats
-    // fitting through a cost from some other disparity.
-    std::fprintf(stderr, "--subpixel does not compose with --c2f/--prior: the "
-                         "masked planes break the neighbour invariant it needs\n");
-    return 1;
+    // reason the previous plane's value is the left neighbour.
+    //
+    // Now that sub-pixel is the default, refusing outright would break --c2f for
+    // everyone who never asked for it. So: refuse only what was ASKED for, and
+    // otherwise stand down loudly. Silence is the one option rule 1 forbids.
+    if (sub_explicit) {
+      std::fprintf(stderr, "--subpixel does not compose with --c2f/--prior: the "
+                           "masked planes break the neighbour invariant it needs\n");
+      return 1;
+    }
+    std::fprintf(stderr, "note: --c2f/--prior disables sub-pixel (masked planes "
+                         "break the neighbour invariant); disparities are integer\n");
+    cfg.subpixel = false;
   }
   if (cfg.c2f && !priorp.empty()) {
     std::fprintf(stderr, "--c2f computes its own prior; drop --prior\n");

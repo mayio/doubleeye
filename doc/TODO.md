@@ -498,32 +498,51 @@ publishes: a perfect integer answer at Q scores 45.55% bad-1.0 where a perfect f
 answer scores 0.80%. Our dense output is 0% fractional; SGM's is 99.3%. That is a
 bigger lever than anything ranked in 0.3, and it needs no hardware.
 
-**Done for the dense path, 2026-08-10.** `de_dense --subpixel` now fits a parabola
-through the aggregated cost at the winner's two neighbouring disparities, in the
-shipping blockwise path:
+**Done, and ON BY DEFAULT since 2026-08-10.** `de_dense` fits a parabola through the
+aggregated cost at the winner's two neighbouring disparities. `--no-subpixel`
+restores the old behaviour and is bit-identical to the pre-change build.
 
-| Middlebury v3, training Q, official bad-1.0 | bad | coverage |
+**The shipping number is `--threads 1`**, because that is the configuration
+`de_dense_cuda` is verified bit-identical against, and the GPU has no fallback at
+all. All 15 scenes, official scoring:
+
+| Middlebury v3, training Q, bad-1.0 | bad | coverage |
 |---|---|---|
-| blockwise, baseline | 41.93 | 80.2% |
-| **blockwise `--subpixel`** | **29.20** | 80.2% |
-| float volume (`--no-blockwise`), baseline | 42.02 | 80.6% |
-| float volume `--subpixel` | **25.75** | 80.6% |
+| `--no-subpixel` | 41.91 | 79.3% |
+| **default (sub-pixel on)** | **26.94** | 79.3% |
+| SGM reference | 29.08 | 90.2% |
 
-**12.7 points in the shipping path, at coverage that does not move** — the fit
-changes values, never the decision. The default is untouched and bit-identical
-without the flag.
+**15.0 points, at coverage that does not move** — the fit changes values, never the
+decision. On bad-1.0 that puts us ahead of SGM; on coverage it does not, and the
+matched-coverage reading below is the one that matters.
+
+**An earlier figure here said 12.7 points and was measured multi-threaded.** The CPU
+tool loses fits at the seams between threads (25.8% of pixels at six threads, worse
+at eight), so every multi-threaded CPU number understates the shipping path. That is
+a property of the prototype, not of the method: the GPU fits every pixel it can.
 
 Two things this leaves open, both recorded rather than assumed:
 
-1. **Blockwise captures 12.7 of the 16.3 points the float path shows.** 97.4% of
-   pixels get a fit against the float path's 99.5%, so ~0.5 points is the fallback
-   at chunk edges and where the solver picks the runner-up (which carries no
-   neighbours). The remaining ~3 points is fit *quality*, and the leading suspicion
-   is int16: `SCORE_Q` is 14, which is ample for an argmax and much less so for a
-   second difference like `2*c0 - cm - cp`. **Untested.** The test is to widen the
-   fit's three inputs and re-measure.
-2. ~~Nothing here is timed on the TX2.~~ **Timed 2026-08-10: it costs 1.53x, and
-   stays off by default.** `tx2_ab.py "" "--subpixel" -n 8`, interleaved, minima:
+1. ~~The int16 suspicion is untested.~~ **Tested 2026-08-10, and confirmed at
+   1.2 points.** All 15 scenes at `--threads 1`, so no seam fallback on either side:
+
+   | | `--no-subpixel` | default |
+   |---|---|---|
+   | blockwise, int16 end to end | 41.91 | **26.94** |
+   | float volume (`--no-blockwise`) | 42.02 | **25.75** |
+
+   Without the fit, int16 is *ahead* by 0.11 — the quantisation has never mattered
+   to an argmax, which is what the original int16 measurement was about. With the
+   fit it is behind by 1.19. That isolates the sensitivity to the fit exactly as
+   suspected: `2*c0 - cm - cp` is a second difference, and second differences lose
+   far more to quantisation than the maximum they are taken around. `SCORE_Q` is 14.
+
+   Not worth acting on yet: 1.2 points against the 15.0 the fit buys, and widening
+   the fit's inputs means widening the running top-2 the whole blockwise design is
+   built on.
+2. ~~Nothing here is timed on the TX2.~~ **Timed, then improved twice: 1.53x -> 1.30x
+   on the CPU, 1.10x on the GPU.** First measurement, `tx2_ab.py "" "--subpixel"
+   -n 8`, interleaved, minima:
 
    | | default | `--subpixel` | |
    |---|---|---|---|
@@ -540,12 +559,28 @@ Two things this leaves open, both recorded rather than assumed:
    (`c_score` and `c_filter` CPU both *fell*, 77.6 -> 62.0 and 94.8 -> 83.3, which
    is chunk locality; it does not rescue the wall clock.)
 
-   **The obvious fix, not yet built:** double-buffer `islice` instead of keeping a
-   separate `tpv` plane. The previous plane's value is then just the other buffer,
-   so the unconditional store disappears and only two conditional reads remain on
-   the insert's fast path. That should recover most of the insert regression; the
-   chunking cost is separate and needs the chunk size swept. Re-time before
-   believing any of it.
+   **Both were fixed, and only one of them the way I expected.**
+
+   *Double-buffering `islice`* removed the `tpv` plane: the previous plane is just
+   the other half, so the unconditional store became a conditional read. Insert CPU
+   131.0 -> 109.4 ms. **Wall clock barely moved**, because the insert was never the
+   binding constraint -- occupancy was.
+
+   *The scheduler was.* 16-plane chunks at D=60 is FOUR chunks for six threads, so
+   two threads got nothing. Shrinking the chunk fixed occupancy and broke the
+   contiguity the fit depends on (42.8% of pixels fell back at six threads). The
+   answer is neither: **one contiguous range per thread, sized by work rather than
+   plane count**, since a plane costs about its valid width `W-6-d` and equal plane
+   counts would hand the low-k thread the most. No stealing, and a thread loses at
+   most its first and last plane's neighbours.
+
+   Final, `-n 12`: **76.4 -> 99.6 ms, 0.767x**, occupancy 4.97 of 6 against the
+   default's 5.27. Fallback 2.6% at one thread, 25.8% at six.
+
+   Still open on the CPU: those seams. The fix is for a thread to also score and
+   filter the plane either side of its range without inserting it, at ~2/D extra
+   work per thread. Not built -- and it only affects the prototype, since the GPU
+   fits every pixel it can.
 
 **The CUDA path has it too, 2026-08-10, and it is much cheaper there.** As predicted:
 the volume is `[y][x][k]` with k innermost and the top-2 is a warp shuffle tree, so
@@ -805,8 +840,10 @@ not a limit. `--dmax-cap 200` scores all 15.
 
 ### The margin sweep, 2026-08-10: SGM dominates the curve
 
-With `--subpixel` on, sweeping the gate (13 scenes; the 15-scene default lands at
-29.15 / 79.3%, so the shape holds):
+With sub-pixel on, sweeping the gate. **These were run multi-threaded and therefore
+understate every row** (see 2.2 -- the CPU loses fits at thread seams); the two rows
+that carry the conclusion were re-run at `--threads 1` and are marked. The shape is
+what matters:
 
 | `--min-margin` | bad | coverage | error over filled |
 |---|---|---|---|
@@ -818,11 +855,11 @@ With `--subpixel` on, sweeping the gate (13 scenes; the 15-scene default lands a
 | 0.20 | 2.29 | 14.5% | 15.8% |
 | **SGM reference** | **29.08** | **90.2%** | **32.2%** |
 
-**Read at matched coverage, SGM is ahead by about nine points.** At 91.8% coverage we
-are at 37.96 against SGM's 29.08 at 90.2%. Read the other way, at matched *error* we
-give up ten points of coverage: 29.20 at 80.2% against 29.08 at 90.2%. Both readings
-say the same thing — on this benchmark SGM dominates our whole curve, and the gate
-moves along it rather than off it.
+**Read at matched coverage, SGM is ahead by 6.8 points.** At 91.2% we are at 35.85
+against SGM's 29.08 at 90.2%. Read the other way we are *ahead on bad* — 26.94
+against 29.08 — but eleven points short on coverage. The honest summary is that SGM
+still dominates the curve, by less than the first (multi-threaded) measurement said,
+and that the gate moves along the curve rather than off it.
 
 **This corrects a comparison made earlier today.** "Level with SGM" was 29.20 against
 29.13 — true numbers, unequal coverage, and therefore not a comparison. The gate is

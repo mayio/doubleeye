@@ -20,7 +20,8 @@ struct Cfg {
   int dmin = 1, dmax = 60, iters = 2, agg = 3;
   bool rf = true;              // recursive edge-aware filter; --guided for the old one
   float sigma_s = 12.f, sigma_r = 0.20f;   // sigma_r swept: 0.2 is the peak
-  bool subpixel = false;   // measured: hurts slightly, see below
+  bool subpixel = true;    // ON by default since 2026-08-10: worth 15.0 points
+                           // of bad-1.0 on Middlebury v3. --no-subpixel disables.
   bool guided = true;      // edge-aware aggregation
   float eps = 0.0025f;     // guided-filter regularisation, I in [0,1]
   int fgf = 1;             // fast guided filter: measured NOT worth it, see below
