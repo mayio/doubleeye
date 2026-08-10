@@ -1009,6 +1009,12 @@ Done:
 - Fixed `rng_for()` seeding from Python's per-process salted `hash()`. Numbers
   were irreproducible across runs; one conclusion had flipped sign as a result.
 
+**Not writing a Part 5** (Mario, 2026-08-10). The v3 harness turned up a good
+standalone story -- a perfect *integer* disparity map scores 45.6% bad-1.0 where a
+perfect float one scores 0.8%, so nearly the whole gap to SGM on that board was
+output quantisation -- and it is deliberately not being published. Do not re-propose
+it; the measurements live in 4.1 and 2.2 either way.
+
 Open, in rough priority order:
 - **Detector repeatability is the binding constraint on real data.** Only 48% of
   Teddy's left keypoints (51% on Cones) have any right keypoint within 1 px of
