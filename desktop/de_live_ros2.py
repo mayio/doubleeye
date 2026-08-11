@@ -214,6 +214,14 @@ def main() -> int:
                     help="publish the IR image raw. By default it is contrast "
                          "stretched p1-p99 for display, because 1500 us of IR "
                          "exposure is dark and rviz does not auto-scale mono8")
+    ap.add_argument("--dense", action="store_true",
+                    help="run the dense CUDA matcher on the Jetson instead of the "
+                         "sparse keypoint one: ~80% of pixels answered rather than "
+                         "~570 points, at 848x480 on the GPU")
+    ap.add_argument("--dense-stride", type=int, default=2,
+                    help="subsample the dense cloud by this factor in each axis. "
+                         "1 is 407k points a frame and ~6 MB of PointCloud2; 2 is "
+                         "a quarter of that and looks the same in rviz")
     ap.add_argument("--best-effort", action="store_true",
                     help="publish BEST_EFFORT instead of RELIABLE. Only for a "
                          "lossy link, and rviz displays then need their "
@@ -258,14 +266,19 @@ def main() -> int:
                   + f" --out-fps {a.out_fps}"
                   + (f" --exposure-us {a.exposure_us}" if a.exposure_us else "")
                   + (f" --emitter {a.emitter}" if a.emitter else "")
-                  + f" | ~/{a.remote_dir}/core/build/de_pipe"
-                    f" --fast-threshold {a.fast_threshold}"
-                    f" --right-density {a.right_density}"
-                    f" --min-margin {a.min_margin}"
-                    f" --min-disparity {dmin:.3f}"
-                    f" --max-disparity {dmax:.3f}"
-                    + (f" --cell {a.cell}" if a.cell else "")
-                    + (f" --per-cell {a.per_cell}" if a.per_cell else ""))
+                  + (f" | ~/{a.remote_dir}/core/build/de_dense_cuda"
+                     f" /dev/null /dev/null 848 480 --stream --threads 4"
+                     f" --dmax {int(min(dmax, 96)) if dmax > 8 else 60}"
+                     f" --min-margin {a.min_margin}"
+                     if a.dense else
+                     f" | ~/{a.remote_dir}/core/build/de_pipe"
+                     f" --fast-threshold {a.fast_threshold}"
+                     f" --right-density {a.right_density}"
+                     f" --min-margin {a.min_margin}"
+                     f" --min-disparity {dmin:.3f}"
+                     f" --max-disparity {dmax:.3f}"
+                     + (f" --cell {a.cell}" if a.cell else "")
+                     + (f" --per-cell {a.per_cell}" if a.per_cell else "")))
         print(f"starting on {a.host}:\n  {remote}\n")
         proc = subprocess.Popen(["ssh", a.host, remote],
                                 stdout=subprocess.PIPE, stderr=None,
@@ -342,12 +355,15 @@ def main() -> int:
             if hdr is None:
                 print("\nstream ended")
                 break
-            if hdr[:4] != b"DEMR":
-                print(f"lost sync: {hdr[:4]!r}", file=sys.stderr)
+            want = b"DEDD" if a.dense else b"DEMR"
+            if hdr[:4] != want:
+                print(f"lost sync: {hdr[:4]!r}, expected {want!r}", file=sys.stderr)
                 break
             W, H, num, nm = struct.unpack("<HHII", hdr[4:])
             img_bytes = read_exactly(stream, W * H)
-            rec_bytes = read_exactly(stream, nm * 16)
+            # The dense packet's second field is a full W*H map of Q4 int16 rather
+            # than nm records; nm is zero there and carries nothing.
+            rec_bytes = read_exactly(stream, W * H * 2 if a.dense else nm * 16)
             if img_bytes is None or rec_bytes is None:
                 break
             n_seen += 1
@@ -355,8 +371,22 @@ def main() -> int:
                 continue
 
             stamp = node.get_clock().now().to_msg()
-            rec = np.frombuffer(rec_bytes, dtype=np.float32).reshape(-1, 4)
-            xl, yl, disp, margin = rec[:, 0], rec[:, 1], rec[:, 2], rec[:, 3]
+            if a.dense:
+                # Unpack the map into the same (x, y, disparity) columns the sparse
+                # path produces, so everything downstream -- the gate, the depth
+                # images, the cloud -- is shared rather than duplicated. -32768 is
+                # the matcher's "no answer"; Q4 means sixteenths of a pixel.
+                q = np.frombuffer(rec_bytes, dtype=np.int16).reshape(H, W)
+                st = max(1, a.dense_stride)
+                q = q[::st, ::st]
+                vy, vx = np.nonzero(q != -32768)
+                xl = (vx * st).astype(np.float32)
+                yl = (vy * st).astype(np.float32)
+                disp = q[vy, vx].astype(np.float32) / 16.0
+                margin = np.ones_like(disp)      # the map does not carry it
+            else:
+                rec = np.frombuffer(rec_bytes, dtype=np.float32).reshape(-1, 4)
+                xl, yl, disp, margin = rec[:, 0], rec[:, 1], rec[:, 2], rec[:, 3]
             # Also filter here, not only in the matcher's gate. A disparity that
             # survives the gate at its very edge is still almost certainly wrong,
             # and one absurd point rescales rviz's whole view.

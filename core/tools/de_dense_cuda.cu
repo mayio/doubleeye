@@ -34,11 +34,28 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <map>
 #include <vector>
 
 using namespace doubleeye;
 
 namespace {
+
+// Streaming I/O, same packet grammar as de_pipe so the ROS bridge needs no new
+// transport. In:  "DEIR" | w u16 | h u16 | stream u8 | flags u8 | frame u32 | Y8
+// Out: "DEDD" | w u16 | h u16 | frame u32 | 0 u32 | left Y8 | w*h int16 disparity,
+// Q4 (sixteenths of a pixel), -32768 where the matcher declined.
+//
+// Q4 rather than float halves the wire: 848x480 is 814 kB a frame instead of 1.6 MB,
+// and a sixteenth of a pixel is finer than the sub-pixel fit's own residual, so
+// nothing measurable is lost. The left image rides along because the viewer colours
+// the cloud with it.
+bool read_all(void* p, size_t n) {
+  return std::fread(p, 1, n, stdin) == n;
+}
+bool write_all(const void* p, size_t n) {
+  return std::fwrite(p, 1, n, stdout) == n;
+}
 
 double now_ms() {
   struct timespec ts;
@@ -389,6 +406,7 @@ int main(int argc, char** argv) {
   const int W = std::atoi(argv[3]), H = std::atoi(argv[4]);
   Cfg cfg;
   std::string outp, kpp;
+  bool stream_mode = false;
   int frames = 1;
   for (int i = 5; i < argc; ++i) {
     const std::string a = argv[i];
@@ -410,6 +428,7 @@ int main(int argc, char** argv) {
     else if (a == "--damping" && has) cfg.damping = float(std::atof(argv[++i]));
     else if (a == "--out" && has) outp = argv[++i];
     else if (a == "--keypoints" && has) kpp = argv[++i];
+    else if (a == "--stream") stream_mode = true;
     else if (a == "--frames" && has) frames = std::max(1, std::atoi(argv[++i]));
     else if (a == "--subpixel") cfg.subpixel = true;   // now the default
     else if (a == "--no-subpixel") cfg.subpixel = false;
@@ -422,7 +441,12 @@ int main(int argc, char** argv) {
     }
   }
   Image8 L, R;
-  if (!load_raw_y8(lp, W, H, &L) || !load_raw_y8(rp, W, H, &R)) {
+  if (stream_mode) {
+    // The frames arrive on stdin; the geometry still comes from argv because the
+    // device buffers are sized once, before the first packet.
+    L = Image8{W, H};
+    R = Image8{W, H};
+  } else if (!load_raw_y8(lp, W, H, &L) || !load_raw_y8(rp, W, H, &R)) {
     std::fprintf(stderr, "failed to load %s / %s at %dx%d\n",
                  lp.c_str(), rp.c_str(), W, H);
     return 1;
@@ -610,6 +634,103 @@ int main(int argc, char** argv) {
     });
     for (auto& th : pool) th.join();
   };
+  // --- streaming: DEIR pairs in, disparity maps out ------------------------------
+  //
+  // One frame at a time rather than the pipelined double-buffering below: the
+  // overlap wins 52 -> 32 ms of THROUGHPUT, and a viewer at 10 fps does not need
+  // it, while a second in-flight frame would need the pairing to hold two pending
+  // pairs. Latency is what a live view feels, and that is the same either way.
+  if (stream_mode) {
+    struct Pending { std::vector<uint8_t> img; int stream; };
+    std::map<uint32_t, Pending> pending;
+    std::vector<int16_t> qdisp(WH);
+    long pairs = 0, dropped = 0;
+    for (;;) {
+      unsigned char hdr[14];
+      if (!read_all(hdr, sizeof(hdr))) break;
+      if (std::memcmp(hdr, "DEIR", 4) != 0) {
+        std::fprintf(stderr, "de_dense_cuda: lost sync (bad magic), stopping\n");
+        return 1;
+      }
+      uint16_t pw, ph;
+      uint32_t num;
+      std::memcpy(&pw, hdr + 4, 2);
+      std::memcpy(&ph, hdr + 6, 2);
+      const int st = hdr[8];
+      std::memcpy(&num, hdr + 10, 4);
+      if (int(pw) != W || int(ph) != H) {
+        std::fprintf(stderr, "de_dense_cuda: stream is %dx%d, this was started for "
+                     "%dx%d -- the device buffers are already sized\n",
+                     int(pw), int(ph), W, H);
+        return 1;
+      }
+      std::vector<uint8_t> img(WH);
+      if (!read_all(img.data(), img.size())) break;
+
+      auto it = pending.find(num);
+      if (it == pending.end()) {
+        pending[num] = Pending{std::move(img), st};
+        while (pending.size() > 8) { pending.erase(pending.begin()); ++dropped; }
+        continue;
+      }
+      if (it->second.stream == st) { it->second.img = std::move(img); continue; }
+      const std::vector<uint8_t>& lft = (st == 1) ? img : it->second.img;
+      const std::vector<uint8_t>& rgt = (st == 1) ? it->second.img : img;
+
+      std::memcpy(hL, lft.data(), WH);
+      std::memcpy(hR, rgt.data(), WH);
+      CK(cudaMemcpyAsync(dL, hL, WH, cudaMemcpyHostToDevice));
+      CK(cudaMemcpyAsync(dR, hR, WH, cudaMemcpyHostToDevice));
+      k_census<<<g2, b2>>>(dL, dcl, W, H);
+      k_census<<<g2, b2>>>(dR, dcr, W, H);
+      k_rf_coeffs<<<g2, b2>>>(dL, dax, day, W, H);
+      k_score_hfwd<<<dim3(H, Dpad / 64), 64>>>(dcl, dcr, dL, dR, dax, dvol, W, H, D,
+                                               Dpad, cfg.dmin, wq);
+      k_hbwd<<<dim3(H, Dpad / 64), 32>>>(dvol, dax, W, H, Dpad);
+      vert_fwd();
+      vert_bwd_top2();
+      CK(cudaMemcpy(cs[0].data(), dcs, WH * 2 * sizeof(float),
+                    cudaMemcpyDeviceToHost));
+      CK(cudaMemcpy(cd[0].data(), dcd, WH * 2 * sizeof(int), cudaMemcpyDeviceToHost));
+      CK(cudaMemcpy(cn[0].data(), dcn, WH * sizeof(int), cudaMemcpyDeviceToHost));
+      if (cfg.subpixel)
+        CK(cudaMemcpy(cnb[0].data(), dcnb, WH * 2 * sizeof(int16_t),
+                      cudaMemcpyDeviceToHost));
+      std::fill(disp.begin(), disp.end(), std::nanf(""));
+      solve_all(cs[0].data(), cd[0].data(), cn[0].data(),
+                cfg.subpixel ? cnb[0].data() : nullptr);
+
+      // Q4, and -32768 for "no answer" -- a real disparity can never reach it.
+      for (size_t i = 0; i < WH; ++i) {
+        const float d = disp[i];
+        qdisp[i] = (d > 0.f && std::isfinite(d))
+                       ? int16_t(std::lround(d * 16.0f)) : int16_t(-32768);
+      }
+      unsigned char out[16];
+      std::memcpy(out, "DEDD", 4);
+      std::memcpy(out + 4, &pw, 2);
+      std::memcpy(out + 6, &ph, 2);
+      std::memcpy(out + 8, &num, 4);
+      const uint32_t zero = 0;
+      std::memcpy(out + 12, &zero, 4);
+      if (!write_all(out, sizeof(out))) break;
+      if (!write_all(lft.data(), WH)) break;
+      if (!write_all(qdisp.data(), qdisp.size() * sizeof(int16_t))) break;
+      std::fflush(stdout);
+      pending.erase(it);
+      if (++pairs % 30 == 0) {
+        size_t filled = 0;
+        for (size_t i = 0; i < WH; ++i) filled += qdisp[i] != int16_t(-32768);
+        std::fprintf(stderr, "de_dense_cuda: %ld pairs, %ld unpaired dropped, "
+                     "%.0f%% filled\n", pairs, dropped,
+                     100.0 * double(filled) / double(WH));
+      }
+    }
+    std::fprintf(stderr, "de_dense_cuda: %ld pairs, %ld unpaired dropped\n",
+                 pairs, dropped);
+    return 0;
+  }
+
   const double t1 = now_ms();
   solve_all(cs[0].data(), cd[0].data(), cn[0].data(),
             cfg.subpixel ? cnb[0].data() : nullptr);

@@ -673,6 +673,43 @@ max absolute difference 0.
 The three per-point Python loops became fancy-indexed numpy writes over an
 (N, k, k) index grid.
 
+### The dense cloud: `--dense`
+
+```sh
+source /opt/ros/jazzy/setup.bash
+/usr/bin/python3 desktop/de_live_ros2.py --dense --emitter on
+```
+
+Runs `rs_ir_stream | de_dense_cuda --stream` on the Jetson instead of `de_pipe`, so
+the cloud is the dense matcher's output rather than matched keypoints: **~88,000
+points a frame against ~570**, measured on a real `full_on` pair at 848x480.
+
+`de_dense_cuda --stream` reads the same DEIR packets `de_pipe` does and writes
+`DEDD`: header, the left image, then `W*H` int16 disparities in **Q4** -- sixteenths
+of a pixel, with `-32768` for "no answer". Q4 rather than float halves the wire (814
+kB a frame instead of 1.6 MB) and a sixteenth of a pixel is finer than the sub-pixel
+fit's own residual.
+
+One frame at a time, not pipelined: the overlap is worth 52 -> 32 ms of *throughput*
+and a viewer at 10 fps does not need it, while a second in-flight frame would mean
+holding two pending pairs. Latency is what a live view feels and it is the same
+either way.
+
+`--dense-stride` subsamples the cloud, default 2. At stride 1 a frame is 407k points
+and ~6 MB of `PointCloud2`; stride 2 is a quarter of that and looks the same in rviz.
+
+**Use `/usr/bin/python3`, explicitly.** `rclpy` lives in the ROS install's
+`dist-packages`, and if `.venv` is active its `site-packages` shadows that -- the
+script then reports `No module named 'yaml'`, which looks like a broken ROS install
+and is not one. This is the two-Pythons rule in CLAUDE.md biting through
+`VIRTUAL_ENV` rather than through the command you typed.
+
+**The depth gate does the same job it does for the sparse path**, and on a dense map
+it is far more visible: `--min-range`/`--max-range` default to 0.4-6.0 m, and
+anything outside is dropped before publishing. A test with two frames from *one*
+camera as a fake pair has near-zero true disparity, so 98% of the map lands past 6 m
+and the cloud looks empty. That is the gate working, not the matcher failing.
+
 ### `/doubleeye/depth` shows nothing, and cannot
 
 The raw depth topic is 32FC1 with a value at ~1% of pixels and NaN everywhere
