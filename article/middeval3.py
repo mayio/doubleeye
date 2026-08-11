@@ -306,8 +306,12 @@ def main():
     ap.add_argument("--dmax-cap", type=int, default=96,
                     help="skip scenes needing more; de_dense is built for D<=96")
     ap.add_argument("--threads", default="4")
+    # These three used to carry values here, which silently OVERRODE the binary's
+    # own defaults -- so every "default configuration" run measured the harness's
+    # opinion instead of what ships, and an --iters default change read as no change
+    # at all. Passed through only when given.
     ap.add_argument("--agg", default="5")
-    ap.add_argument("--iters", default="2")
+    ap.add_argument("--iters", default=None)
     ap.add_argument("--min-margin", default="0.01")
     ap.add_argument("--extra", default="")
     a = ap.parse_args()
@@ -323,8 +327,10 @@ def main():
 
     if not os.path.exists(BIN):
         sys.exit(f"{BIN} not built -- run `cd core && make`")
-    args = ["--threads", a.threads, "--agg", a.agg, "--iters", a.iters,
+    args = ["--threads", a.threads, "--agg", a.agg,
             "--min-margin", a.min_margin] + a.extra.split()
+    if a.iters is not None:
+        args += ["--iters", a.iters]
     over = []
 
     def run(s, d):
@@ -353,8 +359,8 @@ def main():
     if a.by_gradient:
         return by_gradient(a, run)
     thresh, label = official(a.res, a.gt_full)
-    print(f"de_dense --agg {a.agg} --iters {a.iters} --min-margin {a.min_margin} "
-          f"--threads {a.threads} {a.extra}\n{label}\n")
+    print(f"de_dense --agg {a.agg} --min-margin {a.min_margin} --threads {a.threads}"
+          f"{'' if a.iters is None else ' --iters ' + a.iters} {a.extra}\n{label}\n")
     per, _ = score_all(a.data, a.res, run, thresh, a.gt_full)
     if not per:
         sys.exit("no scene scored")
