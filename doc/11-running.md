@@ -12,7 +12,7 @@ want, go there instead.
 
 | I want to… | Run |
 |---|---|
-| see a live point cloud on the desktop | `de_live_ros2.py --dense` — [§5](#5-ros-2-and-rviz2) |
+| see a live point cloud on the desktop | `de_live_ros2.py --dense --max-range 2` — [§5](#5-ros-2-and-rviz2) |
 | see the camera without ROS | `live_view.py` — [§6](#6-the-other-viewers) |
 | check the hardware is healthy | `./tools/deploy.sh --probe` — [§2](#2-deploy) |
 | run the matcher on one image pair | `de_dense` — [§3](#3-the-matcher-offline) |
@@ -169,11 +169,14 @@ ROS publisher runs here:
 
 ```sh
 source /opt/ros/jazzy/setup.bash
-/usr/bin/python3 desktop/de_live_ros2.py --dense --emitter on
+/usr/bin/python3 desktop/de_live_ros2.py --dense --emitter on --max-range 2
 ```
 
 Then, in a second terminal with the same setup sourced, `rviz2`: Fixed Frame `map`,
 and add a **PointCloud2** on `/doubleeye/points`.
+
+`--max-range` is in that line rather than left at its default because it is the
+difference between a cloud you can read and a blob — see the knobs below.
 
 ### Dense or sparse
 
@@ -202,7 +205,11 @@ in rviz costs real bandwidth.
 ### Knobs
 
 - `--min-range` / `--max-range` (0.4–6.0 m) — the depth gate, stated in metres and
-  converted to disparity. **Check this first if the cloud looks empty.**
+  converted to disparity. **Set the far limit to roughly the depth of what you are
+  looking at**, because a small far tail sets the whole cloud's scale and rviz fits
+  its view to that: on a desk scene 1.4% of points beyond 2 m stretched the cloud
+  from ±2.0 m to ±5.9 m across, and the 98.6% that mattered collapsed into the
+  middle. `--max-range 2` indoors.
 - `--every N` — publish every Nth pair. The surplus is dropped by reading slower, so
   nothing queues without bound.
 - `--emitter on|off` — the projector. On is dramatically better: it puts texture on
@@ -212,6 +219,12 @@ in rviz costs real bandwidth.
   benchmarks all run at 0.01, and 0.10 there rejects about 90% of the map. Left
   unset, the script picks per mode and prints which. A cloud with a few thousand
   points instead of tens of thousands is this, every time.
+- `--colour image|depth|margin` (image) — `image` paints each point with the left
+  camera's own intensity, so the cloud looks like the scene. `depth` is a ramp over
+  the 5–95 percentile. `margin` is the sparse path's confidence colouring and is
+  meaningless with `--dense`, where the packet carries no per-pixel margin — every
+  point comes out the same colour.
+- `--dense-stride N` (2) — subsample the cloud. 1 is 407k points and ~6 MB a frame.
 - `--local FILE` — replay a captured packet stream instead of running the camera.
 
 ### Gigabit, not wifi
