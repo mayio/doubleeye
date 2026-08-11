@@ -21,10 +21,11 @@ duplicates it; this is the engineering record that sits underneath it.
 | [04-baseline-measurements.md](04-baseline-measurements.md) | Measured numbers, for citation and for regression comparison |
 | [05-operations.md](05-operations.md) | How to record, pull, view, analyse, and print a calibration target |
 | [06-preprocessing.md](06-preprocessing.md) | Census + keypoints: design, measured output, and the profiling result |
-| [07-tools.md](07-tools.md) | **Every tool, what it answers, how to run it** — start here when returning to the project. Includes the **ROS 2 / rviz2 setup** and both viewer paths, live and offline |
+| [07-tools.md](07-tools.md) | **Every tool, what it answers, how to run it** — the reference. [11-running.md](11-running.md) covers the same ground organised by task, and is the better start when returning to the project |
 | [08-imu.md](08-imu.md) | Pixhawk/ArduPilot: links, isolated venv, parameters applied, and what is still open |
 | [09-matching.md](09-matching.md) | **MASDA** — messages, validation against brute force, the advantage over nearest-neighbour, ground-truth results on Middlebury, and the frame budget |
 - [10-architecture.md](10-architecture.md) — what runs on the GPU, what runs on the CPU, and the 2026-08-10 decision that put the matcher's image-plane half on the GPU.
+- [11-running.md](11-running.md) — **how to actually run it**: deploy, the matcher offline and on the GPU, which knobs matter and what each is worth, the ROS 2 point cloud, the other viewers, and what to check when it looks broken. Organised by task; 07-tools.md is the same ground organised by tool.
 
 ## Status at time of writing
 
@@ -66,15 +67,22 @@ advantage scaling with ambiguity exactly as the plan argues. See
 
 ## Seeing the results
 
-Two ways, both in [07-tools.md](07-tools.md). Live, with matching on the Jetson and
-only the ROS 2 half on the laptop:
+Live, with capture and matching on the Jetson and only the ROS 2 half on the laptop:
 
     source /opt/ros/jazzy/setup.bash
-    python3 desktop/de_live_ros2.py --emitter on   # then rviz2, Fixed Frame: map
+    /usr/bin/python3 desktop/de_live_ros2.py --dense --emitter on
+    # then rviz2, Fixed Frame: map, PointCloud2 on /doubleeye/points
 
-Or offline from a recorded bag, via `desktop/bag_to_ros2.py`. ROS 2 Jazzy is needed
-on the laptop and nothing is needed on the Jetson; the install, the two-Pythons
-split and the rviz2 display list are all in 07-tools.
+`--dense` runs the CUDA matcher on the board: **~88,000 points a frame** against the
+sparse path's ~570. Drop it for the sparse keypoint matcher.
+
+`/usr/bin/python3` written out, because an active `.venv` shadows the ROS install
+even after sourcing the setup file, and the failure reads as a broken ROS install.
+
+Or offline from a recorded bag, via `desktop/bag_to_ros2.py`, and without ROS at all
+via `desktop/live_view.py`. **[11-running.md](11-running.md)** has all of it: the
+knobs and what each is measured to be worth, the topic list, and what to check when
+it looks broken.
 
 ## Findings at a glance
 
