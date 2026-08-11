@@ -247,6 +247,27 @@ in rviz costs real bandwidth.
 Every packet carries the left image. Sparse is ~4 MB/s at 10 fps; dense is ~12.
 Wifi generally will not hold it.
 
+### Measuring on the real camera
+
+Middlebury cannot tell you anything about this sensor -- see [TODO.md](TODO.md) 0.45
+for how far apart they are. A blank wall can:
+
+```sh
+./tools/deploy.sh --capture wall01 --seconds 3 --emitter on
+./tools/deploy.sh --pull wall01
+.venv/bin/python desktop/wall_check.py bags/wall01 \
+    --sweep " " " --min-margin 0.01" " --no-subpixel"
+```
+
+It fits a plane and reports the scatter about it — the matcher's noise at that
+distance — plus the gross-outlier fraction. `--sweep` compares settings **on the real
+sensor**, which nothing else here can do. Each swept config needs a leading space or
+argparse claims it.
+
+It does not measure absolute scale; that needs a rangefinder and is a different
+question. Point at a blank wall filling the frame, and check the reported tilt is
+small — a large one means you are measuring a slanted surface, or not a wall.
+
 ---
 
 ## 6. The other viewers

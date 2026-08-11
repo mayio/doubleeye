@@ -970,6 +970,49 @@ the real camera, cheapest first:
 Until one of those exists, every claim about this matcher on this camera is an
 extrapolation from Middlebury, and the size of the extrapolation is the table above.
 
+**Route 1 is built: `desktop/wall_check.py`.** It fits a plane to the cloud and
+reports the scatter about it, which is the matcher's noise at that distance, plus the
+gross-outlier fraction. `--sweep` compares flag settings on the real sensor, which is
+the thing that was impossible before. It needs a bag of a blank wall; run against a
+non-planar scene it reports 41 degrees of tilt and 144 mm RMS, which is the correct
+answer to "this is not a wall" and means the metric cannot be fooled into looking good.
+
+### Raising local contrast does not help, and the reason is structural
+
+The obvious response to 3.9 DN of contrast is to amplify it. Measured on the real
+pair, three ways:
+
+| | contrast | pixels < 2 DN | answered | roughness (p90) |
+|---|---|---|---|---|
+| raw | 3.9 DN | 24.9% | 88.4% | 0.08 px |
+| global stretch | 4.2 DN | 22.7% | 88.3% | 0.09 px |
+| CLAHE 8x8 | 10.0 DN | 7.5% | **85.0%** | **0.19 px** |
+| average of 4 frames | — | — | 88.5% | **0.06 px** |
+
+**Any monotonic normalisation is invisible to the matcher.** Census compares a pixel
+against its neighbours, so a global stretch leaves the descriptor **byte-identical** --
+measured, 100.0% of descriptors unchanged. The contrast number moves and nothing else
+does. This is a property of the descriptor, not a coincidence of this scene.
+
+**CLAHE does change the descriptor, and makes things worse**: 3.4 points fewer pixels
+answered and 2.4x the roughness. It applies a different map per tile, and the same
+scene point sits at *different pixel coordinates* in the two views -- that is what
+disparity is -- so it lands in different tiles under different maps. The comparison
+across views stops being like with like.
+
+**Temporal averaging helps slightly, and that is the informative part.** Four frames
+of a static scene take roughness from 0.08 to 0.06 px and coverage nowhere. The
+per-pixel temporal noise is **0.85 DN against 3.9 DN of contrast**, so the sensor is
+not noise-limited and averaging has little to remove.
+
+**So the limit is the absence of texture, not its amplitude and not sensor noise.**
+No intensity transform creates information that the photons did not carry. The two
+things that do are optical: the projector, which is worth 1.6 -> 3.9 DN and 56.8% ->
+24.9% of pixels below 2 DN, and exposure -- 6.4% of the frame is bright-clipped at
+`exposure_us 1500`, and those pixels are unmatchable at any descriptor size. Whether
+lowering exposure pays is a trade against dot contrast everywhere else, and
+`wall_check.py --sweep` over a few exposures is now the way to settle it.
+
 ## 0.5 Quick wins now that the live view works
 
 - ~~**Benchmark `de_dense` on the Jetson.**~~ Done. The dense numbers in 0.3 are TX2
