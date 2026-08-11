@@ -394,17 +394,27 @@ float event_ms(cudaEvent_t a, cudaEvent_t b) {
 int main(int argc, char** argv) {
   if (argc < 5) {
     std::fprintf(stderr,
-        "usage: %s LEFT.y8 RIGHT.y8 W H [--dmax N] [--iters N] [--threads N]\n"
+        "usage: %s LEFT.y8 RIGHT.y8 W H [--dmax N (default 64)] [--iters N]\n"
+        "          [--threads N]\n"
         "          [--min-margin F] [--sigma-s F] [--sigma-r F] [--ad F]\n"
         "          [--ad-trunc N] [--out disp.f32]\n"
         "  GPU census/cost/filter/top-2, CPU MASDA solve. Bit-identical to\n"
-        "  de_dense --threads 1 by construction; verified with cmp, not maps.\n",
+        "  de_dense --threads 1 by construction; verified with cmp, not maps.\n"
+        "  --dmax is quantised into blocks of 64: 1..64 all cost the same, and 65\n"
+        "  costs 52%% more. Asking for fewer than 64 saves nothing.\n",
         argv[0]);
     return 2;
   }
   const std::string lp = argv[1], rp = argv[2];
   const int W = std::atoi(argv[3]), H = std::atoi(argv[4]);
   Cfg cfg;
+  // The GPU quantises the disparity search into blocks of 64: measured on the TX2 at
+  // 848x480, --dmax 32 and --dmax 64 both cost 25.5 ms in the cost stage, and 65
+  // through 128 both cost ~42. So Cfg's shared default of 60 buys a block of 64 and
+  // throws four disparities away, and 64 is 31.5 ms/frame against 60's 31.7 with
+  // half a point more coverage. The CPU tool keeps 60 -- there the cost is linear in
+  // dmax and this would be a 7% tax rather than a free 4 px. See 03-obstacles.md 24.
+  cfg.dmax = 64;
   std::string outp, kpp;
   bool stream_mode = false;
   int frames = 1;
