@@ -413,6 +413,8 @@ int main(int argc, char** argv) {
     else if (a == "--frames" && has) frames = std::max(1, std::atoi(argv[++i]));
     else if (a == "--subpixel") cfg.subpixel = true;   // now the default
     else if (a == "--no-subpixel") cfg.subpixel = false;
+    else if (a == "--fit-eq") cfg.fit_eq = true;   // now the default
+    else if (a == "--fit-parabola") cfg.fit_eq = false;
     else if (a == "--agg" && has) ++i;   // accepted for flag-compat; rf ignores it
     else {
       std::fprintf(stderr, "unknown or unsupported flag: %s\n", a.c_str());

@@ -730,6 +730,44 @@ project.
 *(The volume has to be materialised for this, which disables the blockwise path, so
 the costs are float rather than int16. Third decimal, not the conclusion.)*
 
+### The fit's 8.5% — partly collected, 2026-08-11
+
+The budget above puts 8.5% of far-field pixels on the sub-pixel fit: their integer was
+right, they were answered, and the refined value still missed the quarter-pixel
+tolerance. 2.2a already identified the mechanism — the graded cost's truncated
+absolute difference is piecewise LINEAR, so the surface around the winner is locally
+a V rather than a parabola, and a parabola is the wrong estimator for a V.
+
+The expensive fix is to fit on the Census term alone, which needs a second filtered
+plane. The cheap one is to change the estimator, which is the same arithmetic:
+
+| | bad-1.0 | coverage |
+|---|---|---|
+| parabola (was) | 25.18 | 79.6% |
+| **equiangular (now)** | **24.47** | 79.6% |
+| equiangular, `--ad 0` | **23.75** | 79.8% |
+| parabola, `--ad 0` | 24.42 | 79.8% |
+
+**0.71 points for one line and no extra memory**, at coverage that does not move — the
+estimator changes values, never decisions. Default since 2026-08-11;
+`--fit-parabola` restores the old one. CPU-to-GPU bit-identity re-verified on all
+eight scenes.
+
+**The eight-scene native benchmark measures 9.2% either way**, which is not a
+disagreement: a one-pixel tolerance on the native grid cannot resolve a sub-pixel
+estimator at all. This is the same blindness that kept sub-pixel disabled for months
+(2.2), showing up a second time on the same benchmark.
+
+**The AD term still costs 0.72 even with the right estimator** (24.47 against 23.75),
+so the graded cost's interaction with the fit is not merely an estimator mismatch and
+the Census-only fit remains the open item. `--ad` stays at 0.15, because it is worth
+0.3 points the other way on the resolution the camera actually runs at.
+
+*(Found while measuring this: `dense_bench.py` had the same override bug
+`middeval3.py` had — it passed `--iters` with a value of its own, so every number it
+has ever produced was at message-passing 2 rather than the shipping default. Fixed the
+same way. The 8-scene figures moved 9.6% -> 9.2% as a result.)*
+
 ### Screening the descriptor before rebuilding it — 2026-08-11
 
 The 10.8% is the descriptor's bill, so the obvious move is a bigger descriptor: the

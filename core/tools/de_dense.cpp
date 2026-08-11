@@ -1548,6 +1548,8 @@ int main(int argc, char** argv) {
     else if (a == "--agg" && has) cfg.agg = std::atoi(argv[++i]);
     else if (a == "--subpixel") { cfg.subpixel = true; sub_explicit = true; }
     else if (a == "--no-subpixel") cfg.subpixel = false;
+    else if (a == "--fit-eq") cfg.fit_eq = true;   // now the default
+    else if (a == "--fit-parabola") cfg.fit_eq = false;
     else if (a == "--box") cfg.guided = false;
     else if (a == "--rf") cfg.rf = true;
     else if (a == "--guided") cfg.rf = false;

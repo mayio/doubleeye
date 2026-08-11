@@ -46,6 +46,17 @@ struct Cfg {
   // sigma_r 0.30 measured 0.15 better than 0.20 at sigma_s 8 -- inside noise, and
   // left alone rather than tuned on a difference that small.
   float sigma_s = 8.f, sigma_r = 0.20f;
+  // Which estimator refines the winning disparity. A parabola assumes the cost is
+  // locally quadratic; the graded cost's truncated-absolute-difference term is
+  // piecewise LINEAR, which makes the surface locally V-shaped and is measured in
+  // 2.2a as the thing that degrades the fit. The equiangular estimator is the
+  // standard one for a V, and costs the same arithmetic.
+  // ON by default since 2026-08-11: 25.18 -> 24.47 bad-1.0 on Middlebury v3 at
+  // identical coverage, for the same arithmetic. Neutral (9.2 either way) on the
+  // eight-scene native-resolution benchmark, whose one-pixel tolerance cannot
+  // resolve a sub-pixel estimator at all -- so the two benchmarks do not disagree,
+  // one of them is blind to the change. --fit-parabola restores the old estimator.
+  bool fit_eq = true;
   bool subpixel = true;    // ON by default since 2026-08-10: worth 15.0 points
                            // of bad-1.0 on Middlebury v3. --no-subpixel disables.
   bool guided = true;      // edge-aware aggregation
@@ -265,13 +276,25 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
         cp = cnb[size_t(x) * 2 + 1];
       }
       if (cm > -1e29f && cp > -1e29f) {
-        const float den = 2.f * c0 - cm - cp;
-        // Only where the three samples really do bracket a maximum; a flat or
-        // inverted triple has no vertex to find and the clamp would invent one.
-        if (den > 1e-6f) {
-          off = 0.5f * (cp - cm) / den;
-          if (off > 0.5f) off = 0.5f;
-          if (off < -0.5f) off = -0.5f;
+        // Both estimators want the same thing -- where the peak really sits between
+        // three samples -- and differ in what they assume the shape between them is.
+        // Only where the triple genuinely brackets a maximum; a flat or inverted one
+        // has no vertex and the clamp would invent one.
+        if (cfg.fit_eq) {
+          const float lower = cm < cp ? cm : cp;
+          const float den = c0 - lower;              // height above the lower flank
+          if (den > 1e-6f) {
+            off = 0.5f * (cp - cm) / den;
+            if (off > 0.5f) off = 0.5f;
+            if (off < -0.5f) off = -0.5f;
+          }
+        } else {
+          const float den = 2.f * c0 - cm - cp;
+          if (den > 1e-6f) {
+            off = 0.5f * (cp - cm) / den;
+            if (off > 0.5f) off = 0.5f;
+            if (off < -0.5f) off = -0.5f;
+          }
         }
       }
     }

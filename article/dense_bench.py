@@ -77,7 +77,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--threads", default="4")
     ap.add_argument("--agg", default="5")
-    ap.add_argument("--iters", default="2")
+    # Passed through ONLY when given. Carrying a value here silently
+    # overrode the binary's own default, so every "default" run measured
+    # this file's opinion instead of what ships -- the same bug
+    # middeval3.py had.
+    ap.add_argument("--iters", default=None)
     ap.add_argument("--min-margin", default="0.01")
     ap.add_argument("--out", default=None,
                     help="directory to keep raw disparity in, for cmp")
@@ -88,11 +92,14 @@ def main():
         sys.exit(f"{BIN} not built -- run `cd core && make`")
     if a.out:
         os.makedirs(a.out, exist_ok=True)
-    args = ["--threads", a.threads, "--agg", a.agg, "--iters", a.iters,
+    args = ["--threads", a.threads, "--agg", a.agg,
             "--min-margin", a.min_margin] + a.extra.split()
+    if a.iters is not None:
+        args += ["--iters", a.iters]
 
-    print(f"de_dense --agg {a.agg} --iters {a.iters} "
-          f"--min-margin {a.min_margin} --threads {a.threads} {a.extra}\n")
+    print(f"de_dense --agg {a.agg} --min-margin {a.min_margin} "
+          f"--threads {a.threads}"
+          f"{'' if a.iters is None else ' --iters ' + a.iters} {a.extra}\n")
     print(f"{'scene':<10}{'coverage':>10}{'bad-1.0':>10}{'ms':>8}")
     rows = [run(s, args, a.out) for s in scenes()]
     for r in rows:
