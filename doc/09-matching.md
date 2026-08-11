@@ -2723,7 +2723,12 @@ so exactly-equal scores keep whichever disparity arrived first, and blocks are h
 dynamically, so tie order varies run to run. Scalar 1t vs scalar 6t differs too.
 
 At one thread everything is deterministic and all eight scenes are byte-identical. So the
-protocol is: **`cmp` at `--threads 1`, and only there.** Earlier changes verified
+protocol is: **`cmp` at `--threads 1`, and only there.** **And pass `--dmax` explicitly to
+both.** The two tools no longer share a default: `de_dense_cuda` defaults to 64 because
+the GPU quantises the search into blocks of 64 and anything below that is free coverage
+discarded, while `de_dense` stays at 60 because its cost is linear in `dmax`. A `cmp`
+run on bare defaults compares a 64-disparity search against a 60-disparity one and
+fails, which looks exactly like the correctness regression it is not. Earlier changes verified
 "bit-identical" by cmp were not wrong -- int16 and the allocation fixes did not alter
 partitioning, so they did not trip it -- but this change does, and a handful of differing
 bytes is what a correct change looks like at six threads. Accuracy is unaffected and that
