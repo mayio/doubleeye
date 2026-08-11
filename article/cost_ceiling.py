@@ -49,6 +49,7 @@ def main():
     ap.add_argument("--res", default="Q")
     ap.add_argument("--threads", default="8")
     ap.add_argument("--scenes", default="")
+    ap.add_argument("--extra", default="", help="extra de_dense flags")
     a = ap.parse_args()
     if not a.data:
         sys.exit("need --data or $MIDDEVAL3")
@@ -70,7 +71,8 @@ def main():
         p = subprocess.run([BIN, os.path.join(d, "left.y8"),
                             os.path.join(d, "right.y8"), str(W), str(H),
                             "--dmax", str(D), "--threads", a.threads, "--agg", "5",
-                            "--dump-vol", volp, "--out", "/tmp/_cc.f32"],
+                            "--dump-vol", volp, "--out", "/tmp/_cc.f32"]
+                           + a.extra.split(),
                            capture_output=True, text=True)
         if p.returncode != 0:
             sys.exit(f"de_dense failed on {s}:\n{p.stderr}")

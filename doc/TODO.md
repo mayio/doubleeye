@@ -730,6 +730,44 @@ project.
 *(The volume has to be materialised for this, which disables the blockwise path, so
 the costs are float rather than int16. Third decimal, not the conclusion.)*
 
+### Screening the descriptor before rebuilding it — 2026-08-11
+
+The 10.8% is the descriptor's bill, so the obvious move is a bigger descriptor: the
+Census window is a template and 9x7 is 62 bits, which still fits a `uint64`. Before
+touching ~15 border literals in the cost loops and the CUDA census kernel, the
+direction was priced on the axis that is already wired.
+
+**Descriptor size moves along the curve, not off it.** `--csct` is the same Census at
+24 bits instead of 48:
+
+| | bad-1.0 | coverage |
+|---|---|---|
+| 7x7 Census, 48 bit (ships) | 25.18 | 79.6% |
+| centre-symmetric, 24 bit | **24.68** | 75.9% |
+
+Halving the descriptor *lowers* the error rate by 0.5 and costs 3.7 points of
+coverage — which is the precision-coverage trade every other knob in this project
+offers, at the same sort of exchange rate. It is not a better or worse descriptor, it
+is a differently-gated one.
+
+**So 9x7 is not worth building.** If 24 fewer bits only slides along the curve, 14
+more will too, and the change costs the border literals in both tools plus a new CUDA
+census kernel plus a re-verification of bit-identity.
+
+**And that sharpens what the 10.8% actually is.** It is not a *bits* problem, so more
+of the same descriptor will not collect it. It is a problem with Census-plus-truncated-
+difference as a similarity measure on weakly textured and repetitive surfaces. Fixing
+that means a different similarity function — which is exactly where learned costs sit,
+and what the no-CNN decision (section 0) rules out. The remaining lever and the
+ruled-out technique are the same thing, and that is worth stating plainly rather than
+leaving as an open item that reads as actionable.
+
+*(Also recorded because it wasted a run: `--csct` refuses to run with `--dump-vol`,
+correctly -- only the blockwise path builds the 24-bit descriptors -- so the candidate
+recall above cannot be measured for it. And **`--agg` is inert on the default path**:
+3, 7 and the default all produce identical numbers, because the recursive filter
+ignores it. The CUDA tool's usage already said so; the CPU tool's did not.)*
+
 ## 0.4 Semi-dense candidates — **OBSOLETED 2026-08-11: read the dense map instead**
 
 **The whole item was written when dense MASDA did not run in real time.** It does
