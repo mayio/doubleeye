@@ -26,6 +26,9 @@
 //
 // Diagnostics go to stderr so they cannot corrupt the stream.
 
+#include <algorithm>
+#include <cmath>
+#include <vector>
 #include "rs_common.hpp"
 
 #include <unistd.h>
@@ -46,6 +49,8 @@ struct Options {
   int fps = 30;        // sensor rate
   double out_fps = 10; // rate actually emitted
   int exposure_us = 1500;
+  float target_contrast = 0.f;   // >0 enables the controller
+  int exp_min = 100, exp_max = 20000;
   int gain = 96;       // higher default than capture: preview is often emitter-off
   std::string emitter = "off";  // calibration wants the projector off
   bool both = true;
@@ -56,6 +61,14 @@ void usage(const char* argv0) {
       "usage: %s [options]   (binary stream on stdout, logs on stderr)\n"
       "  --out-fps F      frames/s emitted per channel (default 10)\n"
       "  --exposure-us N  (default 1500)\n"
+      "  --auto-contrast C  hold the median local contrast at C DN by moving the\n"
+      "                     exposure. This is what the matcher actually wants, and\n"
+      "                     it is NOT what the camera's own auto-exposure does --\n"
+      "                     that targets a well-exposed picture and measures worse\n"
+      "                     everywhere it was tried. 3-4 is the measured optimum\n"
+      "                     across a bright wall at 0.4 m, a lit room, and an\n"
+      "                     unlit room, whose correct exposures span 250-6000 us.\n"
+      "                     See doc/TODO.md 0.45\n"
       "  --gain N         (default 96)\n"
       "  --emitter MODE   on | off   (default off, for calibration)\n"
       "  --single         send only ir1\n"
@@ -87,6 +100,31 @@ bool send_frame(const rs2::video_frame& f, int index) {
   return write_all(f.get_data(), size_t(w) * h);
 }
 
+// Median standard deviation over a grid of 8x8 patches.
+//
+// A stand-in for the median 7x7 local standard deviation every measurement in
+// doc/TODO.md 0.45 is quoted in: r = 0.9997 against it over eighteen captures
+// spanning 0.4 to 50.6 DN, and near identity in slope. Costs ~100k reads a frame
+// against 407k for the real thing, and runs on one core between frames.
+float patch_contrast(const uint8_t* p, int W, int H) {
+  static std::vector<float> sd;
+  sd.clear();
+  for (int y = 0; y + 8 <= H; y += 16) {
+    for (int x = 0; x + 8 <= W; x += 16) {
+      int sum = 0, sq = 0;
+      for (int j = 0; j < 8; ++j) {
+        const uint8_t* r = p + size_t(y + j) * W + x;
+        for (int i = 0; i < 8; ++i) { sum += r[i]; sq += int(r[i]) * r[i]; }
+      }
+      const float m = float(sum) / 64.f;
+      sd.push_back(std::sqrt(std::max(0.f, float(sq) / 64.f - m * m)));
+    }
+  }
+  if (sd.empty()) return 0.f;
+  std::nth_element(sd.begin(), sd.begin() + sd.size() / 2, sd.end());
+  return sd[sd.size() / 2];
+}
+
 void set_option(rs2::sensor& s, rs2_option opt, float v) {
   if (!s.supports(opt)) return;
   rs2::option_range r = s.get_option_range(opt);
@@ -109,6 +147,7 @@ int main(int argc, char** argv) {
     const bool has = (i + 1 < argc);
     if (a == "--out-fps" && has) o.out_fps = std::atof(argv[++i]);
     else if (a == "--exposure-us" && has) o.exposure_us = std::atoi(argv[++i]);
+    else if (a == "--auto-contrast" && has) o.target_contrast = float(std::atof(argv[++i]));
     else if (a == "--gain" && has) o.gain = std::atoi(argv[++i]);
     else if (a == "--emitter" && has) o.emitter = argv[++i];
     else if (a == "--single") o.both = false;
@@ -149,6 +188,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "streaming %dx%d, %s, emitting %.1f fps/channel\n",
                  o.width, o.height, o.both ? "ir1+ir2" : "ir1 only", o.out_fps);
 
+    int exposure = o.exposure_us;
+    long ctrl_n = 0;
     const double period = o.out_fps > 0 ? 1000.0 / o.out_fps : 0.0;
     double next = monotonic_seconds() * 1000.0;
 
@@ -158,7 +199,29 @@ int main(int argc, char** argv) {
       if (now < next) continue;   // throttle: drop rather than queue
       next = now + period;
 
-      if (!send_frame(fs.get_infrared_frame(1), 1)) break;
+      const rs2::video_frame ir1 = fs.get_infrared_frame(1);
+      if (o.target_contrast > 0.f) {
+        // Contrast is linear in exposure -- R^2 = 0.9995 in two rooms whose slopes
+        // differ 15x -- so one multiplicative step lands on target rather than
+        // converging towards it. Damped anyway, because a frame arriving mid-change
+        // would otherwise set up an oscillation.
+        const float c = patch_contrast(
+            static_cast<const uint8_t*>(ir1.get_data()), o.width, o.height);
+        if (c > 0.05f) {
+          const float want = float(exposure) * (o.target_contrast / c);
+          const float next_exp = 0.5f * float(exposure) + 0.5f * want;
+          int e = int(next_exp + 0.5f);
+          e = e < o.exp_min ? o.exp_min : (e > o.exp_max ? o.exp_max : e);
+          if (std::abs(e - exposure) > std::max(2, exposure / 50)) {
+            exposure = e;
+            set_option(sensor, RS2_OPTION_EXPOSURE, float(exposure));
+          }
+        }
+        if (++ctrl_n % 30 == 0)
+          std::fprintf(stderr, "auto-contrast: %.1f DN, exposure %d us\n",
+                       c, exposure);
+      }
+      if (!send_frame(ir1, 1)) break;
       if (o.both && !send_frame(fs.get_infrared_frame(2), 2)) break;
     }
     pipe.stop();

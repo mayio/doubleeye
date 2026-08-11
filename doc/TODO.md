@@ -1060,9 +1060,80 @@ centimetres, so the same exposure delivers a fifth of the dot contrast.
 | **local contrast there** | **3.5-5.0 DN** | **2.5-4.0 DN** — overlaps |
 
 **So the controller targets local contrast: raise exposure until the median 7x7
-standard deviation reaches ~3-5 DN.** That is one number that held across two scenes
-whose correct exposures differ by an order of magnitude, and it is what makes the
-setting portable between rooms. Not built; this is the specification.
+standard deviation reaches ~3-5 DN.** That is one number that held across scenes whose
+correct exposures differ by an order of magnitude, and it is what makes the setting
+portable between rooms.
+
+### Third condition: lights off, and the rule holds
+
+Same room, room lighting switched off, so the only illumination is the projector:
+
+| exposure | mean | contrast | answered | roughness |
+|---|---|---|---|---|
+| 350 us | 16.2 DN | 0.3 DN | 72.1% | 0.17 px |
+| 1500 us | 17.5 | 0.9 | 85.5% | 0.09 |
+| **4000 us** | 21.0 | **2.5** | **88.2%** | **0.08** |
+| **6000 us** | 23.7 | **3.7** | **88.2%** | 0.09 |
+| 10000 us | 28.8 | 5.9 | 87.6% | 0.11 |
+| auto-exposure | 79.1 | 31.6 | 85.4% | 0.24 |
+| 4000 us, **projector off too** | 16.0 | 0.1 | **39.3%** | **31.0 px** |
+
+Three conditions now, with optimal exposures spanning **250 to 6000 us — 24x** — and
+the optimal contrast is 3.5-5.0, 2.5-4.0 and 2.5-3.7 DN. The rule transfers; the
+exposure does not, and the image mean does not.
+
+**The last row is the control experiment.** With the projector off and the lights off,
+coverage collapses to 39.3% and the roughness is 31 px. Whatever this matcher is
+doing, it is doing it on the dots.
+
+### BUILT: `rs_ir_stream --auto-contrast C`
+
+Measures the median standard deviation over a grid of 8x8 patches -- r = 0.9997
+against the full 7x7 metric over eighteen captures spanning 0.4 to 50.6 DN, at a
+quarter of the reads -- and moves the exposure to hold it at C.
+
+Contrast is linear in exposure (R^2 = 0.9995 in two rooms whose slopes differ 15x), so
+`exposure *= target / measured` lands in one step rather than converging towards it;
+it is damped to half anyway, because a frame captured mid-change would otherwise start
+an oscillation. Measured live in the unlit room, starting from 1500 us: settles at
+**3448 us holding 3.5 DN** and stays there.
+
+| | contrast | answered | roughness |
+|---|---|---|---|
+| fixed 4000 (this room's best) | 2.5 DN | 88.2% | 0.08 px |
+| **`--auto-contrast 3.5` -> 3448 us** | 2.2 | **88.0%** | **0.08** |
+| the camera's auto-exposure | 31.6 | 85.4% | 0.24 |
+
+Within 0.2 points of the hand-tuned optimum, without being told anything about the
+room.
+
+### Would an external infrared light help? Measured: no
+
+Room lighting IS a flood illuminator, so lights-on against lights-off at matched
+exposure answers it directly:
+
+| exposure | lights on: contrast / answered | lights off: contrast / answered |
+|---|---|---|
+| 1500 us | 1.5 DN / 88.0% | 0.9 DN / 85.5% |
+| 4000 us | 4.0 / **88.6%** | 2.5 / **88.2%** |
+| 6000 us | 5.9 / 88.4% | 3.7 / 88.2% |
+
+At matched exposure ambient light helps, because it raises contrast. **At each
+condition's own optimum it is worth 0.4 points** -- 88.6% against 88.2%. Turning the
+room lights off costs almost nothing once the exposure follows, and a flood
+illuminator is the same intervention bought rather than switched on.
+
+**What the light would have to be is a PATTERN projector, not a flood.** The control
+row above -- projector off, 39.3% and 31 px -- is the whole argument: this matcher
+lives on projected structure, and unstructured photons mostly let you shorten the
+exposure. A second dot projector would add structure; it would also need a pattern
+that does not alias with the D435's own, or it adds ambiguity rather than removing it.
+
+**On safety, if one is bought anyway.** 850 nm is invisible, so the blink reflex does
+not protect anyone from it, and the relevant standard is IEC 62471 -- look for
+Exempt Group, or Class 1 under IEC 60825 for anything laser-based. The D435's own
+projector is Class 1. Power ratings on illuminators sold for CCTV are frequently far
+above that, and they are pointed at corridors rather than at people at desk distance.
 
 **Auto-exposure is not a substitute, and its failure is asymmetric.** In room 2 it is
 within 0.3 points of the best (88.3% against 88.6%); in room 1 it was the worst
