@@ -194,7 +194,14 @@ def main() -> int:
     # matcher's own benchmarks all run at 0.01, and 0.10 there rejects ~96% of
     # the map -- which looks exactly like a matcher that found nothing.
     ap.add_argument("--min-margin", type=float, default=None)
-    ap.add_argument("--exposure-us", type=int, default=0)
+    ap.add_argument("--exposure-us", type=int, default=0,
+                    help="fixed exposure. Setting it turns the contrast controller "
+                         "off, since the two cannot both own the exposure")
+    ap.add_argument("--auto-contrast", type=float, default=3.5,
+                    help="hold the median local contrast at this many DN by moving "
+                         "the exposure. The right exposure spans 24x across the "
+                         "rooms measured while this number barely moves, which is "
+                         "what makes one setting portable. 0 disables it")
     ap.add_argument("--emitter", default=None, choices=[None, "on", "off"])
     ap.add_argument("--out-fps", type=float, default=10.0,
                     help="frames/s per channel off the camera (default 10). "
@@ -259,6 +266,9 @@ def main() -> int:
 
     if a.local:
         proc = None
+        if a.auto_contrast > 0 and not a.exposure_us:
+            print(f"exposure: auto, holding {a.auto_contrast} DN of local contrast "
+                  f"(--exposure-us N pins it instead)")
         if a.min_margin is None:
             a.min_margin = 0.0 if a.dense else 0.10
         stream = open(a.local, "rb")
@@ -291,6 +301,8 @@ def main() -> int:
         remote = (f"cd ~/{a.remote_dir}/jetson/build && ./rs_ir_stream"
                   + f" --out-fps {a.out_fps}"
                   + (f" --exposure-us {a.exposure_us}" if a.exposure_us else "")
+                  + (f" --auto-contrast {a.auto_contrast}"
+                     if a.auto_contrast > 0 and not a.exposure_us else "")
                   + (f" --emitter {a.emitter}" if a.emitter else "")
                   + (f" | ~/{a.remote_dir}/core/build/de_dense_cuda"
                      f" /dev/null /dev/null 848 480 --stream --threads 4"

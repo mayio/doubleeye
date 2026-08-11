@@ -219,8 +219,13 @@ in rviz costs real bandwidth.
   middle. `--max-range 2` indoors.
 - `--every N` — publish every Nth pair. The surplus is dropped by reading slower, so
   nothing queues without bound.
-- `--emitter on|off` — the projector. On is dramatically better: it puts texture on
-  blank surfaces, and coverage goes from 78% to 88% on the same scene.
+- `--emitter on|off` — **the projector, and it is not optional.** With it off *and*
+  the room dark, coverage collapses to 39% and the disparity map is noise. This
+  matcher works on the projected dots; the room's own light mostly just lets you
+  shorten the exposure.
+- `--auto-contrast C` (3.5) — **the exposure controller, on by default.** It moves the
+  exposure to hold C DN of median local contrast, which is the quantity the matcher
+  cares about. `--exposure-us N` pins the exposure instead and turns it off.
 - `--min-margin` — the same trade as §3, and **a viewer wants a different value from
   a benchmark**. The benchmarks run at 0.01 because they score accuracy *over the
   answered pixels*, so declining a doubtful pixel costs them nothing. On screen it
@@ -241,6 +246,37 @@ in rviz costs real bandwidth.
   point comes out the same colour.
 - `--dense-stride N` (2) — subsample the cloud. 1 is 407k points and ~6 MB a frame.
 - `--local FILE` — replay a captured packet stream instead of running the camera.
+
+### Exposure: let it adapt
+
+The right exposure is not a property of the camera, it is a property of the room, and
+it moves a long way:
+
+| | optimal exposure | optimal local contrast |
+|---|---|---|
+| a wall at 0.38 m | 250–350 us | 3.5–5.0 DN |
+| a lit room | 2500–4000 us | 2.5–4.0 DN |
+| the same room, unlit | 4000–6000 us | 2.5–3.7 DN |
+
+**The exposure spans 24x and the contrast barely moves**, which is why the controller
+targets contrast. Measured live: from a 1500 us start it settles at ~3450 us in the
+unlit room and holds 3.5 DN, landing within 0.2 points of the hand-tuned optimum for
+that room without being told anything about it.
+
+**Do not use the camera's own auto-exposure.** It targets a well-exposed picture, mean
+~80–95 DN, and the matcher wants ~20–45. Measured, it was the worst setting of
+everything tried on the close wall — 84.3% against 90.5%, with 34x the gross outliers
+— and merely adequate elsewhere. `rs_ir_capture --auto-exposure` exists to reproduce
+that comparison, not to be used.
+
+**An external infrared lamp will not help.** Room light is already a flood
+illuminator, and switching it off costs 0.4 points once the exposure follows — 88.6%
+against 88.2%. What the matcher is short of is projected *structure*, not photons. A
+second pattern projector would add some; it would need a pattern that does not alias
+with the D435's own. If you buy one, 850 nm is invisible so nothing makes you blink:
+look for IEC 62471 Exempt Group, or Class 1 under IEC 60825 for laser-based units.
+The D435's own projector is Class 1, and CCTV illuminators are frequently well above
+it.
 
 ### Gigabit, not wifi
 

@@ -214,7 +214,10 @@ int main(int argc, char** argv) {
           e = e < o.exp_min ? o.exp_min : (e > o.exp_max ? o.exp_max : e);
           if (std::abs(e - exposure) > std::max(2, exposure / 50)) {
             exposure = e;
-            set_option(sensor, RS2_OPTION_EXPOSURE, float(exposure));
+            // Not set_option(): that logs every write, and this one writes on a
+            // control loop. The periodic line below is the report.
+            try { sensor.set_option(RS2_OPTION_EXPOSURE, float(exposure)); }
+            catch (const rs2::error&) { /* transient during a mode change */ }
           }
         }
         if (++ctrl_n % 30 == 0)
