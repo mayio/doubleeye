@@ -329,6 +329,28 @@ whether the detector spread its keypoints out.
 
 ## 7. When it looks broken
 
+### A second ground, sloping away downwards under the real one
+
+The search range ran out before the floor did. `--min-range` sets the nearest depth
+searched, `dmax = f*B/min_range`, and anything nearer than that has **no correct
+candidate in the set** -- at which point the matcher returns its best wrong one rather
+than nothing. On a tiled floor the runner-up is the tile period, so the wrong answers
+line up into a sheet instead of scattering into speckle.
+
+Measured on the hallway bag: at the old 0.40 m default the sheet was 0.80% of points
+and another 2.35% sat pinned flat at exactly 0.405 m; at `--min-range 0.335` (dmax 64)
+those become 0.07% and 0.01%, and total coverage goes *up*. That is now the default.
+
+If you still see it, the floor is nearer still -- lower `--min-range` further and watch
+the near-point count rise. Two things that look like fixes and are not:
+
+- **`--min-margin` does not gate it out.** 0.05 cuts the sheet by a fifth and the
+  coverage by four fifths. The wrong match is confident, because the right one was
+  never in the comparison.
+- **Exposure and lighting do nothing for it.** It is not noise. If a defect survives
+  a change of exposure unchanged, stop treating it as noise.
+
+
 Ordered by how often each one has actually happened.
 
 **The cloud is nearly empty.** The margin gate, almost always — see §5. At

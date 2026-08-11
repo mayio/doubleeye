@@ -626,3 +626,53 @@ would have been believed.
 The fix is the prerequisite. The check that would have caught it faster is to verify a
 default change is live before measuring it: run the tool with the flag set explicitly
 to the OLD value and confirm the output differs from the default.
+
+## 24. The search range ran out before the floor did, and the matcher answered anyway
+
+A live dense cloud showed **a second ground plane sloping away downwards** under the
+real one. It was not noise, and the exposure controller of 0.45 -- which had just
+fixed a real noise problem -- did nothing for it, because it was not that kind of
+failure.
+
+The measurement, on `bags/room2_2500` and on five frames pulled live off
+`/doubleeye/depth`:
+
+| | ghost points | pinned at the search limit | valid |
+|---|---|---|---|
+| `--dmax 53` (the default) | 2,843  (0.80%) | 2.35% | 87.8% |
+| `--dmax 64` | 242  (0.07%) | 0.01% | 88.3% |
+| `--dmax 80` | 235  (0.07%) | 0.01% | 88.2% |
+
+`de_live_ros2.py --min-range` defaulted to 0.40 m, and `dmax = f*B/min_range` made that
+53 px. Point the camera at a floor and the bottom of the frame is nearer than 0.40 m,
+so **the true disparity was outside the searched set** -- and the matcher does not
+answer "not found" in that case, it answers with the best candidate it did search. On a
+tiled floor the runner-up is the tile period, so the wrong answers were *spatially
+coherent* and rendered as a surface rather than as speckle. 0.8% of the points, and it
+dominated the view.
+
+- **The margin gate does not catch this.** Measured: `--min-margin 0.05` cuts the ghost
+  from 0.80% to 0.65% while cutting all coverage from 87.8% to 20.8%. Periodic texture
+  produces a *confident* wrong match -- best-minus-second is large because the true
+  match is not in the comparison at all. Confidence is only meaningful over the set
+  actually searched, which is exactly the set at fault here.
+- **Trimming the frame border does not catch it either.** The ghost looked like one
+  image row in the side view -- a straight line through the camera origin *is* a
+  constant row -- but it was rows 412-477, a band, and an 8 px trim removed 40% of it.
+  The side-view slope identified the region and then over-identified the cause.
+- **It is not the near-range junk of 22.** That was 0.10 m admitting garbage; this is
+  the correction to it overshooting. Both are the same rule: a default is a claim
+  about the world. 0.40 m claimed nothing is nearer, and a camera that can see its own
+  floor makes that false about a sixth of the frame.
+- **Raising the limit is close to free and never negative.** `--dmax 64` gained
+  coverage on all three scenes tried, added 12,556 real near-floor points on the
+  hallway, and added 172 on a scene with nothing that close -- so it does not
+  manufacture near points where there are none. Desktop CPU cost was ~1.12-1.14x;
+  the Jetson GPU cost has not been measured and does not follow from it (rule 2).
+- 80 buys nothing over 64, so the floor bottoms out around 0.34 m in this room.
+
+Two frames apart, the ghost **flickers**: of the pixels on it in any of five
+consecutive frames, only 23.5% are on it in all five, against a whole-frame disparity
+repeatability of 0.14 px median. A temporal consistency vote would therefore remove
+roughly half of it -- but fixing the search range removes 92% of it for nothing, and
+the two are not alternatives.

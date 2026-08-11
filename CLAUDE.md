@@ -33,7 +33,7 @@ Two Pythons, not interchangeable: `.venv/bin/python` for anything needing
 
 ## How to work on this project
 
-Twenty-two obstacles are recorded in [doc/03-obstacles.md](doc/03-obstacles.md).
+Twenty-four obstacles are recorded in [doc/03-obstacles.md](doc/03-obstacles.md).
 They are not independent. Almost all of them are one of six things, and each rule
 below is followed by the obstacles that produced it. Treat these as defaults, not
 aspirations — every one was learned by getting it wrong here.
@@ -63,8 +63,10 @@ it fail, and confirm the numbers in its output look like the quantity intended.
 0.10–21.5 m search range and was used indoors, which admitted a quarter of all
 points nearer than 0.19 m and halved the score margin. `fast_threshold = 8` was
 chosen against the dense detector — a quality argument — and then treated as a
-budget decision. Ask what each default asserts and whether it is true here.
-*(16, 22)*
+budget decision. The live path then asserted a 0.40 m near limit, which a camera
+pointed at a floor falsifies for a sixth of the frame -- and an unsearched disparity
+comes back as a confident wrong answer, not as a gap. Ask what each default asserts
+and whether it is true here. *(16, 22, 24)*
 
 **5. Measure before optimising, and after.** The contrast stretch cost more than
 every per-point loop combined, which is not where the loops suggested looking.

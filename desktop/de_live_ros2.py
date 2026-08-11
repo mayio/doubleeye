@@ -207,11 +207,15 @@ def main() -> int:
                     help="frames/s per channel off the camera (default 10). "
                          "Each packet carries the left image, so 30 fps is "
                          "~12 MB/s over the ssh pipe")
-    ap.add_argument("--min-range", type=float, default=0.4,
-                    help="nearest depth to search, metres (default 0.4). f*B is "
-                         "21.48 px*m, so the matcher's default [1, 220] px gate "
-                         "spans 0.10-21.5 m and wrong matches pile up against "
-                         "both limits: a quarter come out nearer than 0.19 m")
+    ap.add_argument("--min-range", type=float, default=0.335,
+                    help="nearest depth to search, metres (default 0.335 = dmax 64). "
+                         "f*B is 21.48 px*m, so the matcher's default [1, 220] px "
+                         "gate spans 0.10-21.5 m and wrong matches pile up against "
+                         "both limits: a quarter come out nearer than 0.19 m. But "
+                         "0.4 m was too far the other way: point the camera at a "
+                         "floor and the bottom of the frame is nearer than that, "
+                         "and the matcher answers with the best WRONG disparity "
+                         "rather than with nothing -- see doc/03-obstacles.md 24")
     ap.add_argument("--max-range", type=float, default=6.0,
                     help="farthest depth to search, metres (default 6.0)")
     ap.add_argument("--cell", type=int, default=0,
