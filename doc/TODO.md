@@ -924,6 +924,52 @@ a different thing, and `dense_baseline.py` is now the yardstick.
 
 ---
 
+## 0.45 The real camera is not the benchmark — measured 2026-08-11
+
+Everything in this matcher was tuned on Middlebury. The live view looks noisier and
+holier than the published figures, and that impression is correct. Measured on the
+same statistics, 7x7 local standard deviation and the fraction of a 32x32 tile's
+Census descriptors that are distinct:
+
+| | contrast (median) | pixels < 2 DN | bright-clipped | descriptor uniqueness |
+|---|---|---|---|---|
+| **D435 IR, projector ON** | **3.9 DN** | **24.9%** | **6.4%** | **81.7%** |
+| D435 IR, projector OFF | 1.6 DN | 56.8% | 6.3% | 82.1% |
+| Middlebury Teddy | 8.5 | 13.8% | 0.0% | 94.1% |
+| Middlebury Motorcycle | 12.2 | 8.0% | 0.2% | 90.7% |
+| Middlebury Piano | 5.1 | 25.7% | 3.6% | 86.0% |
+| Middlebury Shelves | 3.5 | 37.4% | 0.0% | 84.6% |
+
+**The real scene is not off the scale — it sits with the hardest v3 scenes.** But it
+is 2-3x lower contrast than Teddy and Motorcycle, and Teddy and Cones are exactly the
+two scenes every quick check in this project runs on. The descriptor uniqueness is
+below all four, which is the 3.3x degeneracy already recorded for the projector.
+
+**One number is specific to this camera and is not a matcher problem: 6.4% of the
+frame is bright-clipped**, against ~0% on Middlebury, and it is identical with the
+projector off — so it is ambient light, a window or a monitor, at `exposure_us 1500`
+and `gain 64`. Saturated pixels carry no information at any descriptor size. Lowering
+exposure would recover them and would cost dot contrast everywhere else, which is a
+trade nobody has measured.
+
+**The real gap is that none of this can be tuned on the real camera, because there is
+no ground truth for it.** Every parameter -- sigma_s, ad, the margin gate, the fit --
+was chosen against Middlebury and assumed to transfer. Three ways to get a number on
+the real camera, cheapest first:
+
+1. **A flat wall and a plane fit.** No equipment: point the camera at a wall, fit a
+   plane to the cloud, and report the residual scatter and the outlier fraction. That
+   is a noise measurement on the real sensor, available today, and it makes parameter
+   sweeps possible on real data. It cannot measure absolute scale, which is fine --
+   scale is what 1.1's rangefinder is for and it is a different question.
+2. **The D4 ASIC's own depth** (0.5). Needs `rs_ir_capture` to record the `Depth`
+   stream alongside the IR pair. Not ground truth, but an independent measurement
+   from the same photons, and the ASIC scores 2.76% bad-1.0 on the v3 sparse table.
+3. **The rangefinder** (1.1), for absolute accuracy at known distances.
+
+Until one of those exists, every claim about this matcher on this camera is an
+extrapolation from Middlebury, and the size of the extrapolation is the table above.
+
 ## 0.5 Quick wins now that the live view works
 
 - ~~**Benchmark `de_dense` on the Jetson.**~~ Done. The dense numbers in 0.3 are TX2
