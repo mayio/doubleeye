@@ -172,7 +172,7 @@ def fig_subpixel(path):
     # (c) the measurement that decides it, on the benchmark that can see it
     ax = fig.add_subplot(gs[0, 2])
     labs = ["perfect\nfloat", "sub-pixel\n(ships)", "integer", "perfect\ninteger"]
-    vals = [0.80, 25.18, 41.53, 45.55]
+    vals = [0.80, 24.47, 41.53, 45.55]
     cols = [GPU, CPU, MUTE, WARN]
     ax.bar(range(4), vals, color=cols, width=0.62)
     for i, v in enumerate(vals):
@@ -194,7 +194,7 @@ def fig_curve(path):
     # measured, article/middeval3.py, 15 v3 training scenes, --threads 1
     gate = [0.0, 0.005, 0.01, 0.03, 0.10]
     cov = [89.4, 84.6, 79.6, 64.8, 35.7]
-    bad = [32.01, 28.52, 25.18, 16.99, 6.60]
+    bad = [31.30, 27.81, 24.47, 16.33, 6.17]
     fig, ax = plt.subplots(figsize=(5.4, 3.6))
     ax.plot(cov, bad, "-o", color=CPU, lw=1.8, ms=4, label="dense MASDA, margin gate swept")
     for g, c, b in zip(gate, cov, bad):
@@ -353,6 +353,58 @@ def fig_rates(path):
     print("wrote", path)
 
 
+def fig_budget(path):
+    """Where a far-field pixel is lost, itemised. Measured by cost_ceiling.py."""
+    items = [("correct", 56.1, GPU),
+             ("selector: truth was in the top-2,\nthe top-1 was taken", 13.1, CPU),
+             ("descriptor: no candidate within\n0.5 px even in the top-8", 10.8, WARN),
+             ("pruning: in the top-8, not the top-2", 8.2, "#b07d3a"),
+             ("sub-pixel fit missed 0.25 px", 8.5, "#6b5b95"),
+             ("the gate declined", 2.1, MUTE)]
+    fig, ax = plt.subplots(figsize=(9.0, 1.9))
+    left = 0.0
+    for lab, v, col in items:
+        ax.barh([0], [v], left=left, color=col, height=0.5)
+        if v > 6:
+            ax.text(left + v / 2, 0, f"{v:.1f}%", ha="center", va="center",
+                    color="white", fontsize=9, fontweight="bold")
+        left += v
+    ax.set_xlim(0, 100); ax.set_ylim(-0.42, 0.42)
+    ax.set_yticks([]); ax.set_xlabel("share of far-field pixels (%)")
+    ax.set_title("Where a far-field pixel is lost — 15 v3 scenes, 2.35 M pixels",
+                 fontsize=10)
+    hs = [plt.Rectangle((0, 0), 1, 1, color=c) for _, _, c in items]
+    ax.legend(hs, [l.replace("\n", " ") for l, _, _ in items], frameon=False,
+              fontsize=7.6, loc="upper center", bbox_to_anchor=(0.5, -0.30), ncol=2)
+    for sp in ("top", "right", "left"):
+        ax.spines[sp].set_visible(False)
+    fig.savefig(path)
+    plt.close(fig)
+    print("wrote", path)
+
+
+def fig_thumbs():
+    """Small, dedicated thumbnails for the front page.
+
+    The post images are 300-600 KB each because they carry eight disparity maps at
+    reading resolution. Pointing `thumbnail-img` at those makes the index page fetch
+    ~1.4 MB and downscale it in the browser. These are ~400 px wide and quantised,
+    which is two orders of magnitude smaller and indistinguishable at the size the
+    index actually renders.
+    """
+    from PIL import Image
+    jobs = [(os.path.join(P2, "maps_a.png"), os.path.join(P2, "thumb_p2.png")),
+            (os.path.join(P3, "real_pair.png"), os.path.join(P3, "thumb_p3.png")),
+            (os.path.join(P2, "subpixel.png"), os.path.join(P2, "thumb_p1.png"))]
+    for src, dst in jobs:
+        im = Image.open(src).convert("RGB")
+        w = 420
+        im = im.resize((w, max(1, round(im.height * w / im.width))), Image.LANCZOS)
+        im.convert("P", palette=Image.ADAPTIVE, colors=128).save(dst, optimize=True)
+        print(f"wrote {dst}  {os.path.getsize(dst)//1024} KB "
+              f"(from {os.path.getsize(src)//1024} KB)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
@@ -370,6 +422,8 @@ def main():
         "layout": lambda: fig_layout(os.path.join(P3, "layout.png")),
         "overlap": lambda: fig_overlap(os.path.join(P3, "overlap.png")),
         "rates": lambda: fig_rates(os.path.join(P3, "rates.png")),
+        "budget": lambda: fig_budget(os.path.join(P2, "budget.png")),
+        "thumbs": fig_thumbs,
     }
     for k, fn in jobs.items():
         if a.only and k not in a.only.split(","):
