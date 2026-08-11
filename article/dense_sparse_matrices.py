@@ -154,6 +154,7 @@ def run_scene(name, with_jv, with_speed, row_step=1, kappa=None, iters=30):
     dmin = 1
     tot = dict(masda_ok=0, masda_wr=0, masda_n=0,
                wta_ok=0, wta_wr=0, wta_n=0,
+               gu_ok=0, gu_wr=0, gu_n=0,
                jv_ok=0, jv_wr=0, jv_n=0,
                obj_masda=0.0, obj_jv=0.0, rows=0, rows_opt=0,
                t_sparse=0.0, t_dense=0.0, t_jv=0.0, edges=0,
@@ -169,6 +170,24 @@ def run_scene(name, with_jv, with_speed, row_step=1, kappa=None, iters=30):
         wta = {int(x): float(k1[x] + dmin) for x in range(W) if s1[x] > INVALID}
         ok, wr, _ = eval_assign(y, wta, gt)
         tot["wta_ok"] += ok; tot["wta_wr"] += wr; tot["wta_n"] += len(wta)
+
+        # Uniqueness WITHOUT message passing: take each pixel's top-1 score and
+        # apply the same greedy one-to-one claim MASDA's decode uses, best score
+        # first. This separates the two things the WTA comparison bundles -- the
+        # CONSTRAINT and the INFERENCE -- which the dense C++ matcher's ablation
+        # says are worth very different amounts.
+        live = [x for x in range(W) if s1[x] > INVALID]
+        taken = set()
+        gu = {}
+        for x in sorted(live, key=lambda x: -s1[x]):
+            d = int(k1[x] + dmin)
+            j = x - d
+            if j < 0 or j in taken:
+                continue
+            taken.add(j)
+            gu[x] = float(d)
+        ok, wr, _ = eval_assign(y, gu, gt)
+        tot["gu_ok"] += ok; tot["gu_wr"] += wr; tot["gu_n"] += len(gu)
 
         # MASDA on the sparse matrix
         t0 = time.perf_counter()
@@ -230,14 +249,14 @@ def main():
     jv_scenes = {"teddy", "cones"}
     speed_scenes = {"teddy"} if not a.only else set()
 
-    pooled = dict(masda_ok=0, masda_wr=0, wta_ok=0, wta_wr=0)
+    pooled = dict(masda_ok=0, masda_wr=0, wta_ok=0, wta_wr=0, gu_ok=0, gu_wr=0)
     print(f"{'scene':<10} {'method':<7} {'matches':>8} {'correct':>8} "
           f"{'precision':>9}")
     for s in scenes:
         with_jv = s in jv_scenes
         with_speed = s in speed_scenes
         t, W, H = run_scene(s, with_jv, with_speed, a.row_step, a.kappa, a.iters)
-        meths = ["wta", "masda"] + (["jv"] if with_jv else []) + (
+        meths = ["wta", "gu", "masda"] + (["jv"] if with_jv else []) + (
             ["ord"] if a.kappa is not None else [])
         for meth in meths:
             n, ok, wr = t[f"{meth}_n"], t[f"{meth}_ok"], t[f"{meth}_wr"]
@@ -246,6 +265,7 @@ def main():
             print(f"{s:<10} {meth:<7} {n:>8} {ok:>8} {ok/max(1,ok+wr):>9.3f}")
         pooled["masda_ok"] += t["masda_ok"]; pooled["masda_wr"] += t["masda_wr"]
         pooled["wta_ok"] += t["wta_ok"]; pooled["wta_wr"] += t["wta_wr"]
+        pooled["gu_ok"] += t["gu_ok"]; pooled["gu_wr"] += t["gu_wr"]
         if a.kappa is not None:
             print(f"{s:<10} ordering k={a.kappa}: crossings "
                   f"{t['xing_base']} -> {t['xing_ord']} "
@@ -265,7 +285,7 @@ def main():
                   f"sparse {t['t_sparse']*1e3:.0f} ms  "
                   f"JV {t['t_jv']*1e3:.0f} ms")
     print(f"\npooled over {len(scenes)} scenes (per-pixel, top-2 candidates):")
-    for meth in ("wta", "masda"):
+    for meth in ("wta", "gu", "masda"):
         ok, wr = pooled[f"{meth}_ok"], pooled[f"{meth}_wr"]
         print(f"  {meth}: correct {ok}  wrong {wr}  precision {ok/(ok+wr):.4f}")
 
