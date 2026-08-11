@@ -672,6 +672,64 @@ Second tier, in order:
    The box was worth 16 points of bad-1.0; a support region that follows image
    structure should be worth more, and MST filtering is O(N).
 
+## 0.36 The error budget: where a far-field pixel is actually lost — 2026-08-11
+
+`article/cost_ceiling.py`. 0.35 established that 71% of error sits in the far field
+(nowhere near a discontinuity) at a 32% rate, and that neither edge sensitivity nor
+candidate count moves it. This decomposes that number by dumping the aggregated cost
+volume and asking where the true disparity ranks. All 15 v3 scenes, 2.35M far-field
+pixels, tolerance 0.5 px (a candidate that far out is the nearest integer, so the
+sub-pixel fit can still reach the answer):
+
+| a candidate within 0.5 px | top-1 | top-2 | top-4 | top-8 |
+|---|---|---|---|---|
+| all pixels | 64.1% | 78.8% | 85.3% | 89.6% |
+| near edge | 58.8% | 75.7% | 84.6% | 90.1% |
+| **far field** | **67.9%** | **81.0%** | 85.8% | 89.2% |
+
+Stage by stage, far field, as a share of all far-field pixels:
+
+| stage | share | lost here |
+|---|---|---|
+| the cost's argmax is within 0.5 px | 67.9% | |
+| ... and the matcher answered | 65.8% | 2.1% to the gate |
+| ... and the output is within 0.5 px | 64.6% | 1.2% |
+| ... and within **0.25 px**, the official tolerance | **56.1%** | **8.5% to the fit** |
+
+**The bill, itemised:**
+
+| where the pixel is lost | share of far-field pixels |
+|---|---|
+| **no candidate within 0.5 px even in the top-8** — the descriptor | **10.8%** |
+| in the top-8 but not the top-2 — the pruning | 8.2% |
+| in the top-2 but the top-1 is wrong — **the selector** | **13.1%** |
+| the gate declined | 2.1% |
+| the sub-pixel fit missed 0.25 px | 8.5% |
+| correct | 56.1% |
+
+**Three things this settles.**
+
+1. **The descriptor is the largest single item** — 10.8% unreachable by any solver on
+   this cost volume, and 19.0% unreachable without widening the candidate set past
+   two. That confirms what 0.35 pointed at and prices it.
+2. **There is 13.1% of selector headroom in the far field**, and neither
+   winner-take-all nor MASDA's message passing captures it (0.31 measured them within
+   a point of each other). The inference is leaving real points on the table; more
+   iterations are not how they get collected.
+3. **The sub-pixel fit costs 8.5%** on pixels whose integer was already right and
+   which were answered. A better estimator than a three-point parabola on a
+   Census+AD cost — the classic pixel-locking bias — is a bounded, self-contained
+   change with a measured prize.
+
+**Read Teddy alone and you get the wrong answer.** Its cost is far better than
+average (top-1 92.8% in the far field), so refinement looks dominant there at 13.1
+points against a 2.8-point descriptor bill. The 15-scene number inverts that ordering.
+One scene is not a benchmark, and this is the cleanest demonstration of it in the
+project.
+
+*(The volume has to be materialised for this, which disables the blockwise path, so
+the costs are float rather than int16. Third decimal, not the conclusion.)*
+
 ## 0.4 Semi-dense candidates — **OBSOLETED 2026-08-11: read the dense map instead**
 
 **The whole item was written when dense MASDA did not run in real time.** It does
