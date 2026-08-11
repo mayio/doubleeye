@@ -566,11 +566,31 @@ ones are not visible. The smooth decay with distance -- 65.1% within 2 px, 57.1%
 within 8, 32.0% beyond -- is the shape of window contamination whose reach matches
 the aggregation's, which is consistent with that reading.
 
-**So the recommendation changes: build a left-right consistency check, not AGAP.**
-Occlusion is what SGM handles and we do not, it is the mechanism the measurements
-point at, and it targets coverage -- the axis we are actually behind on (80.1%
-against SGM's 90.2%). AGAP would be a better version of the thing that was already
-measured not to matter here.
+~~**So the recommendation changes: build a left-right consistency check.**~~
+**Tried 2026-08-11, and the premise was wrong too.** A consistency check *removes*
+matches, so it cannot close a coverage gap; the question was where our 19.9% of
+unmatched pixels actually goes. Two candidates, and the split is lopsided:
+
+| sink | coverage cost |
+|---|---|
+| **the margin gate at 0.01** | **11.1 points** (91.2% -> 80.1%) |
+| greedy claim contention | 0.2 points |
+
+**Contention is not a sink.** Retrying the other scored candidate when a pixel's
+right partner is already claimed -- free, no new cost, no new candidates -- was
+implemented and measured: coverage 80.1% -> 80.3%, bad-1.0 26.04 -> 26.27. It
+barely fires, and what it recovers it pays for. **Reverted rather than left in as a
+flag**, per this file's own preference for a recorded negative over a knob.
+
+**So our coverage is not lost, it is spent.** 98% of it goes to the gate, which is a
+chosen position on the precision-coverage curve rather than a failure to fix. At the
+gate wide open we reach 91.2% coverage -- past SGM's 90.2% -- at 35.85 bad against
+its 29.08. Which is the same conclusion the sweep reached from the other direction:
+**SGM's whole curve is better, and no knob on our side moves off ours.**
+
+That closes the coverage line. What is left is structural, and 0.4's semi-dense
+candidate work is the only remaining item that changes the curve rather than the
+position on it.
 
 **The slanted-plane half is now clearly the smaller prize**: genuinely slanted
 surfaces (0.3-0.6) are 3.2% of pixels and 4.8% of error. The order 0.35 already
