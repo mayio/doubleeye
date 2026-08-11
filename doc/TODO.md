@@ -1027,12 +1027,52 @@ against coverage and **+0.99** against gross outliers, over eight settings spann
 17.8 to 94.6 DN. The matcher wants a *dark* image, around 20 DN, and every step
 towards a photographically correct one costs it.
 
-**So the exposure controller should target the mean, not the histogram** -- something
-this camera will not do on its own, but which is one line of control logic once
-someone writes it: raise exposure until the mean reaches ~20 DN and stop. That adapts
-to ambient light, which is what auto-exposure was wanted for, while aiming at the
-value the matcher actually likes. Not built; the measurement above is the whole
-specification.
+~~**So the exposure controller should target the mean**: raise exposure until the
+mean reaches ~20 DN and stop.~~ **Wrong, and a second room says so.** That rule came
+from one scene and does not survive contact with another.
+
+### A second room, and the optimum moves by 10x
+
+Same sweep, a different room with window, fridge and floor reflections, and a general
+scene rather than a wall at arm's length:
+
+| exposure | mean | contrast | answered | roughness |
+|---|---|---|---|---|
+| 350 us (room 1's optimum) | 18.6 DN | 0.5 DN | **79.0%** | 0.14 px |
+| 900 us | 22.3 | 1.0 | 86.5% | 0.09 |
+| 1500 us | 26.4 | 1.5 | 88.0% | 0.08 |
+| **2500 us** | 33.2 | 2.5 | **88.5%** | **0.08** |
+| **4000 us** | 43.7 | 4.0 | **88.6%** | 0.09 |
+| 6000 us | 57.3 | 5.9 | 88.4% | 0.11 |
+| auto-exposure | 79.3 | 9.8 | 88.3% | 0.12 |
+
+**Room 1's optimum starves this room**: 350 us answers 79.0% against 88.6%, nearly ten
+points, and at 150 us the roughness is 2.82 px -- the matcher is guessing. The
+projector's return falls with distance and this scene is metres away rather than
+centimetres, so the same exposure delivers a fifth of the dot contrast.
+
+**What transfers is the contrast, not the exposure and not the mean:**
+
+| | room 1 (wall, 0.38 m) | room 2 (general scene) |
+|---|---|---|
+| exposure at the optimum | 250-350 us | 2500-4000 us — **10x** |
+| image mean there | 20-22 DN | 33-44 DN — does not transfer |
+| **local contrast there** | **3.5-5.0 DN** | **2.5-4.0 DN** — overlaps |
+
+**So the controller targets local contrast: raise exposure until the median 7x7
+standard deviation reaches ~3-5 DN.** That is one number that held across two scenes
+whose correct exposures differ by an order of magnitude, and it is what makes the
+setting portable between rooms. Not built; this is the specification.
+
+**Auto-exposure is not a substitute, and its failure is asymmetric.** In room 2 it is
+within 0.3 points of the best (88.3% against 88.6%); in room 1 it was the worst
+setting measured, 84.3% against 90.5%, with 34x the gross outliers. It happens to be
+adequate when the scene is far and dim and badly wrong when it is near and bright,
+which is not a property to rely on.
+
+**The reflections did not matter.** Window, fridge and floor clip 0.00-0.18% of the
+frame across the whole sweep, so specular highlights were not the problem here --
+distance was.
 
 *(An earlier reading of this experiment was wrong and is recorded because the mistake
 is easy to repeat: `rs_probe` reported Exposure=350 after the auto-exposure capture,
