@@ -17,7 +17,21 @@
 namespace doubleeye {
 
 struct Cfg {
-  int dmin = 1, dmax = 60, iters = 2, agg = 3;
+  // iters = 0 since 2026-08-11: the message passing does not pay in the DENSE path.
+  // Measured on both benchmarks -- v3 25.18 against 26.04 bad-1.0, dense_bench 9.4%
+  // against 9.8% -- each at ~0.4 points less coverage, which the gate buys back for
+  // free, so ~0.5 points better at matched coverage. And it is 12 ms of the 23 ms
+  // CPU solve at 848x480, which is most of what the keypoint wiring is short by.
+  //
+  // This does NOT turn MASDA off. The uniqueness constraint and the score margin --
+  // the two things that distinguish this from a block matcher, and what makes the
+  // dense map beat SGM at keypoints -- are unchanged. Only the loopy BP on top of a
+  // TOP-2 candidate set is dropped, which is the case where it has least to decide.
+  //
+  // Untested where it might still matter: projected-dot IR, where descriptors are
+  // 3.3x degenerate, and temporal association, where the candidate set is large and
+  // 2-D. Neither has ground truth here. `--iters 2` restores the old behaviour.
+  int dmin = 1, dmax = 60, iters = 0, agg = 3;
   bool rf = true;              // recursive edge-aware filter; --guided for the old one
   // sigma_r swept: 0.2 is the peak. sigma_s was NOT swept until 2026-08-10, and
   // 12 turned out to be past the optimum on both axes -- Middlebury v3, all 15

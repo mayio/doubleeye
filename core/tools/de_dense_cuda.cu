@@ -388,7 +388,7 @@ int main(int argc, char** argv) {
   const std::string lp = argv[1], rp = argv[2];
   const int W = std::atoi(argv[3]), H = std::atoi(argv[4]);
   Cfg cfg;
-  std::string outp;
+  std::string outp, kpp;
   int frames = 1;
   for (int i = 5; i < argc; ++i) {
     const std::string a = argv[i];
@@ -409,6 +409,7 @@ int main(int argc, char** argv) {
     else if (a == "--gamma" && has) cfg.gamma = float(std::atof(argv[++i]));
     else if (a == "--damping" && has) cfg.damping = float(std::atof(argv[++i]));
     else if (a == "--out" && has) outp = argv[++i];
+    else if (a == "--keypoints" && has) kpp = argv[++i];
     else if (a == "--frames" && has) frames = std::max(1, std::atoi(argv[++i]));
     else if (a == "--subpixel") cfg.subpixel = true;   // now the default
     else if (a == "--no-subpixel") cfg.subpixel = false;
@@ -620,6 +621,8 @@ int main(int argc, char** argv) {
   // amortised. Every frame's output is identical by construction, and frame N-1's
   // solve result is what --out writes, so a broken overlap would break the
   // identity check rather than pass silently.
+  DetectorConfig dcfg;
+  std::vector<Keypoint> kps_live;
   double t_pipe = 0;
   if (frames > 1) {
     const double tp0 = now_ms();
@@ -656,9 +659,18 @@ int main(int argc, char** argv) {
       // f-1 is still on the A57s -- the 4 ms staged copy disappears into the
       // solve instead of sitting serially in the loop.
       std::thread fetcher([&, f]() { fetch(f % 2); });
+      // Detection, when the sparse feature set is wanted, runs as a THIRD thread
+      // beside the solve. It is the open budget question in 0.4: detection is ~29 ms
+      // of one core against 26 ms of kernels, so whether keypoints are free depends
+      // entirely on this overlap and not on anything that can be argued. Inside the
+      // loop it is measured; bolted on after it, it was not.
+      std::thread detector;
+      if (!kpp.empty())
+        detector = std::thread([&]() { kps_live = detect_keypoints_fast(L, dcfg); });
       solve_all(cs[(f - 1) % 2].data(), cd[(f - 1) % 2].data(),
                 cn[(f - 1) % 2].data(),
                 cfg.subpixel ? cnb[(f - 1) % 2].data() : nullptr);     // CPU solves frame f-1 meanwhile
+      if (detector.joinable()) detector.join();
       fetcher.join();
     }
     solve_all(cs[(frames - 1) % 2].data(), cd[(frames - 1) % 2].data(),
@@ -688,6 +700,41 @@ int main(int argc, char** argv) {
   if (!outp.empty()) {
     FILE* f = std::fopen(outp.c_str(), "wb");
     if (f) { std::fwrite(disp.data(), sizeof(float), disp.size(), f); std::fclose(f); }
+  }
+
+  // --- the sparse feature set, read out of the dense map ---------------------------
+  //
+  // Section 0 wants ONE producer for the sparse features, and 0.4 measured that the
+  // dense map beats the sparse matcher at its own keypoints on every axis -- 0.853
+  // precision against 0.706, with 57% more correct matches, and no matcher to run.
+  // So the keypoints do not need matching, only detecting and looking up.
+  //
+  // Detection is the whole added cost and it is CPU. It is timed separately and
+  // printed, because whether it fits alongside the solve is the open budget question
+  // in 0.4 and nobody should have to guess at it.
+  if (!kpp.empty()) {
+    const double tk0 = now_ms();
+    const std::vector<Keypoint> kl =
+        kps_live.empty() ? detect_keypoints_fast(L, dcfg) : kps_live;
+    const double tk1 = now_ms();
+    FILE* f = std::fopen(kpp.c_str(), "w");
+    if (!f) { std::fprintf(stderr, "cannot write %s\n", kpp.c_str()); return 1; }
+    std::fprintf(f, "x,y,disparity,margin\n");
+    int n = 0;
+    for (const Keypoint& k : kl) {
+      const int x = std::min(std::max(int(k.x + 0.5f), 0), W - 1);
+      const int y = std::min(std::max(int(k.y + 0.5f), 0), H - 1);
+      const float d = disp[size_t(y) * size_t(W) + size_t(x)];
+      if (!(d > 0.f)) continue;          // the map has a hole here; emit nothing
+      std::fprintf(f, "%.2f,%.2f,%.4f,%.4f\n", k.x, k.y, d,
+                   margin[size_t(y) * size_t(W) + size_t(x)]);
+      ++n;
+    }
+    std::fclose(f);
+    std::printf("keypoints: %zu detected in %.1f ms, %d carried a disparity "
+                "(%.1f%%) -> %s\n", kl.size(), tk1 - tk0, n,
+                kl.empty() ? 0.0 : 100.0 * double(n) / double(kl.size()),
+                kpp.c_str());
   }
   return 0;
 }

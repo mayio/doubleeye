@@ -701,7 +701,26 @@ which is the 44-51% repeatability ceiling; the dense map has no such requirement
 its recall reads above 1. Precision, median error and correct-count are like for
 like.)*
 
-**What to do with it — and it is a budget decision, not plumbing.** `de_pipe` is the
+**BUILT AND MEASURED 2026-08-11: the keypoints are free.** `de_dense_cuda
+--keypoints out.csv` detects on the left image and reads each keypoint's disparity
+out of the dense map. Detection runs as a third thread beside the solve inside the
+pipelined loop, so the number includes it:
+
+| 848x480 D=60, pipelined over 30 frames | steady state |
+|---|---|
+| dense map only | 31.4 ms (31.8 Hz) |
+| **dense map + the sparse feature set** | **31.8-32.8 ms (30.5-31.4 Hz)** |
+
+Detection is ~29 ms of one core and costs **0.4-1.4 ms of wall clock**, because it
+hides under the 26 ms of kernels exactly as the overlap argument predicted -- and it
+had to be measured inside the loop to say so, since bolting it on afterwards timed
+nothing. 97.3% of detected keypoints carry a disparity. One producer, both products,
+still real time.
+
+*(The `--iters 0` default freed ~12 ms of the CPU solve, which is what made room for
+this. The two decisions were taken together and only make sense together.)*
+
+**The original framing, kept: it was a budget decision, not plumbing.** `de_pipe` is the
 live consumer, and pointing it at the dense map means extracting the dense pipeline
 into something shareable and deciding whether the live path becomes a CUDA tool.
 That is section 0's "one producer" question, and the arithmetic is tight enough that
