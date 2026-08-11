@@ -977,6 +977,49 @@ the thing that was impossible before. It needs a bag of a blank wall; run agains
 non-planar scene it reports 41 degrees of tilt and 144 mm RMS, which is the correct
 answer to "this is not a wall" and means the metric cannot be fooled into looking good.
 
+### Exposure measured on a real wall — 1500 us is too long, and contrast is not the reason
+
+First use of `wall_check.py`, and the first parameter this project has ever tuned on
+its own sensor. A blank wall at 0.38 m, `--emitter on`, seven exposures, everything
+else at the shipping defaults:
+
+| exposure | points | RMS about the plane | >2 cm | contrast | descriptor uniqueness |
+|---|---|---|---|---|---|
+| 150 us | 90.3% | 1.1 mm | 0.1% | 1.6 DN | 55.7% |
+| 250 us | **90.5%** | **1.1 mm** | **0.1%** | 3.5 DN | 64.6% |
+| 350 us | **90.5%** | **1.1 mm** | **0.1%** | 5.0 DN | 68.7% |
+| 500 us | 90.2% | 1.1 mm | 0.1% | 7.1 DN | 73.2% |
+| 900 us | 89.5% | 1.2 mm | 0.2% | 13.0 DN | 78.3% |
+| **1500 us (shipping)** | 88.0% | 1.2 mm | **0.8%** | 21.4 DN | 81.7% |
+| 2500 us | 86.1% | 1.3 mm | **2.0%** | 37.0 DN | 84.2% |
+
+**Shorter is better on every matcher axis**, and the optimum is a broad plateau from
+150 to 500 us. Against the shipping 1500 us, 350 us buys 2.5 points of coverage and
+takes gross outliers from 0.8% to 0.1% -- eight times fewer points more than 2 cm off
+a flat wall.
+
+**And the mechanism is not saturation.** Nothing clips below 900 us (0.00% above 250
+DN) and only 0.14% clips at 2500. The 6.4% clipping recorded in 0.45 was that desk
+scene's window, not a property of the exposure setting.
+
+**The two quantities that usually predict matcher quality both move the WRONG way.**
+Local contrast rises 1.6 -> 37 DN across this sweep and descriptor uniqueness rises
+55.7% -> 84.2%, while coverage, noise and outliers all get worse. Whatever is
+happening, "more contrast, better descriptors" does not describe it. **Recorded as
+unexplained.** The candidate worth testing is that a brighter wall surface makes the
+non-dot background matchable-looking, adding plausible wrong candidates that the dots
+alone would not have produced -- but that is a story, and this file's rule is that a
+story without a measurement is not a finding.
+
+**The caveat that bounds all of it: one wall, at 0.38 m.** The projector's return
+falls with distance, so the optimum almost certainly rises with range, and a setting
+tuned at arm's length may starve a 3 m scene. Repeating this at two or three
+distances is the obvious next use of the tool, and until then 1500 us should not be
+changed by default -- only known to be wrong for close work.
+
+**For reference, 1.1 mm RMS at 0.38 m is about 0.16 px of disparity noise**, which is
+the first number this project has that describes the matcher on its own camera.
+
 ### Raising local contrast does not help, and the reason is structural
 
 The obvious response to 3.9 DN of contrast is to amplify it. Measured on the real
