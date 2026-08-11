@@ -260,7 +260,7 @@ def main() -> int:
     if a.local:
         proc = None
         if a.min_margin is None:
-            a.min_margin = 0.01 if a.dense else 0.10
+            a.min_margin = 0.0 if a.dense else 0.10
         stream = open(a.local, "rb")
     else:
         # No --streams flag: rs_ir_stream emits both channels by default and
@@ -271,9 +271,19 @@ def main() -> int:
         # Gate in metres, converted here, so the range is stated in the units the
         # scene has rather than in pixels of disparity.
         if a.min_margin is None:
-            a.min_margin = 0.01 if a.dense else 0.10
-            print(f"margin gate: {a.min_margin} "
-                  f"({'dense' if a.dense else 'sparse'} default)")
+            # A viewer and a benchmark want opposite things here. The benchmarks run
+            # at 0.01 because they score accuracy OVER THE ANSWERED PIXELS, so
+            # declining a doubtful pixel is free to them. On screen it is not free:
+            # on a real 848x480 pair, 0.01 takes coverage 88.4% -> 71.2% and doubles
+            # the hole area, 14.1% -> 29.9%, with the largest single hole going from
+            # 8.4% of the frame to 18.3%. The gross outliers the gate would have
+            # caught are removed by --max-range anyway.
+            #
+            # So: no gate for looking, and raise it for anything that triangulates.
+            a.min_margin = 0.0 if a.dense else 0.10
+            why = ("dense, tuned for coverage -- raise it for anything that "
+                   "triangulates") if a.dense else "sparse default"
+            print(f"margin gate: {a.min_margin}  ({why})")
         dmin = FB / max(a.max_range, 1e-3)
         dmax = FB / max(a.min_range, 1e-3)
         print(f"depth gate: {a.min_range:.2f}-{a.max_range:.2f} m "

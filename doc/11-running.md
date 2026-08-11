@@ -214,11 +214,19 @@ in rviz costs real bandwidth.
   nothing queues without bound.
 - `--emitter on|off` — the projector. On is dramatically better: it puts texture on
   blank surfaces, and coverage goes from 78% to 88% on the same scene.
-- `--min-margin` — the same trade as §3, applied live, and **the two matchers want
-  different values**. The sparse path's tuned figure is 0.10; the dense matcher's own
-  benchmarks all run at 0.01, and 0.10 there rejects about 90% of the map. Left
-  unset, the script picks per mode and prints which. A cloud with a few thousand
-  points instead of tens of thousands is this, every time.
+- `--min-margin` — the same trade as §3, and **a viewer wants a different value from
+  a benchmark**. The benchmarks run at 0.01 because they score accuracy *over the
+  answered pixels*, so declining a doubtful pixel costs them nothing. On screen it
+  costs holes. Measured on a real 848×480 pair:
+
+  | gate | answered | hole area | largest single hole |
+  |---|---|---|---|
+  | **0** (dense default) | **88.4%** | **14.1%** | 8.4% of the frame |
+  | 0.01 | 71.2% | 29.9% | 18.3% |
+  | 0.10 (the sparse path's figure) | 10.3% | 89.7% | — |
+
+  Left unset the script picks per mode — 0 for dense, 0.10 for sparse — and prints
+  which. **Raise it for anything that triangulates**; leave it alone for looking.
 - `--colour image|depth|margin` (image) — `image` paints each point with the left
   camera's own intensity, so the cloud looks like the scene. `depth` is a ramp over
   the 5–95 percentile. `margin` is the sparse path's confidence colouring and is
@@ -259,10 +267,21 @@ whether the detector spread its keypoints out.
 
 Ordered by how often each one has actually happened.
 
-**The cloud is nearly empty, or too sparse to read.** The margin gate, almost always
-— see §5. At `--min-margin 0.10` the dense matcher answers ~10% of pixels against
-~88% at 0.01, on the same frame. Thousands of points where there should be tens of
-thousands is this.
+**The cloud is nearly empty.** The margin gate, almost always — see §5. At
+`--min-margin 0.10` the dense matcher answers ~10% of pixels against ~88% ungated, on
+the same frame.
+
+**More holes than the pictures in the write-ups show.** Also the margin gate: 0.01
+doubles the hole area against 0 (14.1% → 29.9%) on a real pair. The published figures
+are ungated, so anything that adds a gate will look holier than they do.
+
+**Holes that no setting removes.** Three kinds, and they are structural. The left
+~64 columns can only match small disparities, because a pixel at *x* has no partner
+beyond *x*−3 — that band is 56% holes and is 15% of all of them. The census border is
+another 7%. The rest is texture: outside the left band, 69 blobs of ≥100 px hold 80%
+of the hole area, and their median local contrast is 2.6 DN against 4.6 DN where the
+matcher answered. Saturated windows and blank walls have nothing to match, and the
+projector is what fixes that — `--emitter on`.
 
 **The cloud has points but no visible structure.** The far tail sets the scale. On a
 desk scene, 1.4% of the points sat beyond 2 m and stretched the cloud from ±2.0 m to
