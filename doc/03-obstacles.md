@@ -676,3 +676,49 @@ consecutive frames, only 23.5% are on it in all five, against a whole-frame disp
 repeatability of 0.14 px median. A temporal consistency vote would therefore remove
 roughly half of it -- but fixing the search range removes 92% of it for nothing, and
 the two are not alternatives.
+
+### 24a. What was left after the range fix, and three cures that were worse
+
+Live on the camera the fix landed as predicted -- 0.78% ghost to 0.07%, coverage 83.1%
+to 84.1% -- but a thin sheet remained, ~250 points a frame. It had **moved**: columns
+28-38, rows 372-475. The bottom-left corner.
+
+That is a different mechanism. A pixel at column x can only be searched over
+disparities up to x-3, because beyond that the corresponding right-image pixel is off
+the edge of the sensor. At column 38 the reach is 35 and the near floor there is at
+disparity ~50, so **the true match is not in the right image at all**. Those pixels are
+genuinely monocular, and the matcher answers regardless -- the same silent failure as
+24, with the image border doing what `dmax` was doing before.
+
+Three cures, all measured on `bags/room2_2500`, all rejected:
+
+- **Turn the message passing on.** The prediction was that MASDA's one-to-one
+  constraint should starve an occluded pixel, since it has no partner to claim. It does
+  the opposite: ghost 242 -> 256 -> 339 -> 473 at `--iters` 0, 2, 4, 8, and the growth
+  is concentrated in the strip (54 -> 283). Coverage rises too, 88.3% -> 90.0%. Message
+  passing propagates support along the row, and where no correct answer exists it
+  spreads the wrong one and grows its confidence. **Uniqueness does not imply
+  occlusion rejection when the true partner is off-sensor** -- there is no competitor
+  to lose to.
+- **Mask the left `dmax` columns.** 272 good points destroyed per ghost point removed.
+- **Mask only the pixels that provably could not reach**, estimating the local
+  disparity from the nearest fully-searched columns of the same row and dropping the
+  pixel when that exceeds its reach. 18 good points per ghost point -- 15x better than
+  the blunt mask, but it reaches only the 22% of the residual that is in the strip.
+
+What does work is time. Of the pixels ghosting in any of five consecutive frames, 23.5%
+ghosted in all five before the range fix and **2.2%** after it: the residual is almost
+entirely transient. A 3-of-5 agreement vote takes it from 250 points a frame to 61, for
+4.3% of coverage --
+
+| kept if it agrees in | points/frame | ghost/frame |
+|---|---|---|
+| every frame on its own | 342,145 | 250 |
+| >= 2 of 5 | 331,741 | 108 |
+| >= 3 of 5 | 327,594 | 61 |
+| >= 4 of 5 | 317,903 | 37 |
+
+-- measured on a **stationary** camera, so it is an upper bound on the gain and a lower
+bound on the cost. Under motion the reference has to be warped, and that is the part
+that needs the vehicle moving. The useful part is that the static half is measurable
+today, on a bench, with no odometry and no ground truth.
