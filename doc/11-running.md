@@ -207,7 +207,11 @@ in rviz costs real bandwidth.
   nothing queues without bound.
 - `--emitter on|off` — the projector. On is dramatically better: it puts texture on
   blank surfaces, and coverage goes from 78% to 88% on the same scene.
-- `--min-margin` — the same trade as §3, applied live.
+- `--min-margin` — the same trade as §3, applied live, and **the two matchers want
+  different values**. The sparse path's tuned figure is 0.10; the dense matcher's own
+  benchmarks all run at 0.01, and 0.10 there rejects about 90% of the map. Left
+  unset, the script picks per mode and prints which. A cloud with a few thousand
+  points instead of tens of thousands is this, every time.
 - `--local FILE` — replay a captured packet stream instead of running the camera.
 
 ### Gigabit, not wifi
@@ -242,9 +246,24 @@ whether the detector spread its keypoints out.
 
 Ordered by how often each one has actually happened.
 
-**The cloud is empty.** The depth gate, almost always. `--min-range`/`--max-range`
-default to 0.4–6.0 m and everything outside is dropped before publishing. A pair with
-little real disparity puts the whole scene past the far limit.
+**The cloud is nearly empty, or too sparse to read.** The margin gate, almost always
+— see §5. At `--min-margin 0.10` the dense matcher answers ~10% of pixels against
+~88% at 0.01, on the same frame. Thousands of points where there should be tens of
+thousands is this.
+
+**The cloud has points but no visible structure.** The far tail sets the scale. On a
+desk scene, 1.4% of the points sat beyond 2 m and stretched the cloud from ±2.0 m to
+±5.9 m across; rviz fits the view to the full extent, so the 98.6% that is the actual
+scene collapses into the middle. Set `--max-range` to roughly the depth of what you
+are looking at — 2 m indoors at a desk — and it resolves.
+
+**The cloud is one flat colour.** `--colour` defaults to `image`, which paints each
+point with the left camera's own intensity. `margin` is the sparse path's scheme and
+is meaningless in dense mode, where the packet carries no per-pixel confidence.
+
+**The cloud is empty.** The depth gate. `--min-range`/`--max-range` default to
+0.4–6.0 m and everything outside is dropped before publishing. A pair with little
+real disparity puts the whole scene past the far limit.
 
 **`No module named 'yaml'` or `rclpy`.** The `.venv` is active and shadowing the ROS
 install. Use `/usr/bin/python3` explicitly. Sourcing the setup file does not fix it.

@@ -189,7 +189,11 @@ def main() -> int:
     ap.add_argument("--remote-dir", default="doubleeye")
     ap.add_argument("--fast-threshold", type=int, default=12)
     ap.add_argument("--right-density", type=int, default=6)
-    ap.add_argument("--min-margin", type=float, default=0.10)
+    # No default here: the two matchers want different values and one number
+    # cannot serve both. 0.10 is the sparse path's tuned figure; the dense
+    # matcher's own benchmarks all run at 0.01, and 0.10 there rejects ~96% of
+    # the map -- which looks exactly like a matcher that found nothing.
+    ap.add_argument("--min-margin", type=float, default=None)
     ap.add_argument("--exposure-us", type=int, default=0)
     ap.add_argument("--emitter", default=None, choices=[None, "on", "off"])
     ap.add_argument("--out-fps", type=float, default=10.0,
@@ -218,6 +222,12 @@ def main() -> int:
                     help="run the dense CUDA matcher on the Jetson instead of the "
                          "sparse keypoint one: ~80% of pixels answered rather than "
                          "~570 points, at 848x480 on the GPU")
+    ap.add_argument("--colour", default="image",
+                    choices=["image", "depth", "margin"],
+                    help="how to colour the cloud. image: the left camera's own "
+                         "intensity, so the cloud looks like the scene. depth: a "
+                         "ramp over the 5-95 percentile. margin: the matcher's "
+                         "confidence, which the dense packet does not carry")
     ap.add_argument("--dense-stride", type=int, default=2,
                     help="subsample the dense cloud by this factor in each axis. "
                          "1 is 407k points a frame and ~6 MB of PointCloud2; 2 is "
@@ -249,6 +259,8 @@ def main() -> int:
 
     if a.local:
         proc = None
+        if a.min_margin is None:
+            a.min_margin = 0.01 if a.dense else 0.10
         stream = open(a.local, "rb")
     else:
         # No --streams flag: rs_ir_stream emits both channels by default and
@@ -258,6 +270,10 @@ def main() -> int:
         # the obstacle was being written.
         # Gate in metres, converted here, so the range is stated in the units the
         # scene has rather than in pixels of disparity.
+        if a.min_margin is None:
+            a.min_margin = 0.01 if a.dense else 0.10
+            print(f"margin gate: {a.min_margin} "
+                  f"({'dense' if a.dense else 'sparse'} default)")
         dmin = FB / max(a.max_range, 1e-3)
         dmax = FB / max(a.min_range, 1e-3)
         print(f"depth gate: {a.min_range:.2f}-{a.max_range:.2f} m "
@@ -442,7 +458,22 @@ def main() -> int:
 
             x = (xl - CX) * z / FX
             y = (yl - CY) * z / FY
-            cols = colours_for(margin)
+            # Colour by margin only when the margin means something. The dense
+            # packet carries a disparity map and no per-pixel confidence, so every
+            # point would come back the same green and 88,000 of them read as one
+            # flat blob. Colouring by the left image's own intensity instead makes
+            # the cloud look like the scene, which is the point of looking at it.
+            if a.dense and a.colour != "margin":
+                gi = gray[yl.astype(np.int32), xl.astype(np.int32)]
+                if a.colour == "image":
+                    g8 = stretch(gray)[yl.astype(np.int32), xl.astype(np.int32)] \
+                         if not a.no_stretch else gi
+                    cols = np.repeat(g8[:, None], 3, axis=1).astype(np.uint8)
+                else:                                    # "depth"
+                    lo, hi = np.percentile(z, 5), np.percentile(z, 95)
+                    cols = colourise(z, float(lo), float(hi))
+            else:
+                cols = colours_for(margin)
             packed = ((cols[:, 0].astype(np.uint32) << 16)
                       | (cols[:, 1].astype(np.uint32) << 8)
                       | cols[:, 2].astype(np.uint32))
