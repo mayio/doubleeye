@@ -152,6 +152,51 @@ struct Row {
   int kp_l = 0, kp_r = 0, edges = 0;
 };
 
+// Sample a dense disparity map at the left keypoints, and score it with the SAME
+// detector and the SAME rules as the sparse matcher.
+//
+// Why this exists: 0.4 sets out to make the sparse matcher's keypoint disparities
+// better, and it was written when dense MASDA did not run in real time. It does
+// now -- 31.3 Hz at 848x480 -- so a keypoint can simply read its disparity out of
+// the dense map, and the question is whether that is already better than the thing
+// 0.4 proposes to optimise. Precision is comparable directly. RECALL IS NOT: the
+// sparse matcher's is bounded by whether the right detector fired within a pixel of
+// the true correspondence, which is the 44-51% repeatability ceiling, and the dense
+// map has no such requirement. So coverage over left keypoints is reported instead
+// and the two recall columns must not be read against each other.
+Row run_dense(const Scene& s, DetectorConfig det, const std::string& f32) {
+  const std::vector<Keypoint> kl = detect_keypoints_fast(s.left, det);
+  const std::vector<Keypoint> kr = detect_keypoints_fast(s.right, det);
+  std::vector<float> dense(size_t(s.width) * size_t(s.height), 0.f);
+  std::FILE* f = std::fopen(f32.c_str(), "rb");
+  if (!f) { std::fprintf(stderr, "cannot open %s\n", f32.c_str()); std::exit(1); }
+  const size_t n = std::fread(dense.data(), sizeof(float), dense.size(), f);
+  std::fclose(f);
+  if (n != dense.size()) {
+    std::fprintf(stderr, "%s: %zu floats, want %zu -- wrong scene or resolution\n",
+                 f32.c_str(), n, dense.size());
+    std::exit(1);
+  }
+  std::vector<Match> m;
+  for (size_t i = 0; i < kl.size(); ++i) {
+    const int x = std::min(std::max(int(kl[i].x + 0.5f), 0), s.width - 1);
+    const int y = std::min(std::max(int(kl[i].y + 0.5f), 0), s.height - 1);
+    const float d = dense[size_t(y) * size_t(s.width) + size_t(x)];
+    if (!(d > 0.f)) continue;              // NaN or unmatched: the map has a hole
+    Match mm;
+    mm.left = int(i);
+    mm.right = -1;
+    mm.disparity = d;
+    mm.margin = 0.f;
+    m.push_back(mm);
+  }
+  Row r;
+  r.e = evaluate(s, kl, kr, m);
+  r.kp_l = int(kl.size());
+  r.kp_r = int(kr.size());
+  return r;
+}
+
 Row run_one(const Scene& s, DetectorConfig det, int right_density,
             float min_margin, MatchConfig cfg, bool subpixel) {
   cfg.max_disparity = s.dmax;
@@ -211,6 +256,7 @@ int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr,
         "usage: %s DIR [--right-density N] [--min-margin F] [--sweep]\n"
+        "          [--dense DIR_OF_F32]\n"
         "\n"
         "DIR holds one subdirectory per scene, as written by\n"
         "article/export_middlebury.py. --sweep runs the density x margin grid\n"
@@ -222,6 +268,7 @@ int main(int argc, char** argv) {
   int right_density = 0;
   float min_margin = 0.f;
   bool sweep = false;
+  std::string dense_dir;
   bool subpixel = false;
   bool both = false;      // run with refinement off and on, for the comparison
   int fast_thresh = 0;    // 0 = DetectorConfig default
@@ -232,6 +279,7 @@ int main(int argc, char** argv) {
     if (a == "--right-density" && has) right_density = std::atoi(argv[++i]);
     else if (a == "--min-margin" && has) min_margin = float(std::atof(argv[++i]));
     else if (a == "--sweep") sweep = true;
+    else if (a == "--dense" && has) dense_dir = argv[++i];
     else if (a == "--subpixel") subpixel = true;
     else if (a == "--both") both = true;
     else if (a == "--fast-threshold" && has) fast_thresh = std::atoi(argv[++i]);
@@ -304,7 +352,9 @@ int main(int argc, char** argv) {
         for (bool sp : refine_modes) {
           std::vector<Row> rows;
           for (const Scene& s : scenes)
-            rows.push_back(run_one(s, d2, rd, mm, cfg, sp));
+            rows.push_back(dense_dir.empty()
+                               ? run_one(s, d2, rd, mm, cfg, sp)
+                               : run_dense(s, d2, dense_dir + "/" + s.name + ".f32"));
           Row t = total(rows);
           std::printf("%-7d %-9d %-7.2f %-8s %8d %9d %8.3f %9.3f %9.3f %8.1f%%\n",
                       th, rd > 0 ? rd : d2.per_cell, mm, sp ? "on" : "off",

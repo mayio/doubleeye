@@ -629,7 +629,46 @@ Second tier, in order:
    The box was worth 16 points of bad-1.0; a support region that follows image
    structure should be worth more, and MST filtering is O(N).
 
-## 0.4 Semi-dense candidates + margin gate — reaches SGM's precision, needs to get fast
+## 0.4 Semi-dense candidates — **OBSOLETED 2026-08-11: read the dense map instead**
+
+**The whole item was written when dense MASDA did not run in real time.** It does
+now, 31.3 Hz at 848x480, so a keypoint does not need its own matcher at all — it can
+read its disparity out of the dense map. `de_bench --dense` samples that map at the
+same left keypoints and scores it with the same detector and the same rules, so the
+two are comparable rather than merely similar:
+
+| at MASDA's own keypoints, 8 scenes | correct | precision | median err | \|e\|<=0.5 |
+|---|---|---|---|---|
+| **the shipping sparse matcher** | 1402 | 0.706 | 0.195 | 87.1% |
+| dense map, gate 0.01 | **2365** | 0.829 | 0.150 | 93.6% |
+| dense map, gate 0.03 | 2196 | **0.853** | 0.145 | 94.5% |
+| dense map, gate 0.08 | 1736 | **0.902** | 0.139 | 96.6% |
+| SGM, this item's target | — | 0.858 | — | — |
+| this item's own proposal | — | 0.882 at gate 0.15 | — | **68 ms** |
+
+**Better on every axis, and the cost problem does not exist.** At gate 0.03 the dense
+map matches SGM's precision with 57% more correct matches than the sparse matcher; at
+0.08 it beats both SGM and this item's own 0.882, still with 24% more correct matches
+than the baseline. The 68 ms this item set out to remove is not spent: the map is
+already computed for the dense pipeline.
+
+*(The recall column is not comparable and `de_bench` says so. The sparse matcher's
+recall denominator is left keypoints whose partner the RIGHT detector also found,
+which is the 44-51% repeatability ceiling; the dense map has no such requirement, so
+its recall reads above 1. Precision, median error and correct-count are like for
+like.)*
+
+**What to do with it.** Wire the keypoint consumers to sample the dense map instead
+of running `match_masda`, and pick the gate for the consumer rather than globally —
+tracking wants coverage, triangulation wants precision. That also does most of
+section 0's "one producer for the sparse feature set", since detection stops needing
+a matcher behind it.
+
+**What this does NOT retire**: MASDA for frame-to-frame association (section 4). That
+is temporal matching, where there is no dense map of the *motion* to read, and it is
+still the interesting use of the machinery.
+
+### The original item, kept for the reasoning
 
 Dense SGM beats MASDA **at MASDA's own keypoints**, 0.858 against 0.616 precision,
 pooled over the eight Middlebury scenes, while also filling 78% of the image in
