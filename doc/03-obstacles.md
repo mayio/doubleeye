@@ -667,9 +667,25 @@ dominated the view.
 - **Raising the limit is close to free and never negative.** `--dmax 64` gained
   coverage on all three scenes tried, added 12,556 real near-floor points on the
   hallway, and added 172 on a scene with nothing that close -- so it does not
-  manufacture near points where there are none. Desktop CPU cost was ~1.12-1.14x;
-  the Jetson GPU cost has not been measured and does not follow from it (rule 2).
+  manufacture near points where there are none.
 - 80 buys nothing over 64, so the floor bottoms out around 0.34 m in this room.
+- **On the Jetson it is not merely cheap, it is free**, and the desktop's 1.12-1.14x
+  did not predict that (rule 2). Pipelined steady state at 848x480, `--threads 4`,
+  clocks locked, 30-32 C, three reps, minima:
+
+  | `--dmax` | ms/frame | rate | filled |
+  |---|---|---|---|
+  | 53 (the old default) | 32.0 | 31.3 Hz | 88.0% |
+  | **64** | **31.5** | **31.7 Hz** | **88.5%** |
+  | 65 | 47.9 | 20.9 Hz | 88.5% |
+
+  **The GPU quantises the disparity search into blocks of 64.** Everything from 1 to
+  64 costs the same -- `--dmax 32` measures 25.4 ms in the cost stage against 64's
+  25.6 -- and 65 through 128 costs the same as each other, 63% more. So the old
+  default of 53 was *paying for 64 disparities and using 53*, discarding 11 it had
+  already bought, and those 11 are exactly the ones the floor needed. A default that
+  was set as a quality trade-off turned out to have no cost at all on the side it was
+  trading against: obstacle 16's `fast_threshold` mistake, in reverse.
 
 Two frames apart, the ghost **flickers**: of the pixels on it in any of five
 consecutive frames, only 23.5% are on it in all five, against a whole-frame disparity

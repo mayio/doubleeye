@@ -120,8 +120,16 @@ out of the dense map. It costs 0.4–1.4 ms because detection hides under the ke
 | 424×240 | 60 | 8.7 | 115 Hz |
 | 450×375 | 60 | 13.7 | 73 Hz |
 | 640×480 | 60 | 24.1 | 42 Hz |
-| **848×480** | **60** | **31.7** | **31.5 Hz** |
+| **848×480** | **64** | **31.5** | **31.7 Hz** |
+| 848×480 | 65 | 47.9 | 20.9 Hz |
 | 848×480 | 96 | 48.6 | 20.6 Hz |
+
+**`D` is quantised into blocks of 64, so pick it at 64 and not below.** Anything from
+1 to 64 costs the same — `--dmax 32` and `--dmax 64` are both 25.5 ms in the cost
+stage — and 65 through 128 costs the same as *each other*, 52% more. There is nothing
+to save by asking for fewer disparities than 64, and 64 is 4.5 points of coverage
+better than 32. The only decision is whether you need to go past it, and that one
+costs a third of the frame rate.
 
 ---
 
