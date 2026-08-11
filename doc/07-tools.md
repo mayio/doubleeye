@@ -308,6 +308,28 @@ Three things it refuses to let you get wrong: it says when the data is **filtere
 by the batch sampler's windowing and labels bias instability beyond it as an
 artefact, and it checks that **stationary gravity reads 9.807 m/s²**.
 
+### `core/tools/de_bench --dense` — score a dense map at the sparse keypoints
+
+```sh
+.venv/bin/python article/dense_bench.py --threads 1 --min-margin 0.03 --out /tmp/dm
+./core/build/de_bench article/data/c_bench --dense /tmp/dm
+```
+
+Detects the same left keypoints the sparse matcher would, reads each one's disparity
+out of a dense map instead of matching it, and scores the result with the same rules.
+It exists to answer whether the sparse matcher is still worth having now that dense
+MASDA runs in real time; the answer is in TODO 0.4 and it is no.
+
+`--dense` takes a DIRECTORY of `<scene>.f32`, which is exactly what
+`article/dense_bench.py --out` writes. It refuses a file of the wrong length rather
+than reading a neighbouring scene's map.
+
+**Read precision, median error and correct-count. Do NOT read recall.** The sparse
+matcher's recall denominator is left keypoints whose partner the *right* detector
+also found — the 44-51% repeatability ceiling — and a dense map has no such
+requirement, so its recall prints above 1.0. That is not a bug and it is why the
+column is left in rather than quietly suppressed.
+
 ### `article/middeval3.py` — score the matcher the way the leaderboard scores it
 
 ```sh

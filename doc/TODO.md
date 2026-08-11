@@ -658,11 +658,34 @@ which is the 44-51% repeatability ceiling; the dense map has no such requirement
 its recall reads above 1. Precision, median error and correct-count are like for
 like.)*
 
-**What to do with it.** Wire the keypoint consumers to sample the dense map instead
-of running `match_masda`, and pick the gate for the consumer rather than globally —
-tracking wants coverage, triangulation wants precision. That also does most of
-section 0's "one producer for the sparse feature set", since detection stops needing
-a matcher behind it.
+**What to do with it — and it is a budget decision, not plumbing.** `de_pipe` is the
+live consumer, and pointing it at the dense map means extracting the dense pipeline
+into something shareable and deciding whether the live path becomes a CUDA tool.
+That is section 0's "one producer" question, and the arithmetic is tight enough that
+it has to be decided rather than assumed:
+
+| | CPU | GPU |
+|---|---|---|
+| today's live path: preprocessing 26.54 + MASDA 5.14 | **31.7 ms** | 0 |
+| dense CUDA path | 23 ms solve | 26 ms kernels, 31.9 ms wall |
+| **keypoints AND a dense map** | detection ~21 + solve 23 = **44 ms** | 26 ms |
+
+**The swap is not free even though the dense map is.** Sampling the map costs
+nothing, but anything that still wants KEYPOINTS -- tracking, VO -- needs the
+detector as well, and detection plus the dense solve is ~44 ms of CPU against a
+33.3 ms frame. It fits only if the detector overlaps the solve across the A57s and
+the Denvers, which is exactly the stage-to-core pinning section 0 left open and
+nobody has measured.
+
+Three ways out, in the order they should be tried: run correspondence at 15 Hz,
+which the frame-budget section already argues is plausibly enough indoors; or drop
+the sparse detector entirely for consumers that only want depth, since the dense map
+serves them without keypoints; or raise `fast_threshold`, which the profiling says
+buys 30% of preprocessing for 10% of matches.
+
+Whatever is chosen, pick the gate per consumer rather than globally — tracking wants
+coverage, triangulation wants precision, and the table above shows they are 0.829
+and 0.902 on the same map.
 
 **What this does NOT retire**: MASDA for frame-to-frame association (section 4). That
 is temporal matching, where there is no dense map of the *motion* to read, and it is
