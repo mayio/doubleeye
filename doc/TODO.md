@@ -1011,6 +1011,36 @@ non-dot background matchable-looking, adding plausible wrong candidates that the
 alone would not have produced -- but that is a story, and this file's rule is that a
 story without a measurement is not a finding.
 
+**The camera's own auto-exposure is the worst setting measured, and that answers the
+question a fixed exposure raises.** Lighting changes from room to room, so a constant
+1500 us cannot be right everywhere -- but `--auto-exposure` is not the fix. It targets
+a well-exposed *picture*, mean 94.6 DN, and lands below every fixed setting tried:
+
+| | image mean | points | RMS | >2 cm |
+|---|---|---|---|---|
+| 350 us fixed | 21.5 DN | **90.5%** | **1.1 mm** | **0.1%** |
+| 1500 us (shipping) | 41.1 DN | 88.0% | 1.2 mm | 0.8% |
+| **auto-exposure** | **94.6 DN** | **84.3%** | 1.4 mm | **3.4%** |
+
+**Image mean predicts matcher quality almost perfectly, and negatively**: r = **-0.98**
+against coverage and **+0.99** against gross outliers, over eight settings spanning
+17.8 to 94.6 DN. The matcher wants a *dark* image, around 20 DN, and every step
+towards a photographically correct one costs it.
+
+**So the exposure controller should target the mean, not the histogram** -- something
+this camera will not do on its own, but which is one line of control logic once
+someone writes it: raise exposure until the mean reaches ~20 DN and stop. That adapts
+to ambient light, which is what auto-exposure was wanted for, while aiming at the
+value the matcher actually likes. Not built; the measurement above is the whole
+specification.
+
+*(An earlier reading of this experiment was wrong and is recorded because the mistake
+is easy to repeat: `rs_probe` reported Exposure=350 after the auto-exposure capture,
+which looked like AE choosing the optimum. That reading came from a SEPARATE probe
+session under different light, not from the capture. The recorded frames are the
+evidence -- mean 94.6 DN -- and they say the opposite. Read the data the run wrote,
+not the device's state afterwards.)*
+
 **The caveat that bounds all of it: one wall, at 0.38 m.** The projector's return
 falls with distance, so the optimum almost certainly rises with range, and a setting
 tuned at arm's length may starve a 3 m scene. Repeating this at two or three

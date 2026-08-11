@@ -45,6 +45,7 @@ struct Options {
   std::string outdir;
   double seconds = 60.0;
   int exposure_us = 1500;
+  bool auto_exposure = false;
   int gain = 64;
   std::string emitter = "on";  // on | off | alternate
   int save_every = 30;
@@ -79,6 +80,10 @@ void usage(const char* argv0) {
   std::printf(
       "usage: %s OUTDIR [options]\n"
       "  --seconds F        recording length (default 60)\n"
+      "  --auto-exposure    let the camera choose, and report what it chose.\n"
+      "                     Measured against a matcher on a flat wall, the\n"
+      "                     matcher wants a MUCH darker image than a\n"
+      "                     well-exposed one -- see doc/TODO.md 0.45\n"
       "  --exposure-us N    fixed exposure; 1000-2000 keeps motion blur under\n"
       "                     a pixel at RC speeds (default 1500)\n"
       "  --gain N           raise to compensate the short exposure (default 64)\n"
@@ -101,6 +106,8 @@ bool parse_args(int argc, char** argv, Options* opt) {
     const bool has_next = (i + 1 < argc);
     if (a == "--seconds" && has_next) {
       opt->seconds = std::atof(argv[++i]);
+    } else if (a == "--auto-exposure") {
+      opt->auto_exposure = true;
     } else if (a == "--exposure-us" && has_next) {
       opt->exposure_us = std::atoi(argv[++i]);
     } else if (a == "--gain" && has_next) {
@@ -161,9 +168,14 @@ bool set_option(rs2::sensor& sensor, rs2_option opt, float value) {
 void configure_sensor(rs2::sensor& sensor, const Options& opt) {
   std::printf("sensor configuration:\n");
   // Auto-exposure off first: it overrides any manual exposure written after it.
-  set_option(sensor, RS2_OPTION_ENABLE_AUTO_EXPOSURE, 0.0f);
-  set_option(sensor, RS2_OPTION_EXPOSURE, static_cast<float>(opt.exposure_us));
-  set_option(sensor, RS2_OPTION_GAIN, static_cast<float>(opt.gain));
+  if (opt.auto_exposure) {
+    set_option(sensor, RS2_OPTION_ENABLE_AUTO_EXPOSURE, 1.0f);
+    std::printf("  auto-exposure ON; the fixed exposure and gain are not applied\n");
+  } else {
+    set_option(sensor, RS2_OPTION_ENABLE_AUTO_EXPOSURE, 0.0f);
+    set_option(sensor, RS2_OPTION_EXPOSURE, static_cast<float>(opt.exposure_us));
+    set_option(sensor, RS2_OPTION_GAIN, static_cast<float>(opt.gain));
+  }
   if (opt.emitter == "on") {
     set_option(sensor, RS2_OPTION_EMITTER_ENABLED, 1.0f);
   } else if (opt.emitter == "off") {
@@ -244,6 +256,7 @@ void write_run_meta(const Options& opt, const rs2::device& dev,
                RS2_API_MINOR_VERSION, RS2_API_PATCH_VERSION);
   std::fprintf(fh, "resolution %dx%d @ %d\n", opt.width, opt.height, opt.fps);
   std::fprintf(fh, "exposure_us %d\n", opt.exposure_us);
+  std::fprintf(fh, "auto_exposure %d\n", opt.auto_exposure ? 1 : 0);
   std::fprintf(fh, "gain %d\n", opt.gain);
   std::fprintf(fh, "emitter %s\n", opt.emitter.c_str());
   std::fprintf(fh, "streams %s\n", opt.streams.c_str());
