@@ -1242,6 +1242,22 @@ still gates is depth accuracy *on this camera*, on this baseline, in these rooms
 absolute scale, calibration drift, and anything about the vehicle's own environment.
 That is real, but it is validation rather than development.
 
+**Update, 2026-08-12: a tape measure does most of it, and is already wired up.**
+`desktop/wall_check.py --truth` takes a ruler distance per bag and fits
+`measured = scale*ruler + offset` across two or more distances. The offset absorbs the
+distance from whatever the tape was held against to the point depth is referenced
+from, so the **scale** — the part that is a claim about `f*B`, the calibration — comes
+out without knowing where the imager sits inside the housing. The precision is
+adequate by a wide margin: at 1 m one disparity pixel is 46.6 mm against a measured
+frame-to-frame repeatability of 0.146 px, so a tape good to 2 mm is well inside the
+noise. Use three distances, not two — two fit the line exactly and cannot be
+falsified (rule 3).
+
+What a rangefinder would still add over a tape: distances beyond a few metres, where
+holding a tape straight is the limiting error rather than the matcher. That is the far
+field, where `Z^2/(f*B)` makes the measurement coarse anyway. **Downgraded from binding
+constraint to nice-to-have.**
+
 **Why it was first.** It gated *matcher development*, back when the only quality
 measures available were match count, objective, and median
 |dy|, none of which can distinguish "removed 100 wrong matches" from "removed 100

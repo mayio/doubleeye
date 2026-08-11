@@ -300,9 +300,23 @@ distance — plus the gross-outlier fraction. `--sweep` compares settings **on t
 sensor**, which nothing else here can do. Each swept config needs a leading space or
 argparse claims it.
 
-It does not measure absolute scale; that needs a rangefinder and is a different
-question. Point at a blank wall filling the frame, and check the reported tilt is
-small — a large one means you are measuring a slanted surface, or not a wall.
+A plane fit cannot see a **scale** error — multiply every depth by 1.05 and the plane
+is exactly as flat. For that, record the same wall at three distances, measure them
+with a tape, and pass them:
+
+```bash
+.venv/bin/python desktop/wall_check.py bags/w60 bags/w120 bags/w180 \
+    --truth 0.60 1.20 1.80
+```
+
+It fits `measured = scale*ruler + offset`. Only the scale is a claim about the
+matcher; the offset absorbs the distance from whatever you held the tape against to
+the point depth is referenced from, so the tape does not have to start in the right
+place. Two distances fit a line exactly and cannot be falsified — use three, and the
+residual column is then worth reading.
+
+Point at a blank wall filling the frame, and check the reported tilt is small — a
+large one means you are measuring a slanted surface, or not a wall.
 
 ---
 
