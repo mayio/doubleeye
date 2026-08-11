@@ -228,37 +228,38 @@ def arrow(ax, x1, y1, x2, y2, color=INK, lw=1.2, style="-|>"):
 
 
 def fig_novolume(path):
-    fig, axes = plt.subplots(1, 2, figsize=(9.4, 3.1))
+    fig, axes = plt.subplots(1, 2, figsize=(10.0, 3.6))
     for ax in axes:
-        ax.set_xlim(0, 10); ax.set_ylim(0, 6); ax.axis("off")
+        ax.set_xlim(0, 10); ax.set_ylim(0, 7.2); ax.axis("off")
 
     ax = axes[0]
     ax.set_title("the textbook pipeline: build the volume", fontsize=9.5)
     for i in range(4):
-        ax.add_patch(Rectangle((1.1 + i * 0.34, 3.0 - i * 0.20), 2.3, 1.5,
+        ax.add_patch(Rectangle((0.7 + i * 0.34, 4.0 - i * 0.20), 2.3, 1.5,
                                fc="#eef2f6", ec=INK, lw=0.9))
-    ax.text(2.6, 4.95, "W x H x D  (40-98 MB)", ha="center", fontsize=8)
-    box(ax, 5.4, 3.4, 3.4, 0.85, "aggregate the volume")
-    box(ax, 5.4, 2.1, 3.4, 0.85, "read back, pick winners")
-    arrow(ax, 3.9, 3.8, 5.35, 3.8)
-    arrow(ax, 7.1, 3.35, 7.1, 3.0)
-    ax.text(5.0, 1.2, "the volume is written, read, and read again", fontsize=8,
+    ax.text(2.0, 6.0, "W x H x D", ha="center", fontsize=8.5)
+    ax.text(2.0, 5.62, "43 MB at 450x375, 104 MB at 848x480", ha="center", fontsize=7.4)
+    box(ax, 4.9, 4.35, 4.6, 0.85, "aggregate the volume", fs=8.5)
+    box(ax, 4.9, 3.05, 4.6, 0.85, "read back, pick winners", fs=8.5)
+    arrow(ax, 3.6, 4.75, 4.85, 4.75)
+    arrow(ax, 7.2, 4.30, 7.2, 3.95)
+    ax.text(5.0, 1.9, "the volume is written, read, and read again", fontsize=8.2,
             color=WARN, ha="center")
 
     ax = axes[1]
     ax.set_title("what ships: the volume never exists", fontsize=9.5)
     for i, lab in enumerate(["d = 0", "d = 1", "...", "d = D-1"]):
-        box(ax, 0.5, 4.6 - i * 1.12, 1.5, 0.8, lab, fc="#eef2f6", fs=7.5)
-    box(ax, 2.5, 3.1, 1.9, 0.9, "score\n+ filter", fc="#ffffff")
-    box(ax, 5.0, 3.1, 2.2, 0.9, "running\ntop-2 per pixel", fc="#e8f1ea", ec=GPU)
-    box(ax, 7.8, 3.1, 1.7, 0.9, "MASDA\nsolve", fc="#e6eef6", ec=CPU)
+        box(ax, 0.25, 5.55 - i * 0.98, 1.35, 0.72, lab, fc="#eef2f6", fs=7.5)
+    box(ax, 2.55, 4.05, 1.95, 0.95, "score\n+ filter")
+    box(ax, 5.05, 4.05, 2.35, 0.95, "running top-2\nper pixel", fc="#e8f1ea", ec=GPU)
+    box(ax, 7.95, 4.05, 1.85, 0.95, "MASDA\nsolve", fc="#e6eef6", ec=CPU)
     for i in range(4):
-        arrow(ax, 2.05, 5.0 - i * 1.12, 2.45, 3.75, color=MUTE, lw=0.8)
-    arrow(ax, 4.45, 3.55, 4.95, 3.55)
-    arrow(ax, 7.25, 3.55, 7.75, 3.55)
-    ax.text(6.1, 2.6, "2 x (score, d) per pixel", fontsize=7.5, ha="center", color=GPU)
-    ax.text(5.0, 1.4, "one streaming pass; the common case is a rejected plane\n"
-                      "that reads one cached buffer", fontsize=8, ha="center", color=GPU)
+        arrow(ax, 1.65, 5.9 - i * 0.98, 2.5, 4.6, color=MUTE, lw=0.8)
+    arrow(ax, 4.55, 4.52, 5.0, 4.52)
+    arrow(ax, 7.45, 4.52, 7.9, 4.52)
+    ax.text(6.22, 3.62, "2 x (score, d) per pixel", fontsize=7.5, ha="center", color=GPU)
+    ax.text(5.0, 1.9, "one streaming pass; the common case is a rejected plane\n"
+                      "that reads one cached buffer", fontsize=8.2, ha="center", color=GPU)
     fig.savefig(path)
     plt.close(fig)
     print("wrote", path)
@@ -266,34 +267,34 @@ def fig_novolume(path):
 
 # ------------------------------------------------------------- algorithm: the layout
 def fig_layout(path):
-    fig, axes = plt.subplots(1, 2, figsize=(9.4, 3.3))
+    fig, axes = plt.subplots(1, 2, figsize=(9.4, 3.6))
     for ax in axes:
-        ax.set_xlim(0, 10); ax.set_ylim(0, 6.4); ax.axis("off")
+        ax.set_xlim(0, 10); ax.set_ylim(0, 7.0); ax.axis("off")
 
     ax = axes[0]
     ax.set_title("CPU: disparity-major  vol[d][y][x]", fontsize=9.5, color=CPU)
     for i in range(3):
-        ax.add_patch(Rectangle((1.4 + i * 0.5, 3.1 - i * 0.42), 5.2, 2.0,
+        ax.add_patch(Rectangle((1.4 + i * 0.5, 3.7 - i * 0.42), 5.2, 2.0,
                                fc="#e6eef6", ec=CPU, lw=1.0))
-    ax.text(4.5, 5.55, "one constant-disparity plane at a time", fontsize=8, ha="center")
-    ax.text(4.5, 1.9, "the edge-aware filter needs a whole plane;\n"
-                      "512 KB of L2 wants exactly one of them resident",
+    ax.text(4.5, 6.35, "one constant-disparity plane at a time", fontsize=8, ha="center")
+    ax.text(4.5, 1.75, "the edge-aware filter needs a whole plane;\n"
+                       "512 KB of L2 wants exactly one of them resident",
             fontsize=8, ha="center", color=CPU)
 
     ax = axes[1]
     ax.set_title("GPU: disparity-minor  vol[y][x][k]", fontsize=9.5, color=GPU)
     for i in range(8):
-        ax.add_patch(Rectangle((1.0 + i * 0.72, 3.4), 0.66, 1.5,
+        ax.add_patch(Rectangle((1.0 + i * 0.72, 4.0), 0.66, 1.5,
                                fc="#e8f1ea", ec=GPU, lw=1.0))
-        ax.text(1.33 + i * 0.72, 4.15, f"d{i}", ha="center", fontsize=7)
-    ax.annotate("", xy=(6.8, 3.15), xytext=(1.0, 3.15),
+        ax.text(1.33 + i * 0.72, 4.75, f"d{i}", ha="center", fontsize=7)
+    ax.annotate("", xy=(6.72, 3.72), xytext=(1.0, 3.72),
                 arrowprops=dict(arrowstyle="<->", color=GPU, lw=1.3))
-    ax.text(3.9, 2.75, "one warp = 32 consecutive disparities of one row",
+    ax.text(3.86, 3.30, "one warp = 32 consecutive disparities of one row",
             fontsize=8, ha="center", color=GPU)
-    ax.text(4.6, 1.9, "every access is a k-run: one aligned 128-byte transaction.\n"
-                      "each lane carries its own filter recurrence in registers",
+    ax.text(4.6, 1.75, "every access is a k-run: one aligned 128-byte transaction.\n"
+                       "each lane carries its own filter recurrence in registers",
             fontsize=8, ha="center", color=GPU)
-    ax.text(4.6, 0.7, "same algorithm, same bytes out - opposite memory layout",
+    ax.text(4.6, 0.45, "same algorithm, same bytes out - opposite memory layout",
             fontsize=8.5, ha="center", color=INK)
     fig.savefig(path)
     plt.close(fig)
@@ -302,30 +303,37 @@ def fig_layout(path):
 
 # ----------------------------------------------------------- algorithm: the pipeline
 def fig_overlap(path):
-    fig, ax = plt.subplots(figsize=(9.4, 2.9))
-    ax.set_xlim(0, 10.4); ax.set_ylim(0, 4.6); ax.axis("off")
-    rows = [("GPU  kernels", 3.5, GPU,
-             [(0.4, 2.6, "frame t+1: census, cost, filter, top-2   26 ms")]),
-            ("copy engine", 2.6, MUTE, [(3.05, 0.5, "fetch  ~2 ms")]),
-            ("CPU  A57 x4", 1.7, CPU, [(0.4, 1.4, "solve frame t   11 ms")]),
-            ("CPU  1 core", 0.8, WARN, [(0.4, 2.9, "detect keypoints, frame t   29 ms")])]
-    for name, y, col, bars in rows:
-        ax.text(-0.05, y + 0.22, name, ha="right", fontsize=8.5, color=col)
-        for x, w, lab in bars:
-            ax.add_patch(FancyBboxPatch((x, y), w, 0.46,
-                                        boxstyle="round,pad=0.01",
-                                        fc=col, ec="none", alpha=0.22))
-            ax.text(x + w / 2, y + 0.23, lab, ha="center", va="center",
-                    fontsize=7.6, color=col)
-    ax.plot([0.4, 0.4], [0.6, 4.15], color=INK, lw=0.9)
-    ax.plot([3.6, 3.6], [0.6, 4.15], color=INK, lw=0.9)
-    ax.annotate("", xy=(3.6, 4.3), xytext=(0.4, 4.3),
+    """Who is busy when. One x unit is one millisecond, so the bars are to scale."""
+    fig, ax = plt.subplots(figsize=(9.6, 3.4))
+    ax.set_xlim(-9.5, 35.5); ax.set_ylim(-0.4, 5.5); ax.axis("off")
+    T = 31.7
+    rows = [("GPU  kernels", 3.9, GPU, 0.0, 26.9, "frame t+1: census, cost, filter, top-2"),
+            ("copy engine", 3.0, MUTE, 26.9, 2.0, "fetch"),
+            ("CPU  A57 x4", 2.1, CPU, 0.0, 11.0, "solve frame t"),
+            ("CPU  1 core", 1.2, WARN, 0.0, 29.0, "detect keypoints, frame t")]
+    for name, y, col, x0, w, lab in rows:
+        ax.text(-0.7, y + 0.22, name, ha="right", va="center", fontsize=8.5, color=col)
+        ax.add_patch(FancyBboxPatch((x0, y), w, 0.44, boxstyle="round,pad=0.01",
+                                    fc=col, ec="none", alpha=0.22))
+        txt = f"{lab}   {w:g} ms"
+        if w >= 9:                       # comfortably fits inside the bar
+            ax.text(x0 + w / 2, y + 0.22, txt, ha="center", va="center",
+                    fontsize=7.8, color=col)
+        else:                            # too short: label it above, clear of the
+            ax.text(x0 + w / 2, y + 0.62, f"{lab}  ~{w:g} ms", ha="center",
+                    va="center", fontsize=7.8, color=col)   # steady-state marker
+    for x in (0.0, T):
+        ax.plot([x, x], [0.9, 4.75], color=INK, lw=0.9)
+    ax.annotate("", xy=(T, 5.0), xytext=(0.0, 5.0),
                 arrowprops=dict(arrowstyle="<->", color=INK, lw=1.1))
-    ax.text(2.0, 4.4, "31.8 ms steady state = 31.4 Hz", ha="center", fontsize=9)
-    ax.text(5.6, 2.2, "detection is 29 ms of ONE core and costs 0.4-1.4 ms of\n"
-                      "frame time, because it hides under the kernels.\n"
-                      "The solve is 11 ms since the message passing came out.",
-            fontsize=8, va="center")
+    ax.text(T / 2, 5.18, f"{T} ms steady state = 31.5 Hz", ha="center", fontsize=9)
+    for x in (0, 10, 20, 30):
+        ax.plot([x, x], [0.72, 0.86], color=MUTE, lw=0.8)
+        ax.text(x, 0.42, f"{x}", ha="center", fontsize=7, color=MUTE)
+    ax.text(35.3, 0.42, "ms", ha="right", fontsize=7, color=MUTE)
+    ax.text(-9.3, -0.15, "Detection is 29 ms of ONE core and costs 0.4-1.4 ms of frame time, "
+                         "because it hides under the kernels.\nThe solve is 11 ms since the "
+                         "message passing came out.", fontsize=8, va="top", ha="left")
     fig.savefig(path)
     plt.close(fig)
     print("wrote", path)
@@ -333,16 +341,20 @@ def fig_overlap(path):
 
 # ------------------------------------------------------------- resolution/rate chart
 def fig_rates(path):
-    labels = ["424x240\nD=60", "450x375\nD=60", "640x480\nD=60",
-              "848x480\nD=60", "848x480\nD=96", "848x480\nD=128"]
-    ms = [8.7, 13.7, 24.1, 31.7, 48.6, 48.4]
+    labels = ["424x240\nD=64", "450x375\nD=64", "640x480\nD=64",
+              "848x480\nD=64", "848x480\nD=96", "848x480\nD=128"]
+    ms = [8.7, 13.7, 24.1, 31.7, 48.4, 48.5]
     fig, ax = plt.subplots(figsize=(6.6, 3.2))
     cols = [GPU if v <= 33.3 else MUTE for v in ms]
     ax.bar(range(len(ms)), ms, color=cols, width=0.62)
     ax.axhline(33.3, color=WARN, ls="--", lw=1.3)
     ax.text(5.4, 34.6, "33.3 ms = 30 Hz", color=WARN, fontsize=8, ha="right")
-    for i, v in enumerate(ms):
-        ax.text(i, v + 1.2, f"{1000/v:.0f} Hz", ha="center", fontsize=8)
+    # spelled out rather than computed, so the bar labels and the table in the post
+    # cannot round differently: 1000/24.1 is 41.5, which prints as 41 or 42 depending
+    # on which of them does the rounding.
+    hz = ["115", "73", "42", "31.5", "20.7", "20.6"]
+    for i, (v, lab) in enumerate(zip(ms, hz)):
+        ax.text(i, v + 1.2, f"{lab} Hz", ha="center", fontsize=8)
     ax.set_xticks(range(len(ms))); ax.set_xticklabels(labels, fontsize=7.6)
     ax.set_ylabel("ms / frame, pipelined")
     ax.set_title("Jetson TX2, de_dense_cuda, measured steady state")
@@ -420,6 +432,8 @@ def main():
         "curve": lambda: fig_curve(os.path.join(P2, "curve.png")),
         "novol": lambda: fig_novolume(os.path.join(P2, "novolume.png")),
         "layout": lambda: fig_layout(os.path.join(P3, "layout.png")),
+        "split": lambda: fig_split(os.path.join(P3, "split.png")),
+        "dataflow": lambda: fig_dataflow(os.path.join(P3, "dataflow.png")),
         "overlap": lambda: fig_overlap(os.path.join(P3, "overlap.png")),
         "rates": lambda: fig_rates(os.path.join(P3, "rates.png")),
         "budget": lambda: fig_budget(os.path.join(P2, "budget.png")),

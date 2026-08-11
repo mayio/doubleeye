@@ -1197,6 +1197,66 @@ things that do are optical: the projector, which is worth 1.6 -> 3.9 DN and 56.8
 lowering exposure pays is a trade against dot contrast everywhere else, and
 `wall_check.py --sweep` over a few exposures is now the way to settle it.
 
+## 0.55 Per-point confidence, and then an existence probability — **NEXT, 2026-08-12**
+
+The cloud has no notion of how much any single point is worth, and everything queued
+behind this wants one. Temporal fusion should weight a point rather than hold a hard
+vote; an occupancy grid consumes exactly a probability; and 24a's ghost sheet is a
+population that any usable confidence must be able to name.
+
+**We already have one, and it is measured insufficient.** The score margin
+(best-minus-second) is the *peak ratio* family under its usual name, and against the
+occlusion sheet `--min-margin 0.05` removed a fifth of the bad points and four fifths
+of the good ones. The mechanism generalises and is worth stating once: **best minus
+second is only meaningful over the candidates actually searched.** Where the true match
+is off-sensor or outside `dmax`, the wrong match has no competitor and therefore scores
+as confident. Anything that reads only the cost curve inherits that blind spot.
+
+Two cues are already in the machine and unread. MASDA's one-to-one constraint is
+*uniqueness* in the standard taxonomy, and the top-2 scores are the peak ratio's
+inputs.
+
+**The literature.** Hu and Mordohai (TPAMI 2012) is the founding survey, 17 measures in
+6 categories, and it fixed the metric everyone still uses: AUC of the sparsification
+curve, against the AUC an oracle ordering would give. Poggi, Tosi and Mattoccia
+(TPAMI 2021, arXiv 2101.00431) re-evaluate 52 measures on five datasets. The finding
+that matters here is that **local aggregation is what makes a measure good** — APKR,
+the peak ratio pooled over a neighbourhood, ranks in the top 4 hand-crafted measures
+while the per-pixel PKR does poorly, and left-right-consistency measures rank mid-table
+alone. Learned confidence dominates overall and is out on the no-CNN decision of 0; a
+logistic regression over four features is not a CNN and is the standard way to combine
+cues.
+
+**Plan, in the order it should be done.** 1 and 2 are offline on Middlebury and need
+no vehicle.
+
+1. **APKR.** The top-2 scores exist; aggregate the ratio over a window with the
+   recursive filter already in the kernel. Score it by AUC against the oracle on the
+   eight scenes. Cheap, and it decides whether any of this is worth continuing.
+2. **Uniqueness / left-right consistency**, for the cue the peak ratio structurally
+   cannot see. The cost volume is already materialised on the GPU, so the right-image
+   winner is a scan along the matching diagonal rather than a second matching pass.
+3. **Combine** with a logistic regression fitted on Middlebury.
+4. **Calibrate, which is the step the question actually asks for.** AUC measures
+   *ranking* — whether confident pixels are more often right. It says nothing about
+   whether 0.8 means 80%. Bin the combined score, measure the empirical
+   P(|d - d_gt| <= 1) per bin, fit the mapping, report a reliability curve. Then
+   re-check it on this camera, because a calibration fitted on Middlebury is a claim
+   about a scene type 0.45 measured this sensor to differ from by 2-3x in local
+   contrast (rule 2). The wall gives a proxy for "wrong" with no ground truth:
+   residual off the fitted plane past a threshold.
+5. **Temporal persistence** as a further feature, once 1.4's battery exists. Already
+   measured discriminative: the residual ghost of 24a persists in 2.2% of frames
+   against a 0.146 px whole-frame repeatability.
+
+**The acceptance test, which can fail.** Any confidence worth shipping must
+down-weight the bottom-left occlusion strip of 24a. The margin provably does not, so
+this is a test with a known failure and a known failer rather than a number to admire
+(rule 3). A random confidence must also reproduce the no-skill AUC, or the harness is
+measuring itself.
+
+---
+
 ## 0.5 Quick wins now that the live view works
 
 - ~~**Benchmark `de_dense` on the Jetson.**~~ Done. The dense numbers in 0.3 are TX2
