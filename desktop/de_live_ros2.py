@@ -551,7 +551,12 @@ def main() -> int:
                 pub_dcol.publish(dm)
 
             if want_dense and len(z):
-                dense = densify(H, W, ui, vi, z)
+                # densify() exists to turn ~570 scattered matches into a surface by
+                # triangulating them. With --dense the map already IS a surface --
+                # ~86% of pixels carry a measurement -- so triangulating 88,000
+                # points would spend real time reconstructing what is already there,
+                # and would invent values across the holes rather than showing them.
+                dense = depth if a.dense else densify(H, W, ui, vi, z)
                 nm_ = Image()
                 nm_.header.stamp = stamp
                 nm_.header.frame_id = FRAME

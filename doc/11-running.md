@@ -191,13 +191,20 @@ of `PointCloud2` a frame; stride 2 is a quarter of that and looks the same.
 
 ### Topics
 
-| topic | what |
-|---|---|
-| `/doubleeye/points` | the cloud — this is the one to look at |
-| `/doubleeye/image_raw` | the left image |
-| `/doubleeye/depth` | 32FC1, valid where the matcher answered |
-| `/doubleeye/depth_dense` | interpolated between matches. **Invents values**; for eyes only |
-| `/doubleeye/camera_info`, `/tf` | geometry |
+| topic | encoding | rviz display | what |
+|---|---|---|---|
+| `/doubleeye/points` | — | **PointCloud2** | the cloud. Start here |
+| `/doubleeye/depth` | 32FC1 | **DepthCloud** or Image | a real depth map, valid where the matcher answered. With `--dense` that is ~78% of the frame, so DepthCloud is worth using; on the sparse path it is ~1% and shows nothing |
+| `/doubleeye/image_raw` | mono8 | Image | the left image |
+| `/doubleeye/depth_color` | rgb8 | Image | depth as a colour ramp |
+| `/doubleeye/depth_dense` | rgb8 | Image | same, hole-filled. On the sparse path it triangulates between matches and **invents values**; with `--dense` the map is already dense, so it is the real depth colourised and nothing is invented |
+| `/doubleeye/camera_info`, `/tf` | — | — | geometry |
+
+**The encoding column is the one to read.** `DepthCloud` needs 16-bit or float, so it
+accepts `/doubleeye/depth` and refuses the two `rgb8` topics — which are pictures of
+depth, not depth. Pointing it at `depth_dense` is the obvious mistake, because the
+name reads like the better depth map and it is the right choice for an *Image*
+display.
 
 Derived topics are only computed when something subscribes, so opening every display
 in rviz costs real bandwidth.
@@ -299,6 +306,10 @@ real disparity puts the whole scene past the far limit.
 
 **`No module named 'yaml'` or `rclpy`.** The `.venv` is active and shadowing the ROS
 install. Use `/usr/bin/python3` explicitly. Sourcing the setup file does not fix it.
+
+**"Depth image has invalid format (only 16 bit and float are supported)".** A
+DepthCloud display pointed at `/doubleeye/depth_dense` or `/doubleeye/depth_color`,
+which are `rgb8`. Use `/doubleeye/depth`, which is `32FC1`. See the table in §5.
 
 **Topics appear in rviz but never display.** QoS. The publisher must be at least as
 strong as the subscriber, and rviz requests RELIABLE by default. This script
