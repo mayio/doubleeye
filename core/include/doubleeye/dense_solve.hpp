@@ -198,7 +198,14 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
     const size_t b = size_t(x) * KS;
     for (int j = 0; j < cn[x]; ++j) {
       if (cs[b + j] <= cfg.lambda) continue;
-      const float bel = beta[b + j] + rho[b + j] - cs[b + j];
+      // With no message passing beta and rho are zero, and the max-sum belief
+      // beta + rho - cs degenerates to MINUS the score -- which picks the WORST
+      // candidate, not the best. That made --iters 0 read as a catastrophic 67.3%
+      // bad-1.0 and look like evidence that message passing was worth 41 points.
+      // It is not an ablation, it is an inverted objective. The honest degenerate
+      // case is winner-take-all on the score, which is what --iters 0 now means.
+      const float bel = (cfg.iters > 0) ? (beta[b + j] + rho[b + j] - cs[b + j])
+                                        : cs[b + j];
       if (bel > best[x]) { best[x] = bel; bestj[x] = j; }
     }
   }

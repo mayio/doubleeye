@@ -71,6 +71,49 @@ everything gets tuned on.
 What follows below is the CPU-side record as it stood before the port; its numbers
 remain the CPU baselines.
 
+## 0.31 Does the message passing earn its place? Measured 2026-08-11 — **no, in the dense path**
+
+**First, a bug this exposed.** `--iters 0` used to read 67.29% bad-1.0 and looked like
+proof that message passing was worth 41 points. It was not an ablation: with no
+messages the max-sum belief `beta + rho - cs` degenerates to *minus* the score, so the
+solver picked the WORST candidate. `--iters 0` now means winner-take-all on the score,
+which is the honest degenerate case.
+
+**Then the ablation.** All 15 v3 scenes, `--threads 1`. Uniqueness (the greedy claim)
+and the margin gate are present in EVERY row — only the message passing changes:
+
+| | K=2 (shipping) | | K=8 | |
+|---|---|---|---|---|
+| | bad | coverage | bad | coverage |
+| **iters 0 — winner-take-all** | **25.18** | 79.6% | **24.41** | 79.8% |
+| iters 1 | 26.13 | 79.6% | — | — |
+| iters 2 (default) | 26.04 | 80.1% | 25.58 | 80.6% |
+| iters 4 | 26.19 | 80.2% | 25.78 | 81.0% |
+
+**Message passing buys coverage and pays for it in precision** — 79.8% -> 81.0% for
+24.41 -> 25.78 at K=8 — which is the same trade the margin gate and lambda/gamma
+already offer, at the same sort of exchange rate. It moves along the
+precision-coverage curve rather than off it, exactly like every other knob measured
+this week.
+
+**And it is not free.** TX2, 450x375, six threads, best of three: the solve is
+**13.0 ms at iters 0 against 25.5 ms at iters 2.** At 848x480 that is ~12 ms of the
+23 ms solve. Today that hides under the GPU kernels so it costs no wall clock — but it
+is 12 ms of CPU, and 0.4's wiring question is short of about that much to fit
+detection alongside the dense path.
+
+**What this does NOT say.** Uniqueness and the margin are the parts that distinguish
+this from a plain block matcher, they are present in all rows above, and the margin is
+what makes the dense map beat SGM at keypoints (0.4). What is in question is only the
+loopy belief propagation on top of them, in the DENSE path with a top-2 candidate set.
+The sparse matcher's +46% over mutual-NN was measured with many candidates on
+deliberately ambiguous projected-dot texture, and temporal association -- where the
+candidate set is genuinely large and 2-D -- is untested. Do not read this as retiring
+MASDA; read it as "the dense path may not be where it earns its keep".
+
+**Not changed by default**, because coverage is a real axis and this is one benchmark.
+The decision belongs with 0.4's wiring, where the 12 ms is worth something concrete.
+
 ## 0.3.1 The CPU record: the goal was real time, and the CPU got to 4.7x away
 
 **Mario's stated priority, 2026-08-08.** Everything in this section is ranked against
