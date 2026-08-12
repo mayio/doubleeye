@@ -107,43 +107,45 @@ def fig_middlebury(names, path, run=True):
 
 # ------------------------------------------------------------------- the real pair
 def fig_real(path):
-    """The vehicle's own camera, in one room, under the four conditions that matter.
+    """One room at three light levels, with the projector on and off.
 
-    Exposure is per condition rather than fixed: 1500 us lit, 4000 us dark, each the
-    value that holds 3-5 DN of local contrast there. Fixing one exposure across both
-    would measure the exposure rather than the projector.
+    The axis that matters is how much ambient light there is, not an on/off binary:
+    the projector's value is what the room does not already provide. Exposure is set
+    per condition to hold 3-5 DN of local contrast, because a fixed exposure across a
+    4.5x range of scene brightness would measure the exposure instead.
     """
-    cases = [("kitchen_on", "lights on\nprojector ON", 1500),
-             ("kitchen_off", "lights on\nprojector off", 1500),
-             ("dark_4000", "lights off\nprojector ON", 4000),
-             ("dark_noemit", "lights off\nprojector off", 4000)]
-    fig, axes = plt.subplots(2, 4, figsize=(11.4, 4.3))
-    for i, (bag, label, us) in enumerate(cases):
-        fr = os.path.join(ROOT, "bags", bag, "frames")
-        lp = sorted(__import__("glob").glob(os.path.join(fr, "ir1_*.raw")))[0]
-        rp = sorted(__import__("glob").glob(os.path.join(fr, "ir2_*.raw")))[0]
-        L = np.fromfile(lp, np.uint8).reshape(480, 848)
-        d = run_dense(lp, rp, 848, 480, 64)
-        # Each infrared panel is stretched p1-p99 for display, or the two dark ones
-        # are a black rectangle and the reader cannot see the dots that are the whole
-        # point. The true level is printed under each panel instead.
-        lo, hi = np.percentile(L, (1, 99))
-        axes[0, i].imshow(np.clip((L - lo) / max(hi - lo, 1), 0, 1), cmap="gray",
+    import glob as _g
+    cols = [("night, no lamp", "dark_4000", "dark_noemit", 4000),
+            ("evening, lamp only", "evening_on", "evening_off", 2500),
+            ("morning, lamp + daylight", "kitchen_on", "kitchen_off", 1500)]
+    fig, axes = plt.subplots(3, 3, figsize=(9.8, 6.4))
+    for c, (label, on, off, us) in enumerate(cols):
+        for r, bag in enumerate((on, on, off)):
+            fr = os.path.join(ROOT, "bags", bag, "frames")
+            lp = sorted(_g.glob(os.path.join(fr, "ir1_*.raw")))[0]
+            rp = sorted(_g.glob(os.path.join(fr, "ir2_*.raw")))[0]
+            ax = axes[r, c]
+            if r == 0:
+                L = np.fromfile(lp, np.uint8).reshape(480, 848)
+                lo, hi = np.percentile(L, (1, 99))
+                ax.imshow(np.clip((L - lo) / max(hi - lo, 1), 0, 1), cmap="gray",
                           vmin=0, vmax=1)
-        axes[0, i].set_title(f"{label}\n{us} us", fontsize=8.5)
-        axes[0, i].set_xlabel(f"mean {L.mean():.0f} DN", fontsize=8)
-        show_disp(axes[1, i], d, 64)
-        for r in (0, 1):
-            axes[r, i].set_xticks([]); axes[r, i].set_yticks([])
-        cov = 100.0 * ((d > 0) & np.isfinite(d)).mean()
-        axes[1, i].set_xlabel(f"{cov:.1f}% answered", fontsize=8.5,
+                ax.set_title(f"{label}\n{us} us, mean {L.mean():.0f} DN", fontsize=8.5)
+            else:
+                d = run_dense(lp, rp, 848, 480, 64)
+                show_disp(ax, d, 64)
+                cov = 100.0 * ((d > 0) & np.isfinite(d)).mean()
+                ax.set_xlabel(f"{cov:.1f}% answered", fontsize=8.5,
                               color=WARN if cov < 60 else INK)
-    axes[0, 0].set_ylabel("left infrared", fontsize=8.5)
-    axes[1, 0].set_ylabel("disparity", fontsize=8.5)
-    fig.suptitle("One room, one matcher: what the projector is for", y=1.0, fontsize=10)
-    fig.text(0.5, -0.02, "infrared panels are contrast-stretched for display; "
-                         "the mean level under each is the real one",
-             ha="center", fontsize=7.6, color=MUTE)
+            ax.set_xticks([]); ax.set_yticks([])
+    for r, lab in enumerate(("left infrared\n(projector ON)", "disparity\nprojector ON",
+                             "disparity\nprojector off")):
+        axes[r, 0].set_ylabel(lab, fontsize=8.5)
+    fig.suptitle("One room, three light levels: what the projector is for", y=0.995,
+                 fontsize=10)
+    fig.text(0.5, 0.005, "infrared panels are contrast-stretched for display; the mean "
+                         "level above each is the real one",
+             ha="center", fontsize=7.4, color=MUTE)
     fig.savefig(path)
     plt.close(fig)
     print("wrote", path)
@@ -532,7 +534,7 @@ def fig_thumbs():
     # dark-room columns, which are the pair that carries the point.
     jobs = [(os.path.join(P2, "maps_a.png"), os.path.join(P2, "thumb_p2.png"), None),
             (os.path.join(P3, "real_pair.png"), os.path.join(P3, "thumb_p3.png"),
-             (0.50, 0.05, 1.00, 0.90)),
+             (0.055, 0.375, 0.345, 0.945)),
             (os.path.join(P2, "subpixel.png"), os.path.join(P2, "thumb_p1.png"), None)]
     for src, dst, box in jobs:
         im = Image.open(src).convert("RGB")
