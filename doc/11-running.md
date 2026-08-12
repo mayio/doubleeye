@@ -282,8 +282,12 @@ ros2 param set /doubleeye_live keep_best 0.4           # the best 40% of each fr
 ros2 param set /doubleeye_live keep_best 0.0           # everything again
 ```
 
-**`keep_best` defaults to 0.4** — the best 40% of each frame. That is a preference and
-not a measurement: the trade is smooth, with no knee anywhere to pick out. Share of
+**`keep_best` is off by default, and that is deliberate.** On screen a dropped point
+costs more than a wrong one — the eye reads a hole as geometry and a wrong point as
+noise — which is the same reason the dense path leaves `--min-margin` at 0. Turn it on
+for anything that triangulates off the cloud, and leave it off for looking.
+
+There is no knee to pick out either; the trade is smooth. Share of
 kept points failing the reverse-match check, over the five kitchen captures that have
 any texture at all:
 
@@ -292,10 +296,9 @@ any texture at all:
 | mean | 6.8% | 5.7% | 4.6% | 2.7% | 1.3% |
 | worst scene | 11.8% | 10.3% | 8.7% | 5.4% | 2.5% |
 
-Roughly, halving the points halves the errors. **The default asserts that you would
-rather see 40% of the cloud at a third of the error rate than all of it** — which is
-right for looking at a scene and for anything that triangulates, and wrong if you are
-chasing holes. `keep_best 0` restores every point.
+Roughly, halving the points halves the errors, all the way down — so `keep_best 0.4`
+asserts that 40% of the cloud at a third of the error rate beats all of it. True for a
+consumer, false for an eye.
 
 **Use `keep_best`, not `min_confidence`.** The confidence orders points well inside a
 frame and says almost nothing about how good the frame is. Six captures of one kitchen
