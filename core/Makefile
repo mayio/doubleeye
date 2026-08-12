@@ -35,6 +35,8 @@ TESTMAT := $(BUILD)/test_match
 # Header-only kernel, so no object to link; reports SKIPPED off AArch64.
 TESTSIMD := $(BUILD)/test_simd_score
 TESTTOP2 := $(BUILD)/test_top2_merge
+# Holds the fitted confidence weights to the fit that produced them.
+TESTCONF := $(BUILD)/test_confidence
 # CUDA tool: built only where nvcc exists (the TX2). sm_62 is the TX2's Pascal;
 # the desktop has no toolkit, so its build is untouched. If a desktop toolkit ever
 # appears, sm_61 is the GTX 1050 -- adjust or use -arch there.
@@ -94,7 +96,10 @@ $(TESTSIMD): tests/test_simd_score.cpp include/doubleeye/simd_score.hpp | $(BUIL
 $(TESTTOP2): tests/test_top2_merge.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $< -o $@
 
-test: $(TESTBIN) $(TESTMAT) $(TESTSIMD) $(TESTTOP2)
+$(TESTCONF): tests/test_confidence.cpp include/doubleeye/dense_solve.hpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(ARCHFLAGS) $(INC) $< -o $@
+
+test: $(TESTBIN) $(TESTMAT) $(TESTSIMD) $(TESTTOP2) $(TESTCONF)
 	@$(TESTBIN)
 	@echo
 	@$(TESTMAT)
@@ -102,6 +107,8 @@ test: $(TESTBIN) $(TESTMAT) $(TESTSIMD) $(TESTTOP2)
 	@$(TESTSIMD)
 	@echo
 	@$(TESTTOP2)
+	@echo
+	@$(TESTCONF)
 
 clean:
 	rm -rf $(BUILD)
