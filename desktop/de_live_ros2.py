@@ -156,43 +156,32 @@ def densify(H, W, ui, vi, z, stride=8):
     return small[np.ix_(yi, xi)].astype(np.float32)
 
 
-# Viridis. Perceptually uniform, colour-blind safe, and sequential -- which is what
-# this is. A diverging ramp was tried first and looks wrong for the same reason it
-# reads wrong: it puts its lightest, least saturated colour in the MIDDLE, so the bulk
-# of a cloud comes out beige.
-#
-# Low confidence sinks towards dark blue-violet and recedes against rviz's dark
-# background; high comes up bright green and yellow. That is the useful direction for
-# a cloud that is mostly good: the doubtful points get out of the way rather than
-# shouting, and what is left looks like the scene.
-_RAMP = np.array([(68, 1, 84), (72, 33, 115), (67, 62, 133), (56, 88, 140),
-                  (45, 112, 142), (37, 133, 142), (30, 155, 138), (53, 183, 121),
-                  (109, 205, 89), (253, 231, 37)], np.float32)
+def colours_for(m: np.ndarray, dense: bool, gray8: np.ndarray) -> np.ndarray:
+    """Per-point RGB by confidence. (N, 3) uint8.
 
+    NOT a colour map. Three were tried -- a stepped green/amber/red, a diverging
+    ColorBrewer ramp, and viridis -- and all three replace the scene with a false
+    colour picture of one scalar. The cloud stops looking like a room, which is the
+    thing that makes a wrong surface recognisable as a wrong surface in the first
+    place.
 
-def colours_for(m: np.ndarray, dense: bool) -> np.ndarray:
-    """Per-point RGB by confidence, vectorised. (N, 3) uint8.
+    So keep the room. Each point stays the intensity the camera saw and confidence
+    sets how brightly it is drawn: a doubtful point recedes towards the background,
+    a trusted one is fully lit. It is one multiply, it composes with the eye's own
+    habit of ignoring what is dim, and nothing about the scene is invented.
 
-    Interpolated rather than stepped: three flat colours over a 400,000-point cloud
-    posterise it into blobs, and the thing worth seeing is where confidence changes,
-    not which side of an arbitrary line a point fell.
-
-    The ramp is stretched over the range the values actually occupy instead of over
-    [0, 1]. Dense confidence is a fitted probability that rarely goes below 0.55 --
-    a region with no texture bottoms out at 0.667 and a real match saturates near 1 --
-    so a linear map over the whole unit interval would spend nine tenths of the ramp
-    on values that never occur. Sparse carries the raw score margin instead, which
-    lives on a different scale entirely, hence the two windows.
+    The floor is 0.22 rather than 0: a point that vanishes entirely reads as a hole,
+    and a hole is geometry. Doubtful points should be faint, not absent.
+    A slight cool shift comes in with the dimming, so a distrusted point on a bright
+    surface is still distinguishable from a trusted point on a dark one.
     """
     lo, hi = (0.55, 1.0) if dense else (0.0, 0.40)
     t = np.clip((np.asarray(m, np.float32) - lo) / (hi - lo), 0.0, 1.0)
-    pos = t * (len(_RAMP) - 1)
-    i = np.clip(pos.astype(np.int32), 0, len(_RAMP) - 2)
-    f = (pos - i)[:, None]
-    c = (_RAMP[i] * (1.0 - f) + _RAMP[i + 1] * f)
-    out = c.astype(np.uint8)
-    out[~np.isfinite(m)] = (140, 140, 140)   # an older matcher: no confidence sent
-    return out
+    t = np.where(np.isfinite(t), t, 1.0)               # no confidence sent: draw it lit
+    k = (0.22 + 0.78 * t)[:, None]
+    base = np.repeat(gray8[:, None].astype(np.float32), 3, axis=1)
+    tint = np.stack([0.82 + 0.18 * t, 0.90 + 0.10 * t, np.ones_like(t)], axis=1)
+    return np.clip(base * k * tint, 0, 255).astype(np.uint8)
 
 
 def splat(dst, ui, vi, values, half):
@@ -599,17 +588,19 @@ def main() -> int:
             # useful and neither replaces the other: intensity makes 88,000 points
             # look like the room, which is what makes a wrong surface recognisable
             # as a wrong surface, and confidence says which of them to believe.
-            if a.dense and a.colour != "confidence":
-                gi = gray[yl.astype(np.int32), xl.astype(np.int32)]
-                if a.colour == "image":
-                    g8 = stretch(gray)[yl.astype(np.int32), xl.astype(np.int32)] \
-                         if not a.no_stretch else gi
-                    cols = np.repeat(g8[:, None], 3, axis=1).astype(np.uint8)
-                else:                                    # "depth"
-                    lo, hi = np.percentile(z, 5), np.percentile(z, 95)
-                    cols = colourise(z, float(lo), float(hi))
+            ui_ = yl.astype(np.int32)
+            vi_ = xl.astype(np.int32)
+            gi = gray[ui_, vi_]
+            g8 = (stretch(gray)[ui_, vi_] if (a.dense and not a.no_stretch) else gi)
+            if a.colour == "confidence":
+                cols = colours_for(margin, a.dense, g8)
+            elif a.colour == "depth":
+                lo, hi = np.percentile(z, 5), np.percentile(z, 95)
+                cols = colourise(z, float(lo), float(hi))
+            elif a.dense:
+                cols = np.repeat(g8[:, None], 3, axis=1).astype(np.uint8)
             else:
-                cols = colours_for(margin, a.dense)
+                cols = np.repeat(gi[:, None], 3, axis=1).astype(np.uint8)
             packed = ((cols[:, 0].astype(np.uint32) << 16)
                       | (cols[:, 1].astype(np.uint32) << 8)
                       | cols[:, 2].astype(np.uint32))
