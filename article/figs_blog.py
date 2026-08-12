@@ -214,6 +214,109 @@ def fig_curve(path):
     print("wrote", path)
 
 
+# ------------------------------------------------------- algorithm: what aggregation is
+def dump_vol(sc, sigma_s):
+    """The aggregated cost volume at a given reach. sigma_s -> 0 is 'not aggregated':
+    the coefficient is exp(-sqrt(2)/sigma_s * ...), which underflows to zero, and the
+    recurrence then keeps each pixel's own score."""
+    volp = "/tmp/_agg_vol.f32"
+    cmd = [BIN, os.path.join(sc["dir"], "left.y8"), os.path.join(sc["dir"], "right.y8"),
+           str(sc["w"]), str(sc["h"]), "--dmax", str(sc["dmax"]), "--threads", "8",
+           "--sigma-s", str(sigma_s), "--dump-vol", volp, "--out", "/tmp/_agg.f32"]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        sys.exit(f"de_dense failed:\n{p.stderr}")
+    v = np.fromfile(volp, np.float32).reshape(sc["h"], sc["w"], sc["dmax"])
+    os.remove(volp); os.remove("/tmp/_agg.f32")
+    return v
+
+
+def fig_aggregate(path):
+    """What the aggregation does, on real curves rather than a sketch."""
+    sc = scene("teddy")
+    raw = dump_vol(sc, 0.05)
+    agg = dump_vol(sc, 8.0)
+    live = raw > -1e29
+    gt = sc["gt"]
+    d_raw = np.argmax(np.where(live, raw, -1e30), -1) + 1.0
+    d_agg = np.argmax(np.where(live, agg, -1e30), -1) + 1.0
+    ok = (gt > 3) & (live.sum(-1) > 20)
+    # A pixel the per-pixel score gets wrong and the aggregated score gets right.
+    # Among those, take the one whose aggregated peak stands out most -- chosen by
+    # argmax rather than by eye, but still an illustration of the mechanism and not
+    # a statistic about how often it happens.
+    pick = ok & (np.abs(d_raw - gt) > 2.0) & (np.abs(d_agg - gt) <= 1.0)
+    A = np.where(live, agg, -1e30)
+    srt = np.sort(A, -1)
+    span = srt[..., -1] - np.where(live, agg, 1e30).min(-1)
+    prom = np.where(span > 0, (srt[..., -1] - srt[..., -2]) / np.maximum(span, 1e-6), 0)
+    prom = np.where(pick, prom, -1)
+    py, px = np.unravel_index(int(np.argmax(prom)), prom.shape)
+    py, px = int(py), int(px)
+
+    fig = plt.figure(figsize=(10.2, 3.5))
+    gs = fig.add_gridspec(1, 3, width_ratios=[1.15, 1.0, 1.0], wspace=0.32)
+
+    # (a) the recurrence, drawn
+    ax = fig.add_subplot(gs[0]); ax.set_xlim(0, 10); ax.set_ylim(0, 6.6); ax.axis("off")
+    ax.set_title("(a) one pass of the recurrence", fontsize=9.5)
+    vals = ["C1", "C2", "C3", "C4", "C5", "C6"]
+    for i, v in enumerate(vals):
+        edge = (i == 3)
+        box(ax, 0.3 + i * 1.58, 3.6, 1.30, 0.85, v,
+            fc="#f6d9d0" if edge else "#e8f1ea", ec=WARN if edge else GPU, fs=8)
+        if i:
+            a = "a=0" if edge else "a"
+            ax.annotate("", xy=(0.3 + i * 1.58, 4.02), xytext=(0.3 + i * 1.58 - 0.28, 4.02),
+                        arrowprops=dict(arrowstyle="-|>", lw=1.6 if not edge else 0.7,
+                                        color=MUTE if not edge else WARN))
+            ax.text(0.3 + i * 1.58 - 0.14, 4.42, a, ha="center", fontsize=7,
+                    color=INK if not edge else WARN)
+    ax.text(5.0, 2.85, "an intensity edge sets a to 0 and cuts the chain",
+            ha="center", fontsize=7.6, color=WARN)
+    ax.text(5.0, 1.95, "$F_x = (1-a_x)\\,C_x + a_x F_{x-1}$", ha="center", fontsize=10)
+    ax.text(5.0, 1.15, "one multiply-add per pixel, per pass.\n"
+                       "four passes: left, right, down, up", ha="center", fontsize=7.6)
+
+    # (b) the cost curve at one pixel, before and after
+    ax = fig.add_subplot(gs[1])
+    d = np.arange(1, sc["dmax"] + 1)
+    m = live[py, px]
+    for v, lab, col, lw in ((raw[py, px], "per-pixel score", MUTE, 1.0),
+                            (agg[py, px], "aggregated", GPU, 1.8)):
+        z = np.where(m, v, np.nan)
+        z = (z - np.nanmin(z)) / (np.nanmax(z) - np.nanmin(z))
+        ax.plot(d, z, lw=lw, color=col, label=lab)
+        k = int(np.nanargmax(z))
+        ax.plot([d[k]], [z[k]], "o", ms=5, color=col)
+    ax.axvline(gt[py, px], color=WARN, ls="--", lw=1.2)
+    ax.text(gt[py, px] + 1.2, 0.04, "true d", color=WARN, fontsize=7.5)
+    ax.set_title(f"(b) score vs disparity, one pixel", fontsize=9.5)
+    ax.set_xlabel("disparity $d$ (px)"); ax.set_ylabel("score (normalised)")
+    ax.legend(fontsize=7.2, loc="upper left"); ax.grid(alpha=0.25, lw=0.6)
+
+    # (c) the coefficient in closed form: what the two knobs actually control
+    ax = fig.add_subplot(gs[2])
+    dI = np.linspace(0, 60, 400)
+    for sig_r, ls, lab in ((0.1, ":", "$\\sigma_r=0.1$"),
+                           (0.2, "-", "$\\sigma_r=0.2$ (ships)"),
+                           (0.4, "--", "$\\sigma_r=0.4$")):
+        a = np.exp(-np.sqrt(2) / 8.0 * (1.0 + (8.0 / sig_r) * dI / 255.0))
+        ax.plot(dI, a, ls, lw=1.5, color=GPU, label=lab)
+    flat = float(np.exp(-np.sqrt(2) / 8.0))
+    ax.axhline(flat, color=MUTE, lw=1.0)
+    ax.text(1.5, flat - 0.07, f"flat region: $a={flat:.2f}$", ha="left", fontsize=7.4,
+            color=MUTE)
+    ax.set_title("(c) what the two knobs do, $\\sigma_s=8$", fontsize=9.5)
+    ax.set_xlabel("intensity step $|\\Delta I|$ between neighbours (DN)")
+    ax.set_ylabel("coefficient $a$")
+    ax.set_ylim(0, 1.0); ax.set_xlim(0, 60)
+    ax.legend(fontsize=7.2, loc="upper right"); ax.grid(alpha=0.25, lw=0.6)
+    fig.savefig(path)
+    plt.close(fig)
+    print("wrote", path, f"(pixel {px},{py} of teddy)")
+
+
 # ------------------------------------------------------- algorithm: no cost volume
 def box(ax, x, y, w, h, label, fc="#ffffff", ec=INK, fs=8, lw=1.1):
     ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.012",
@@ -431,6 +534,7 @@ def main():
         "sub": lambda: fig_subpixel(os.path.join(P2, "subpixel.png")),
         "curve": lambda: fig_curve(os.path.join(P2, "curve.png")),
         "novol": lambda: fig_novolume(os.path.join(P2, "novolume.png")),
+        "agg": lambda: fig_aggregate(os.path.join(P2, "aggregate.png")),
         "layout": lambda: fig_layout(os.path.join(P3, "layout.png")),
         "split": lambda: fig_split(os.path.join(P3, "split.png")),
         "dataflow": lambda: fig_dataflow(os.path.join(P3, "dataflow.png")),
