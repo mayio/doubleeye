@@ -1552,6 +1552,33 @@ The other half needs the exact version on the GPU, and that is not a small chang
 device already at 26.0 ms of kernels in a 28.9 ms budget. Worth doing on evidence, not
 worth doing on principle.
 
+**The reverse match enters as a CAP, not a weight, and the reason is the ghost.**
+Splitting the eight scenes by the reverse match and by how strong the ratio is:
+
+| ratio band | consistent, n | correct | flagged, n | correct |
+|---|---|---|---|---|
+| 0.00 - 0.09 | 257,130 | 74.5% | 12,343 | **28.0%** |
+| 0.09 - 0.25 | 267,447 | 89.9% | 2,026 | 49.3% |
+| 0.25 - 0.53 | 269,230 | 96.9% | 243 | 77.0% |
+| 0.53 - 0.82 | 161,683 | 99.2% | **0** | — |
+| 0.82 - 2.22 | 107,790 | 99.8% | **0** | — |
+
+Two things at once. The flag separates hard where it fires -- 74.5% correct against
+28.0% in the same ratio band -- and **it never fires where the ratio is strong**. Of
+the two strongest quintiles, zero pixels are flagged.
+
+So a fitted offset has no evidence for the case this cue exists for. Handed "strong
+ratio, reverse match disagrees" it extrapolates into an empty region and returns 0.998.
+That combination IS 24a's ghost: a match whose true partner is off the sensor has no
+competitor, scores a confident ratio, and the reverse match is the only thing that
+objects. The offset calibrates marginally better on Middlebury (0.0088 against 0.0133)
+and is unusable for exactly the reason it looks good.
+
+A flat cap at 0.35 -- the measured correctness of the flagged population, 31.8% against
+89.6% for the rest -- refuses to extrapolate where the fit has no evidence. Both reach
+AUC 0.0288 against 0.0301 for the ratio alone. `core/tests/test_confidence.cpp` holds
+the ghost case, and that a rejection can only lower a confidence, never raise one.
+
 **Shipped to the live path 2026-08-12, as one feature rather than six.** `de_dense_cuda
 --stream` sends a byte a pixel beside the disparity map, and `de_live_ros2.py` colours
 by it and gates on a ROS parameter that can be turned while the cloud is on screen --

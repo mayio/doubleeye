@@ -98,12 +98,9 @@ struct Cfg {
 
 
 // P(this pixel is within 1 disparity of correct), from the two candidate scores the
-// solver has already ranked. Fitted by leave-one-scene-out logistic regression on the
-// eight Middlebury scenes with `article/confidence.py --fit`: an area under the
-// sparsification curve of 0.0301, against 0.1041 for no confidence at all and 0.0062
-// for an oracle that removes the wrong pixels first.
+// solver has already ranked and, when it is available, the reverse match.
 //
-// ONE feature, the peak ratio, and the arithmetic is two floats:
+// ONE fitted feature, the peak ratio, and the arithmetic is two floats:
 //
 //   alt   = max(s2, lambda)             the runner-up, floored where there is none
 //   x     = log((1 - alt) / (1 - s1))   the two costs as a ratio, as a ratio should be
@@ -113,6 +110,29 @@ struct Cfg {
 // Worked at the eight-scene mean, s1 = 0.682 and alt = 0.537:
 //   1 - s1 = 0.318, x = log(0.463 / 0.318) = 0.3757
 //   logit = 0.692684 + 7.936751 * 0.3757 = 3.674,  P = 0.975
+//
+// Fitted by leave-one-scene-out logistic regression on the eight Middlebury scenes
+// with `article/confidence.py --fit`: an area under the sparsification curve of
+// 0.0301 alone, 0.0288 with the cap below, against 0.1041 for no confidence at all
+// and 0.0062 for an oracle that removes the wrong pixels first.
+//
+// THE CAP, and why it is a cap and not a fitted weight. `lrc` is the reverse match:
+// how far this pixel's answer is from what the right pixel it claimed would itself
+// have chosen. Where the two disagree by more than a disparity, P is capped at 0.35,
+// which is the measured correctness of that population -- 31.8% over the eight
+// scenes, against 89.6% for the rest.
+//
+// A fitted offset calibrates marginally better on Middlebury (0.0088 against 0.0133)
+// and is not usable, because Middlebury contains no example of the case this exists
+// for. Flagged pixels there occur ONLY where the ratio is already weak: of the two
+// strongest ratio quintiles, exactly zero are flagged. A linear model handed
+// "strong ratio, reverse match disagrees" therefore extrapolates into an empty
+// region and returns 0.998. That combination is precisely obstacle 24a's ghost --
+// a match whose true partner is off the sensor has no competitor, so it scores a
+// confident ratio, and the reverse match is the only cue that objects. The cap
+// refuses to extrapolate where the fit has no evidence.
+//
+// Pass lrc = NaN, or anything under the tolerance, to leave P uncapped.
 //
 // WHY NOT MORE FEATURES. Adding the margin and the winning score reaches 0.0290, and
 // both richer models are WRONG in the case that matters most here. A region with no
@@ -128,21 +148,26 @@ struct Cfg {
 // come out +15.73 and -16.31, a cancellation between two collinear cues, with the
 // margin entering NEGATIVELY. It fits and it is not a statement about the world.
 //
-// WHAT IS NOT ESTABLISHED. The ranking is measured. The absolute number is fitted on
-// visible-light Middlebury while this camera is projected-dot infrared, which 0.45
-// measured to differ by 2-3x in local contrast, and the same fit is already 0.08 out
-// on the hardest of the eight scenes it WAS trained on. Treat it as an ordering that
-// carries a probability's units until the wall check in TODO 0.55 validates it here.
-inline float confidence(float s1, float s2, float lambda) {
+// WHAT IS NOT ESTABLISHED. The ranking is measured, on Middlebury and on this camera:
+// against a flat wall it closes 74% of the distance to an oracle, against 76% there.
+// The absolute number is not. It is fitted on visible-light Middlebury while this
+// camera is projected-dot infrared, it promises 0.86 on that wall and delivers 0.94,
+// and it is already 0.08 out on the hardest of the eight scenes it WAS trained on.
+// Treat it as an ordering that carries a probability's units until the wall check in
+// TODO 0.55 validates it here.
+inline float confidence(float s1, float s2, float lambda,
+                        float lrc = 0.f, float lrc_tol = 1.f) {
   if (!(s1 > -1e29f)) return 0.f;
   const float alt = (s2 > -1e29f) ? std::max(s2, lambda) : lambda;
   const float x = std::log(std::max((1.f - alt) / std::max(1.f - s1, 1e-6f), 1e-6f));
   const float logit = 0.692684f + 7.936751f * x;
-  return 1.f / (1.f + std::exp(-std::max(-30.f, std::min(30.f, logit))));
+  const float p = 1.f / (1.f + std::exp(-std::max(-30.f, std::min(30.f, logit))));
+  return (lrc > lrc_tol) ? std::min(p, 0.35f) : p;
 }
 
-inline uint8_t confidence_u8(float s1, float s2, float lambda) {
-  return uint8_t(std::lround(confidence(s1, s2, lambda) * 255.f));
+inline uint8_t confidence_u8(float s1, float s2, float lambda,
+                             float lrc = 0.f, float lrc_tol = 1.f) {
+  return uint8_t(std::lround(confidence(s1, s2, lambda, lrc, lrc_tol) * 255.f));
 }
 
 

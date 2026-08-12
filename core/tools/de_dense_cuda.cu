@@ -621,6 +621,10 @@ int main(int argc, char** argv) {
   // 30-45 ms run to run; pinned it sits near its minimum. The Denvers are left
   // to the CUDA driver and the fetch thread.
   static const int A57[] = {0, 3, 4, 5};
+  // The reverse match, from the candidate buckets the solver already builds. Two
+  // loops over scratch that is dead by then, so it costs nothing measurable, and it
+  // is the only cue that objects to a match whose true partner is off the sensor.
+  std::vector<float> lrc(stream_mode ? size_t(W) * H : 0);
   auto solve_all = [&](const float* pcs, const int* pcd, const int* pcn,
                        const int16_t* pcnb) {
     std::vector<std::thread> pool;
@@ -651,7 +655,8 @@ int main(int argc, char** argv) {
                          &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
                          bstart.data(), bitems.data(), cursor.data(),
                          best.data(), bestk.data(), order.data(), taken.data(),
-                         pcnb ? nb.data() : nullptr);
+                         pcnb ? nb.data() : nullptr,
+                         lrc.empty() ? nullptr : &lrc[size_t(y) * W]);
       }
     });
     for (auto& th : pool) th.join();
@@ -736,7 +741,8 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < WH; ++i)
           qconf[i] = (qdisp[i] == int16_t(-32768))
                          ? uint8_t(0)
-                         : confidence_u8(cs[0][i * 2], cs[0][i * 2 + 1], cfg.lambda);
+                         : confidence_u8(cs[0][i * 2], cs[0][i * 2 + 1], cfg.lambda,
+                                         std::isfinite(lrc[i]) ? lrc[i] : 0.f);
       unsigned char out[16];
       std::memcpy(out, "DEDD", 4);
       std::memcpy(out + 4, &pw, 2);

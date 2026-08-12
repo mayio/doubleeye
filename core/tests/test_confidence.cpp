@@ -118,6 +118,39 @@ int main() {
         confidence_u8(0.5f, 0.49f, LAMBDA) == 179,
         "the byte form rounds rather than truncates");
 
+  std::printf("\nthe reverse match, which is a cap and not a weight\n");
+
+  // The case the cap exists for, and the one Middlebury cannot fit: a match with no
+  // competitor scores a confident ratio, and the reverse match is the only cue that
+  // objects. Obstacle 24a's ghost. A linear model handed this returns 0.998.
+  close(confidence(0.9f, 0.3f, LAMBDA, 9.0f), 0.35f, 1e-6f,
+        "a strong ratio the reverse match rejects");
+  close(confidence(0.9f, 0.3f, LAMBDA, 0.0f), 1.0f, 1e-5f,
+        "the same pixel when the reverse match agrees");
+
+  // It can only lower. A cue that could raise confidence would need its own
+  // calibration, and this one is measured as a population that is 31.8% correct.
+  bool only_down = true;
+  for (float s = -0.2f; s < 0.95f; s += 0.05f)
+    for (float g = -0.3f; g < s; g += 0.1f)
+      if (confidence(s, g, LAMBDA, 9.0f) > confidence(s, g, LAMBDA, 0.0f))
+        only_down = false;
+  check(only_down, "a rejection never raises confidence, at any score");
+
+  // A poor absolute match with no runner-up: s1 = -0.4 is at the low end of what the
+  // Q14 scores actually reach, and it lands at 0.23, below the cap.
+  check(confidence(-0.4f, -1e30f, LAMBDA) < 0.35f &&
+        confidence(-0.4f, -1e30f, LAMBDA, 9.0f)
+            == confidence(-0.4f, -1e30f, LAMBDA, 0.f),
+        "and does not touch a pixel already below the cap");
+
+  // Not-a-number is what the solver writes where the right pixel had no claimant at
+  // all. That is not a disagreement, and treating it as one would flag the border of
+  // every frame.
+  check(confidence(0.9f, 0.3f, LAMBDA, std::nanf("")) ==
+        confidence(0.9f, 0.3f, LAMBDA, 0.0f),
+        "NaN means unanswered, not rejected");
+
   std::printf(failures ? "\nFAILED (%d failures)\n" : "\nALL PASSED (%d failures)\n",
               failures);
   return failures ? 1 : 0;
