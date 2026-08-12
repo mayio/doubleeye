@@ -1230,21 +1230,19 @@ cues.
 **Plan, in the order it should be done.** 1 and 2 are offline on Middlebury and need
 no vehicle.
 
-1. **APKR.** The top-2 scores exist; aggregate the ratio over a window with the
-   recursive filter already in the kernel. Score it by AUC against the oracle on the
-   eight scenes. Cheap, and it decides whether any of this is worth continuing.
-2. **Uniqueness / left-right consistency**, for the cue the peak ratio structurally
-   cannot see. The cost volume is already materialised on the GPU, so the right-image
-   winner is a scan along the matching diagonal rather than a second matching pass.
-3. **Combine** with a logistic regression fitted on Middlebury.
-4. **Calibrate, which is the step the question actually asks for.** AUC measures
-   *ranking* — whether confident pixels are more often right. It says nothing about
-   whether 0.8 means 80%. Bin the combined score, measure the empirical
-   P(|d - d_gt| <= 1) per bin, fit the mapping, report a reliability curve. Then
-   re-check it on this camera, because a calibration fitted on Middlebury is a claim
-   about a scene type 0.45 measured this sensor to differ from by 2-3x in local
-   contrast (rule 2). The wall gives a proxy for "wrong" with no ground truth:
-   residual off the fitted plane past a threshold.
+1. ~~**APKR.**~~ **Done 2026-08-12, and it decides that the rest is worth doing.**
+   See 0.551 below for the numbers, the harness and two results that were not
+   expected.
+2. ~~**Uniqueness / left-right consistency**~~ **Done 2026-08-12: it is a veto, not a
+   ranking, and it is the cue that sees the ghost.** See 0.552.
+3. ~~**Combine** with a logistic regression fitted on Middlebury.~~ **Done
+   2026-08-12: it buys calibration, not ranking.** See 0.553.
+4. ~~**Calibrate**~~ **Done offline 2026-08-12, and it is calibrated on a MIX of
+   scenes and over-confident on a hard one.** See 0.553. What remains is the part
+   that needs this camera: a calibration fitted on Middlebury is a claim about a
+   scene type 0.45 measured this sensor to differ from by 2-3x in local contrast
+   (rule 2). The wall gives a proxy for "wrong" with no ground truth: residual off
+   the fitted plane past a threshold.
 5. **Temporal persistence** as a further feature, once 1.4's battery exists. Already
    measured discriminative: the residual ghost of 24a persists in 2.2% of frames
    against a 0.146 px whole-frame repeatability.
@@ -1254,6 +1252,304 @@ down-weight the bottom-left occlusion strip of 24a. The margin provably does not
 this is a test with a known failure and a known failer rather than a number to admire
 (rule 3). A random confidence must also reproduce the no-skill AUC, or the harness is
 measuring itself.
+
+## 0.551 Step 1 measured: the ranking works, the aggregation does not, and the tolerance decides
+
+**The harness.** `de_dense --out-conf` writes the two candidates the solver ranked --
+four W*H float32 planes, `s1 s2 d1 d2` -- and `article/confidence.py` scores every
+measure built from them by the area under the sparsification curve. Sort the answered
+pixels by confidence, keep the top fraction q, record the error rate among what is
+kept; the area under e(q) sampled at q = 1.00, 0.99, ... 0.01 is one number, lower
+being better. Both references are computed: an ORACLE that sorts by the true error,
+and a RANDOM confidence whose curve is flat at the overall error rate.
+
+Every run is ungated. Scoring a confidence on the pixels the margin gate already kept
+asks how well the margin ranks what the margin did not remove, which is circular.
+
+**Result.** Eight scenes at 450x375, 1,077,892 pixels with known ground truth and an
+answer, `--min-margin 0`, K=2, bad-1.0. The population is 10.41% wrong.
+
+| measure | AUC | AUC - oracle | error rate at 60% kept |
+|---|---|---|---|
+| oracle | 0.0062 | 0.0000 | 0.00% |
+| APKR — peak ratio, aggregated 5x5 | 0.0294 | 0.0233 | 2.90% |
+| PKRN — peak ratio | **0.0294** | 0.0232 | **2.74%** |
+| AMMN — margin, aggregated 5x5 | 0.0335 | 0.0274 | 3.52% |
+| MMN — the margin, what ships | 0.0344 | 0.0283 | 3.53% |
+| MSM — the winning score alone | 0.0487 | 0.0425 | 4.53% |
+| random | 0.1042 | 0.0980 | 10.42% |
+
+**These cues rank well.** The peak ratio closes 76% of the distance between no skill
+and the oracle, and it is free: the same two numbers the margin already reads, one
+divide instead of one subtract.
+
+**Local aggregation buys nothing here, and the reason is that it has already
+happened.** Poggi, Tosi and Mattoccia's central finding is that pooling a measure over
+a neighbourhood is what separates a good hand-crafted confidence from a poor one, and
+APKR is a top-four measure where per-pixel PKR is not. Reproduced -- but only when the
+cost volume is not aggregated first:
+
+| sigma_s | 1 | 2 | **8 (ships)** | 20 |
+|---|---|---|---|---|
+| PKRN | 0.0513 | 0.0349 | **0.0294** | 0.0339 |
+| APKR, 5x5 | 0.0418 | 0.0316 | **0.0294** | 0.0340 |
+| what aggregation bought | 0.0095 | 0.0033 | **0.0000** | -0.0001 |
+
+The edge-aware recursive filter runs over the cost volume before the top-2, with a
+1/e reach of 5.7 px at `sigma_s 8`. The neighbourhood APKR would pool over is inside
+that reach, so pooling again adds no evidence -- and past it, it only blurs across
+depth edges: at radius 1 the AUC is 0.0291, at radius 4 it is 0.0307, at radius 8 it
+is 0.0333. **A measure that is worth a window on a raw cost volume is worth nothing on
+an aggregated one.** No new kernel, no new plane, no window.
+
+**The two benchmarks disagree about the ratio, and the tolerance is why.** `--min-ratio`
+gates on the ratio inside the solver, where uniqueness can hand a right pixel to a
+competitor once its rival is gated away, so it is swept for real rather than simulated
+(`confidence.py --gate-sweep`). On the eight scenes at bad-1.0 the ratio wins at every
+matched coverage: 8.8% wrong at 76.2% coverage against the margin's 9.2% there, and
+1.8% at 39.3% against 3.1%. On Middlebury v3 it is level or 0.2 points worse -- 21.42
+at 69.2% coverage against the margin's 21.30 interpolated to the same point.
+
+The two benchmarks grade different failures. Middlebury v3 at quarter resolution has a
+0.25 px threshold; the eight-scene benchmark has 1.0 px at native resolution. Scoring
+the same population at both thresholds separates them, error rate at 60% kept:
+
+| threshold | 1.0 px | 0.5 px | 0.25 px |
+|---|---|---|---|
+| MMN | 3.53% | 6.51% | 25.46% |
+| PKRN | 2.74% | 5.78% | 25.02% |
+| the ratio's advantage | 0.79 | 0.73 | 0.44 |
+
+**The peak ratio ranks gross mismatches better than the margin and says almost nothing
+more about sub-pixel accuracy.** `--min-ratio` therefore stays off: one benchmark's
+0.4-to-1.3 points is the other's nothing, and a default that moves needs both.
+
+**The ceiling this exposes, which matters more than the gate.** At a 0.25 px threshold
+the top 40% of pixels by APKR are still 19.9% wrong, against an oracle that reaches
+0.00% at that density. The two scores carry which candidate won; they carry almost
+nothing about how well the parabola landed inside it. So step 4's calibration can
+promise `P(|d - d_gt| <= 1 px)` and cannot promise it at a quarter pixel from these
+cues, and any consumer wanting sub-pixel reliability needs a feature that does not
+exist yet.
+
+**What the harness proves about itself** (`confidence.py --check`, rule 13). The random
+confidence reproduces the population error rate to 0.0004, so a flat curve is what no
+skill looks like. An inverted APKR scores 0.3148 against random's 0.1483, so the metric
+has a direction and a sign error cannot read as a good result. And the margin
+reconstructed in Python gates exactly the pixels the C++ gates: re-running with
+`--min-margin 0.05` loses 0 of the pixels predicted to survive, which is the only check
+that crosses the language boundary.
+
+## 0.552 Step 2 measured: consistency is a veto, and it is the one that sees the ghost
+
+**What it is.** Match left to right and you get a disparity for each left pixel. Follow
+that disparity to the right pixel it claimed and ask that right pixel which left pixel
+*it* would have chosen. If the two disagree, one of them is wrong. This is the standard
+left-right consistency check, and it is the cue the peak ratio structurally cannot
+supply: the ratio compares a pixel's own candidates, so where the true match is
+off-sensor and the wrong match has no competitor, the ratio calls it confident.
+
+**It costs one compare per score, not a second matching pass.** Every score already
+says how well left pixel x fits right pixel x - d. The forward match reduces those over
+d for each x; the reverse match reduces the SAME scores over x for each x - d. So
+`de_dense --lrc` keeps a second running maximum in the loop that already holds the
+score, indexed by `x - d` instead of `x`, and needs one best rather than a top-2
+because the only question asked of a right pixel is which left pixel it would have
+chosen. Two int16 planes a thread, 2.44 MB at 848x480, against 104.2 MB for the volume
+that would otherwise have to be kept to read the same answer off a diagonal.
+
+**The update must come before the reject, which is the whole subtlety.** The forward
+loop discards almost every score with one test against this left pixel's runner-up. The
+same score may still be the best any right pixel has seen, so a reverse match built
+after that test would be built from the few percent of scores that survived it.
+
+Measured to leave the disparity map bit-identical on all eight scenes, and to cost
+47.4 ms against 54.2 ms at 450x375 D=60 with four threads on the desktop, best of five.
+**That 14% is a desktop number and the TX2 has not been measured** (rule 2).
+
+**It is a veto, not a ranking**, and that is the whole shape of the result:
+
+| residual against the reverse match | share of pixels | error rate there |
+|---|---|---|
+| under 0.5 disparity | 90.0 - 97.6% | 3.9 - 16.2% |
+| 0.5 to 1.5 | 1.4 - 4.8% | 16.6 - 36.4% |
+| 1.5 to 5 | 0.2 - 1.5% | 49.8 - 79.3% |
+| over 5 | 0.7 - 4.4% | 44.0 - 79.7% |
+
+(range over all eight scenes.) A pixel that fails the check is three to seven times
+more likely to be wrong. But 88-97% of pixels pass, and among those the check has
+nothing to say about which is better. **A sparsification curve rewards fine ordering,
+so it undersells a measure that gives one sharp cut**: on its own, consistency scores
+AUC 0.0780 against the peak ratio's 0.0294, which reads as a poor measure and is not.
+
+**Ranking the two and adding them is much worse than either idea deserves** -- AUC
+0.0447. Ranking a value that is 96% tied hands out arbitrary distinct ranks inside the
+tie, so half the combined score is noise. Used the right way round, as a veto with the
+ratio ranking the survivors, it is the best measure here:
+
+| measure | AUC | error at 95% kept | at 90% | at 60% |
+|---|---|---|---|---|
+| oracle | 0.0062 | 5.70% | 0.46% | 0.00% |
+| **peak ratio, vetoed by consistency** | **0.0283** | **8.11%** | **7.01%** | 2.69% |
+| peak ratio alone | 0.0294 | 8.74% | 7.43% | 2.74% |
+| consistency alone | 0.0780 | 8.13% | 8.05% | 7.96% |
+| the two, rank-added | 0.0447 | 8.88% | 8.13% | 5.59% |
+| random | 0.1041 | 10.41% | 10.40% | 10.39% |
+
+**The gain is at high density, which is the regime that matters.** Keeping 95% of
+points the error falls from 8.74% to 8.11%; keeping 60% the two are level. The veto
+removes a small population of badly wrong pixels, and by 60% the ratio has thrown
+those out anyway. A vehicle does not want to discard 40% of its cloud, so the useful
+part of this is precisely the part the AUC averages away.
+
+**The acceptance test, and it passes.** Obstacle 24a's ghost is left pixels whose true
+partner is off the sensor. The offline stand-in is the leftmost `dmax` columns, where
+the same geometry applies. With both cues set to discard the SAME share of pixels
+image-wide, and asked how many of that region's wrong pixels they caught:
+
+| | Art | Books | Dolls | Laundry | Moebius | Reindeer | cones | teddy | pooled |
+|---|---|---|---|---|---|---|---|---|---|
+| peak ratio | 40.1 | 26.6 | 11.7 | 30.8 | 17.4 | 24.0 | 4.3 | 24.3 | **24.4%** |
+| consistency | 59.8 | 54.5 | 39.7 | 46.4 | 31.9 | 70.5 | 18.0 | 74.9 | **45.5%** |
+
+Consistency catches roughly twice as many, on 8 scenes out of 8, with no sign flip
+anywhere -- which is what the mechanism predicts and what the score margin provably
+cannot do (0.55). 12,260 wrong border pixels pooled.
+
+**Where the numbers come from.** `de_dense --lrc`, the shipping path, with the reverse
+scan fused into the cost loop. An earlier version of this measurement read the reverse
+match off `--dump-vol` instead, which is a different cost function and not merely a
+slower one -- obstacle 26. Every figure above has been retaken.
+
+## 0.553 Steps 3 and 4 measured: it is a probability, and it is over-confident on a hard scene
+
+**The model.** Six per-pixel features -- the peak ratio as a logarithm, the margin, the
+winning score, the aggregated ratio, the consistency residual, and the plain yes/no of
+whether consistency failed -- into a logistic regression, `P(correct) = 1 / (1 +
+exp(-(w.x + b)))`. Fitted by Newton's method in twenty lines of numpy, so `core/` and
+the analysis stay free of a machine-learning dependency. It is not a CNN and the no-CNN
+decision of 0 does not reach it.
+
+**Leave one scene out, never a random split of pixels.** Neighbouring pixels share a
+window, a surface and a lighting condition, so a random split puts a pixel's own
+neighbours in the training set and measures memory. Every number below is predicted by
+a model that never saw that scene.
+
+**Step 3's answer: the fit buys nothing for ranking.**
+
+| | pooled AUC |
+|---|---|
+| the fitted probability, held out | **0.0274** |
+| peak ratio vetoed by consistency, no fitting at all | 0.0283 |
+| peak ratio alone | 0.0294 |
+| oracle | 0.0062 |
+
+Held-out and fitted-on-itself agree scene by scene -- 0.0406 against 0.0414 on Art,
+0.0122 against 0.0087 on cones -- so this is not overfitting hiding a gain. Six features
+over a million pixels have nothing to overfit. **The fit is worth 0.0009 over the
+hand-made rule of 0.552, against 0.0212 of headroom to the oracle**, so nearly
+everything these cues contain is already in "rank by the ratio, veto on consistency".
+
+**Taking a feature away costs almost nothing, which says why.** Refitting without each
+one, held out as above:
+
+| removed | AUC | change |
+|---|---|---|
+| nothing | 0.0274 | |
+| log peak ratio | 0.0274 | +0.0000 |
+| margin | 0.0272 | -0.0002 |
+| winning score | 0.0273 | -0.0001 |
+| consistency residual | 0.0276 | +0.0002 |
+| log APKR | 0.0278 | +0.0004 |
+| **consistency failed** | **0.0281** | **+0.0007** |
+
+The four cues built from the two scores are near-substitutes -- any one of them stands
+in for the others -- and consistency is the only one carrying something independent,
+which is 0.552's result arriving by a different route. **Individual weights are
+therefore not readable**: the fitted coefficient on the consistency residual comes out
+positive, which taken alone would say a larger disagreement argues the point is
+correct. It says no such thing. It says how a fit divided credit between correlated
+columns, and it is why the ablation exists.
+
+**Step 4's answer: yes, it is a probability.** Binned by what the model promised, over
+held-out pixels:
+
+| promised | pixels | delivered | gap |
+|---|---|---|---|
+| 0.1 - 0.2 | 8,331 | 0.114 | -0.046 |
+| 0.3 - 0.4 | 6,210 | 0.410 | +0.063 |
+| 0.5 - 0.6 | 10,186 | 0.500 | -0.060 |
+| 0.7 - 0.8 | 93,609 | 0.765 | +0.007 |
+| 0.9 - 1.0 | 693,231 | 0.969 | -0.002 |
+
+Expected calibration error 0.0052, Brier score 0.0733 against 0.0933 for predicting the
+base rate at every pixel. **A predicted 0.8 means 80%** -- and the two bins that hold
+93% of the pixels are the two that are accurate to 0.007. The sparse low-probability
+bins are worth 0.05, which is the resolution to quote when a point is doubtful.
+
+**And that pooled 0.0052 is hiding a factor of fifteen.** Calibration error per held-out
+scene, with the direction of the miss:
+
+| scene | its error rate | calibration error |
+|---|---|---|
+| cones | 4.7% | 0.0192 |
+| teddy | 7.7% | 0.0127 |
+| Dolls | 7.6% | 0.0158 |
+| Reindeer | 8.1% | 0.0469 |
+| Books | 10.1% | 0.0126 |
+| Moebius | 11.1% | 0.0164 |
+| Art | 14.8% | 0.0245 |
+| **Laundry** | **20.2%** | **0.0804** |
+| pooled | 10.4% | **0.0052** |
+
+The scenes run from 4.7% to 20.2% wrong while the model's predictions span a much
+narrower band. **It regresses towards the difficulty of the mix it was trained on**, so on a
+scene harder than that mix it is over-confident -- which is the dangerous direction.
+Pooled, the over-promising on Laundry cancels the under-promising on Reindeer and the
+error reads fifteen times smaller than it is on the worst scene. A pooled calibration number
+should not be quoted without the per-scene column beside it.
+
+**The obvious fix is the right idea and 8 scenes cannot settle it.** Giving the model
+two numbers about the whole frame -- how often the reverse match disagreed, and the
+median winning score, both computable live with no ground truth -- moves the worst
+scene from 0.077 to 0.050 and Reindeer from 0.048 to 0.019, leaves every AUC unchanged,
+and makes the middling scenes slightly worse (Books 0.010 to 0.031, Dolls 0.016 to
+0.024). Mean absolute bias 0.0239 to 0.0219. With leave-one-scene-out there are seven
+training points for two coefficients, and the effect is smaller than the scene-to-scene
+spread, so this is a direction and not a result. It needs Middlebury v3's fifteen
+scenes or this camera.
+
+**The controls, which can fail.** A model fitted on six columns of random numbers
+scores AUC 0.1038 against a no-skill 0.1041 and predicts a constant, which is the base
+rate and everything such a model can know. And the consistency flag *alone* scores an
+AUC at no-skill -- no ranking at all, since it takes two values -- with a calibration error
+of 0.0003, the best of any single feature. **Ranking and calibration are different
+properties and one measure can have either without the other**, which is the whole
+reason step 4 is a separate step from step 1.
+
+**Shipped to the live path 2026-08-12, as one feature rather than six.** `de_dense_cuda
+--stream` sends a byte a pixel beside the disparity map, and `de_live_ros2.py` colours
+by it and gates on a ROS parameter that can be turned while the cloud is on screen --
+rviz2 itself has no filter, only a colour ramp. See
+[11-running.md](11-running.md#confidence-and-how-to-filter-by-it).
+
+The live model is the **peak ratio alone**, AUC 0.0301 against the six-feature 0.0274,
+and the three dropped features are not merely unavailable on the GPU. A synthetic frame
+padded with black exposed the reason: a region with no texture has a constant Census
+descriptor, so every disparity matches perfectly, s1 = s2, and both the margin and the
+ratio correctly say "no idea" -- but a model that ALSO reads the winning score sees a
+perfect score and returns 0.94. The padding scored higher than the real image beside
+it. A linear model cannot say "a high score only counts when the margin is not zero",
+and Middlebury never showed it such a pixel. The ratio alone returns 0.667 there. The
+two-feature version fits weights of +15.73 and -16.31, a cancellation between collinear
+cues with the margin entering negatively, and is rejected for the same reason the
+ablation exists. `core/tests/test_confidence.cpp` now holds the flat-region case, and
+would have caught it.
+
+**What can be said to a consumer today.** Per point, `P(within 1 disparity)`, calibrated
+to 0.005 over a mix of scenes and to 0.05-0.08 on a scene at the hard end of that mix,
+biased optimistic there. Not `P(within a quarter disparity)`: 0.551 measured that these
+cues barely see sub-pixel accuracy at all.
 
 ---
 

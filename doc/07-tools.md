@@ -380,6 +380,79 @@ Scenes needing more disparities than `--dmax-cap` are **skipped and named**, and
 tool says the average excludes them. At Q that is Jadeplant (ndisp 160) and Vintage
 (190).
 
+### `article/confidence.py` — how well does a per-pixel confidence rank the mistakes?
+
+```sh
+.venv/bin/python article/confidence.py                # the table
+.venv/bin/python article/confidence.py --check        # prove the harness can fail
+.venv/bin/python article/confidence.py --gate-sweep   # --min-margin against --min-ratio
+.venv/bin/python article/confidence.py --tol 0.25     # grade at Middlebury v3's threshold
+.venv/bin/python article/confidence.py --lrc          # add left-right consistency
+.venv/bin/python article/confidence.py --fit          # combine into a probability
+```
+
+The cloud has no notion of how much any single point is worth, and temporal fusion,
+an occupancy grid and the ghost sheet of obstacle 24a all want one. This scores the
+cues already inside the matcher before any new one is added. See [TODO 0.55](TODO.md#055-per-point-confidence-and-then-an-existence-probability--next-2026-08-12)
+for the plan and [TODO 0.551](TODO.md#0551-step-1-measured-the-ranking-works-the-aggregation-does-not-and-the-tolerance-decides)
+for what it measured.
+
+The metric is the area under the sparsification curve. Sort the answered pixels by
+confidence, keep the top fraction q, record the error rate among what is kept; the
+area under e(q) is one number for the whole curve, lower being better. It is read
+against two references the tool computes itself — an **oracle** that sorts by the true
+error, and a **random** confidence whose curve is flat at the population error rate.
+A measure that does not beat random is noise.
+
+It reads `de_dense --out-conf`, which writes the two candidates the solver ranked as
+four W*H float32 planes in the order `s1 s2 d1 d2`. Nothing here re-runs matching, so
+adding a measure costs a second, not a benchmark run.
+
+**Every run is ungated, and that is not a detail.** Scoring a confidence on the pixels
+the margin gate already kept asks how well the margin ranks what the margin did not
+remove. Each run passes `--min-margin 0` for that reason.
+
+**`--check` runs three tests that fail if this file is wrong** (writing rule 13). The
+random confidence must reproduce the population error rate, or the sort is wrong. An
+inverted measure must score worse than random, or the metric has no direction and a
+sign error reads as success. And the margin reconstructed in Python must gate exactly
+the pixels the C++ gates — the one check that crosses the language boundary, and the
+one that would catch `--out-conf` writing the wrong plane.
+
+**`--gate-sweep` compares the two gates inside the solver, not from the dump.** A gate
+runs before the uniqueness pass, so removing a pixel can hand its right-image partner
+to a competitor that would otherwise have been refused. That reaction cannot be
+simulated, so both gates are swept for real and the margin's error rate is interpolated
+to the coverage each ratio delivered.
+
+**`--lrc` adds the reverse match**, by passing `de_dense --lrc`. Every score already
+says how well left pixel x fits right pixel x - d; the forward match reduces those over
+d for each x, and the reverse one reduces the same scores over x for each x - d. So it
+is a second running maximum in the loop that already holds the score, not a second
+matching pass and not a read of the stored volume. Measured to leave the disparity map
+bit-identical, and to cost 47.4 against 54.2 ms at 450x375 D=60 with four threads on
+the desktop — a **desktop** number; the TX2 is unmeasured.
+
+**`--fit` turns the cues into an actual probability** and then asks whether that
+probability means what it says, which are two different questions. It fits a logistic
+regression by Newton's method in numpy — no machine-learning dependency, and not a CNN.
+
+It is **leave one scene out**: neighbouring pixels share a window, a surface and a
+lighting condition, so a random split of pixels puts a pixel's own neighbours in the
+training set and measures memory rather than generalisation. Every reported number
+comes from a model that never saw its scene, and the in-sample AUC is printed beside it
+so the cost of holding a scene out is visible.
+
+Three things it prints that are easy to skip and shouldn't be. **The ablation**, which
+refits without each feature: weights in a correlated feature set say how the fit
+divided credit, not what a cue is worth, and here one weight comes out with a sign that
+is not physically possible. **The per-scene calibration column**, because a pooled
+calibration error can be small while every scene is wrong — over-promising on the hard
+scenes cancels under-promising on the easy ones, and here the pooled figure reads
+twenty times better than the worst scene. **And the random-feature control**, which must
+land at no-skill and predict a constant: a fitted model always produces a number, and
+that line is what the number looks like when it means nothing.
+
 ### `mavlink_probe.py`
 
 ```sh
