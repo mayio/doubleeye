@@ -280,6 +280,21 @@ ros2 param set /doubleeye_live keep_best 0.4           # the best 40% of each fr
 ros2 param set /doubleeye_live keep_best 0.0           # everything again
 ```
 
+**`keep_best` defaults to 0.4** — the best 40% of each frame. That is a preference and
+not a measurement: the trade is smooth, with no knee anywhere to pick out. Share of
+kept points failing the reverse-match check, over the five kitchen captures that have
+any texture at all:
+
+| kept | 100% | 90% | 80% | 60% | 40% |
+|---|---|---|---|---|---|
+| mean | 6.8% | 5.7% | 4.6% | 2.7% | 1.3% |
+| worst scene | 11.8% | 10.3% | 8.7% | 5.4% | 2.5% |
+
+Roughly, halving the points halves the errors. **The default asserts that you would
+rather see 40% of the cloud at a third of the error rate than all of it** — which is
+right for looking at a scene and for anything that triangulates, and wrong if you are
+chasing holes. `keep_best 0` restores every point.
+
 **Use `keep_best`, not `min_confidence`.** The confidence orders points well inside a
 frame and says almost nothing about how good the frame is. Six captures of one kitchen
 at three light levels, projector on and off, `de_dense --lrc`:

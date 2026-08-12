@@ -204,12 +204,12 @@ def main() -> int:
     # matcher's own benchmarks all run at 0.01, and 0.10 there rejects ~96% of
     # the map -- which looks exactly like a matcher that found nothing.
     ap.add_argument("--min-margin", type=float, default=None)
-    ap.add_argument("--keep-best", type=float, default=0.0,
+    ap.add_argument("--keep-best", type=float, default=0.4,
                     help="keep this fraction of each frame's points, the most "
-                         "confident first. 0.4 keeps the best 40%%. Prefer this to "
+                         "confident first (default 0.4). Prefer this to "
                          "--min-confidence: it behaves the same in a dark room and "
-                         "a bright one, and an absolute threshold does not. 0 is off,"
-                         " and it is a live ROS parameter")
+                         "a bright one, and an absolute threshold does not. 0 keeps "
+                         "everything, and it is a live ROS parameter")
     ap.add_argument("--min-confidence", type=float, default=0.0,
                     help="drop points below this confidence. Dense: a fitted "
                          "P(within 1 disparity), so 0.85 is a probability. Sparse: "
@@ -321,6 +321,9 @@ def main() -> int:
             why = ("dense, tuned for coverage -- raise it for anything that "
                    "triangulates") if a.dense else "sparse default"
             print(f"margin gate: {a.min_margin}  ({why})")
+        if a.keep_best > 0:
+            print(f"confidence: keeping the best {100*a.keep_best:.0f}% of each "
+                  f"frame  (ros2 param set /doubleeye_live keep_best 0 for all)")
         dmin = FB / max(a.max_range, 1e-3)
         dmax = FB / max(a.min_range, 1e-3)
         print(f"depth gate: {a.min_range:.2f}-{a.max_range:.2f} m "
@@ -488,7 +491,7 @@ def main() -> int:
             # Two ways to spend the confidence, and only one of them survives a
             # change of scene.
             #
-            # `keep_best` is a fraction of THIS frame, and it is the one to use. The
+            # `keep_best` is a fraction of THIS frame, and it is the default. The
             # confidence orders points well inside a frame and says almost nothing
             # about how good the frame is: measured on six captures of one kitchen at
             # three light levels, the share of points failing the reverse-match check
