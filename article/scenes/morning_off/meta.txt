@@ -1,0 +1,12 @@
+condition     morning, lamp + daylight
+projector     off
+exposure_us   1500
+gain          64
+resolution    848 480
+recorded      2026-08-12 09:01 CEST
+mean_dn       92.5
+local_contrast_dn 2.73
+clipped_pct   8.3
+coverage_pct  81.1
+source_bag    kitchen_off
+camera        D435 818312071289, IR pair, hardware rectified

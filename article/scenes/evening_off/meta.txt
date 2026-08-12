@@ -1,0 +1,12 @@
+condition     evening, lamp only
+projector     off
+exposure_us   2500
+gain          64
+resolution    848 480
+recorded      2026-08-12 19:42 CEST
+mean_dn       55.9
+local_contrast_dn 1.37
+clipped_pct   4.2
+coverage_pct  80.1
+source_bag    evening_off
+camera        D435 818312071289, IR pair, hardware rectified

@@ -114,16 +114,15 @@ def fig_real(path):
     per condition to hold 3-5 DN of local contrast, because a fixed exposure across a
     4.5x range of scene brightness would measure the exposure instead.
     """
-    import glob as _g
-    cols = [("night, no lamp", "dark_4000", "dark_noemit", 4000),
+    # article/scenes, not bags/: bags is scratch that --capture overwrites by name.
+    cols = [("night, no lamp", "night_on", "night_off", 4000),
             ("evening, lamp only", "evening_on", "evening_off", 2500),
-            ("morning, lamp + daylight", "kitchen_on", "kitchen_off", 1500)]
+            ("morning, lamp + daylight", "morning_on", "morning_off", 1500)]
     fig, axes = plt.subplots(3, 3, figsize=(9.8, 6.4))
     for c, (label, on, off, us) in enumerate(cols):
         for r, bag in enumerate((on, on, off)):
-            fr = os.path.join(ROOT, "bags", bag, "frames")
-            lp = sorted(_g.glob(os.path.join(fr, "ir1_*.raw")))[0]
-            rp = sorted(_g.glob(os.path.join(fr, "ir2_*.raw")))[0]
+            fr = os.path.join(ROOT, "article", "scenes", bag)
+            lp, rp = os.path.join(fr, "left.y8"), os.path.join(fr, "right.y8")
             ax = axes[r, c]
             if r == 0:
                 L = np.fromfile(lp, np.uint8).reshape(480, 848)
@@ -463,6 +462,100 @@ def fig_overlap(path):
     print("wrote", path)
 
 
+# --------------------------------------------------------------- one warp, one row
+def fig_warp(path):
+    """What 32 lanes of k_score_hfwd touch at a single x. The whole GPU design is this
+    picture: one lane per disparity, so every read is a broadcast or a sliding window
+    and every write is a single transaction."""
+    fig, ax = plt.subplots(figsize=(9.8, 4.8))
+    ax.set_xlim(0, 12.4); ax.set_ylim(0, 9.2); ax.axis("off")
+
+    # --- what the warp reads -------------------------------------------------------
+    ax.text(0.3, 8.85, "right census row, one uint64 per pixel", fontsize=8.5)
+    for i in range(14):
+        inside = 3 <= i <= 10
+        ax.add_patch(Rectangle((0.3 + i * 0.60, 7.95), 0.56, 0.55,
+                               fc="#e8f1ea" if inside else "#ffffff",
+                               ec=GPU if inside else MUTE, lw=1.0))
+    ax.annotate("", xy=(0.3 + 10.86 * 0.60, 7.72), xytext=(0.3 + 3 * 0.60, 7.72),
+                arrowprops=dict(arrowstyle="<->", color=GPU, lw=1.2))
+    ax.text(4.2, 7.05, "R[x-d] for 32 consecutive d: one 256-byte window,\n"
+                       "sliding one cell per x step, resident in L1",
+            fontsize=7.8, color=GPU, ha="center")
+
+    for i, lab in enumerate(("L[x]", "cl[x]", "a[x]")):
+        box(ax, 9.35 + i * 0.95, 7.95, 0.85, 0.55, lab, fc="#e6eef6", ec=CPU, fs=7.5)
+    ax.text(10.75, 8.85, "one address for all 32 lanes", fontsize=7.8, color=CPU,
+            ha="center")
+    ax.text(10.75, 7.35, "a hardware broadcast", fontsize=7.8, color=CPU, ha="center")
+
+    ax.annotate("", xy=(6.2, 5.35), xytext=(6.2, 6.55),
+                arrowprops=dict(arrowstyle="-|>", color=MUTE, lw=1.6))
+
+    # --- the warp ------------------------------------------------------------------
+    for i in range(8):
+        lab = ["d", "d+1", "d+2", "…", "…", "…", "d+30", "d+31"][i]
+        who = ["lane 0", "lane 1", "lane 2", "lane", "lane", "lane",
+               "lane 30", "lane 31"][i]
+        box(ax, 0.5 + i * 1.44, 4.25, 1.30, 0.95, f"{who}\n{lab}",
+            fc="#f2f7f4", ec=GPU, fs=7.4)
+    ax.text(6.2, 3.62, "each lane owns ONE disparity and carries its own forward "
+                       "recurrence in a register,", fontsize=8, ha="center")
+    ax.text(6.2, 3.18, "$F \\;\\leftarrow\\; v + a_x\\,(F - v)$", fontsize=10,
+            ha="center")
+    ax.text(6.2, 2.72, "so no lane waits on another and the filter needs no shuffles "
+                       "at all", fontsize=8, ha="center")
+
+    ax.annotate("", xy=(6.2, 1.72), xytext=(6.2, 2.42),
+                arrowprops=dict(arrowstyle="-|>", color=MUTE, lw=1.6))
+
+    # --- what the warp writes ------------------------------------------------------
+    for i in range(8):
+        ax.add_patch(Rectangle((0.5 + i * 1.44, 1.10), 1.30, 0.52, fc="#e8f1ea",
+                               ec=GPU, lw=1.0))
+    ax.text(6.2, 0.62, "the write is vol[y][x][k] for 32 consecutive k: "
+                       "32 int16 = one aligned 64-byte transaction",
+            fontsize=8, ha="center", color=GPU)
+    ax.text(6.2, 0.18, "nothing strides, at any point in the pipeline",
+            fontsize=8.4, ha="center")
+    fig.savefig(path)
+    plt.close(fig)
+    print("wrote", path)
+
+
+# ------------------------------------------------------- the warp top-2 reduction
+def fig_shuffle(path):
+    """Why the tie-break needed k in the key: the tree merges non-adjacent lanes."""
+    fig, ax = plt.subplots(figsize=(9.8, 3.9))
+    N = 8
+    ax.set_xlim(-1.2, N + 0.4); ax.set_ylim(-0.5, 4.9); ax.axis("off")
+    ax.set_title("shfl_down reduction, drawn for 8 lanes; the kernel runs 32 in five "
+                 "rounds", fontsize=9.5)
+    for r, off in enumerate((4, 2, 1)):
+        y = 3.2 - r * 1.05
+        ax.text(-1.15, y, f"off = {off}", fontsize=8, va="center", ha="left")
+        for i in range(N):
+            ax.plot([i], [y], "o", ms=7, color=INK if i % off == 0 or True else MUTE,
+                    mfc="#ffffff", mec=INK)
+            if i % (off * 2) == 0 and i + off < N:
+                col = WARN if (r == 0 and i == 0) else GPU
+                ax.annotate("", xy=(i + 0.12, y - 0.16), xytext=(i + off - 0.12, y - 0.16),
+                            arrowprops=dict(arrowstyle="-|>", color=col,
+                                            lw=1.9 if col is WARN else 1.1,
+                                            connectionstyle="arc3,rad=0.34"))
+    for i in range(N):
+        ax.text(i, 4.16, str(i), ha="center", fontsize=8, color=MUTE)
+    ax.text(N / 2 - 0.5, 4.56, "lane", ha="center", fontsize=8, color=MUTE)
+    ax.text(2.0, 0.55, "lane 0 absorbs lane 4 BEFORE it absorbs lane 1", fontsize=8.4,
+            color=WARN)
+    ax.text(2.0, 0.15, "so \"the other side holds larger k\" is false mid-tree, and a "
+                       "tie-break that assumes it\nis wrong. Carrying k in the sort key "
+                       "makes the merge order-independent.", fontsize=8, va="top")
+    fig.savefig(path)
+    plt.close(fig)
+    print("wrote", path)
+
+
 # ------------------------------------------------------------- resolution/rate chart
 def fig_rates(path):
     labels = ["424x240\nD=64", "450x375\nD=64", "640x480\nD=64",
@@ -569,6 +662,8 @@ def main():
         "dataflow": lambda: fig_dataflow(os.path.join(P3, "dataflow.png")),
         "overlap": lambda: fig_overlap(os.path.join(P3, "overlap.png")),
         "rates": lambda: fig_rates(os.path.join(P3, "rates.png")),
+        "warp": lambda: fig_warp(os.path.join(P3, "warp.png")),
+        "shuffle": lambda: fig_shuffle(os.path.join(P3, "shuffle.png")),
         "budget": lambda: fig_budget(os.path.join(P2, "budget.png")),
         "thumbs": fig_thumbs,
     }

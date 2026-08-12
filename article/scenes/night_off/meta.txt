@@ -1,0 +1,12 @@
+condition     night, no lamp
+projector     off
+exposure_us   4000
+gain          64
+resolution    848 480
+recorded      2026-08-11 23:52 CEST
+mean_dn       16.0
+local_contrast_dn 0.12
+clipped_pct   0.0
+coverage_pct  38.6
+source_bag    dark_noemit
+camera        D435 818312071289, IR pair, hardware rectified
