@@ -462,6 +462,89 @@ def fig_overlap(path):
     print("wrote", path)
 
 
+# ------------------------------------------------------- worked example: the Census
+def census_code(img, y, x):
+    """7x7, bit b in scan order dy=-3..3, dx=-3..3 skipping the centre. Bit set when
+    the neighbour is DARKER than the centre. Identical order to k_census."""
+    c = int(img[y, x]); code = 0; bit = 0
+    for dy in range(-3, 4):
+        for dx in range(-3, 4):
+            if dx == 0 and dy == 0:
+                continue
+            if int(img[y + dy, x + dx]) < c:
+                code |= 1 << bit
+            bit += 1
+    return code
+
+
+def fig_census(path):
+    """One pixel, its 48 comparisons, and what the code is worth against a right
+    patch at the true disparity and at a wrong one."""
+    sc = scene("teddy")
+    L, R, gt = sc["L"], sc["R"], sc["gt"]
+    H, W = L.shape
+    # a pixel chosen by rule, not by eye: valid ground truth, an almost-integer
+    # disparity so the example is exact, and the largest gap between the Hamming
+    # distance at the truth and 5 px away -- the clearest instance of the mechanism.
+    best, bestpx = -1, None
+    rng = np.random.default_rng(0)
+    ys, xs = np.nonzero((gt > 12) & (gt < 40) & (np.abs(gt - np.round(gt)) < 0.02))
+    keep = (ys > 10) & (ys < H - 10) & (xs > 60) & (xs < W - 10)
+    ys, xs = ys[keep], xs[keep]
+    idx = rng.choice(len(ys), min(4000, len(ys)), replace=False)
+    for i in idx:
+        y, x = int(ys[i]), int(xs[i])
+        d = int(round(float(gt[y, x])))
+        a = census_code(L, y, x)
+        # a balanced code: roughly as many darker neighbours as brighter ones. An
+        # all-zero code is the degenerate case the post warns about, not an example
+        # of how the descriptor works, and maximising the gap alone finds those.
+        if not 18 <= bin(a).count("1") <= 30:
+            continue
+        ht = bin(a ^ census_code(R, y, x - d)).count("1")
+        hw = bin(a ^ census_code(R, y, x - d - 5)).count("1")
+        if ht <= 4 and hw - ht > best:
+            best, bestpx = hw - ht, (y, x, d, a, ht, hw)
+    y, x, d, code_l, h_true, h_wrong = bestpx
+
+    def q14_census(h):
+        return ((24 - h) * 16384) // 24
+
+    fig, axes = plt.subplots(1, 3, figsize=(10.2, 4.0))
+    panels = [(L, y, x, f"left, pixel ({x}, {y})", None),
+              (R, y, x - d, f"right at d = {d}  (the truth)", h_true),
+              (R, y, x - d - 5, f"right at d = {d + 5}  (wrong by 5 px)", h_wrong)]
+    for ax, (img, py, px, title, ham) in zip(axes, panels):
+        patch = img[py - 3:py + 4, px - 3:px + 4].astype(int)
+        centre = patch[3, 3]
+        darker = patch < centre
+        ax.imshow(darker, cmap="binary", vmin=0, vmax=1)
+        for r in range(7):
+            for c in range(7):
+                mark = "" if (r == 3 and c == 3) else ("1" if darker[r, c] else "0")
+                col = ("#ffffff" if darker[r, c] else INK)
+                ax.text(c, r - 0.20, str(patch[r, c]), ha="center", va="center",
+                        fontsize=7, color=WARN if (r == 3 and c == 3) else col)
+                ax.text(c, r + 0.24, mark, ha="center", va="center", fontsize=8.5,
+                        color="#7fd6a6" if darker[r, c] else GPU, weight="bold")
+        ax.add_patch(Rectangle((2.5, 2.5), 1, 1, fill=False, ec=WARN, lw=2.0))
+        ax.set_xticks([]); ax.set_yticks([])
+        sub = "grey value above, bit below" if ham is None else \
+              f"Hamming {ham} of 48  ->  score {q14_census(ham)/16384:+.2f}"
+        ax.set_title(f"{title}\n{sub}", fontsize=8.5)
+    fig.suptitle("The Census descriptor, on one pixel of Teddy", fontsize=10, y=1.0)
+    fig.text(0.5, -0.02, "bit = 1 where the neighbour is darker than the centre; "
+                         "the centre itself is not coded",
+             ha="center", fontsize=7.8, color=MUTE)
+    fig.savefig(path)
+    plt.close(fig)
+    print("wrote", path)
+    print(f"  pixel ({x},{y}) d={d}  code=0x{code_l:012x}  "
+          f"H_true={h_true} -> {q14_census(h_true)}  "
+          f"H_wrong={h_wrong} -> {q14_census(h_wrong)}")
+    print(f"  left  bits {code_l:048b}")
+
+
 # --------------------------------------------------------------- one warp, one row
 def fig_warp(path):
     """What 32 lanes of k_score_hfwd touch at a single x. The whole GPU design is this
@@ -662,6 +745,7 @@ def main():
         "dataflow": lambda: fig_dataflow(os.path.join(P3, "dataflow.png")),
         "overlap": lambda: fig_overlap(os.path.join(P3, "overlap.png")),
         "rates": lambda: fig_rates(os.path.join(P3, "rates.png")),
+        "census": lambda: fig_census(os.path.join(P2, "census.png")),
         "warp": lambda: fig_warp(os.path.join(P3, "warp.png")),
         "shuffle": lambda: fig_shuffle(os.path.join(P3, "shuffle.png")),
         "budget": lambda: fig_budget(os.path.join(P2, "budget.png")),
