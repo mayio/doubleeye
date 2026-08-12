@@ -250,12 +250,15 @@ in rviz costs real bandwidth.
 - `--colour image|depth|confidence` (image) — `image` paints each point with the left
   camera's own intensity, so the cloud looks like the scene, which is what makes a
   wrong surface recognisable as a wrong surface. `depth` is a ramp over the 5–95
-  percentile. `confidence` keeps the scene and dims it. Each point stays the
-  intensity the camera saw, and confidence sets how brightly it is drawn — a doubtful
-  point recedes towards the background, a trusted one is fully lit. It is not a colour
-  map: three were tried and all of them replace the room with a false-colour picture of
-  one number, which throws away the very thing that makes a wrong surface recognisable
-  as a wrong surface. It is stretched over 0.55–1.0, which is
+  percentile. `confidence` keeps the scene and dims it. Each point keeps the intensity
+  the camera saw and confidence sets how brightly it is drawn. It is not a colour map:
+  three were tried and all of them replace the room with a false-colour picture of one
+  number, which throws away the very thing that makes a wrong surface recognisable as a
+  wrong surface. The two are compressed into different ranges — intensity over a factor
+  of 1.8, confidence over a factor of 5 — so that **confidence dominates the brightness
+  and albedo only modulates it.** A dark object stays visible when the matcher is sure
+  about it, which the first version got wrong: it multiplied raw intensity into the
+  dimming, and a dark bin was darkened twice and disappeared. It is stretched over 0.55–1.0, which is
   the range the values actually occupy.
 - `--min-confidence F` (0) — **drop points the matcher does not believe.** See the
   section below; it is also a live parameter, so the usual way to set it is not this

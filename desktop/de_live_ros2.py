@@ -163,25 +163,33 @@ def colours_for(m: np.ndarray, dense: bool, gray8: np.ndarray) -> np.ndarray:
     ColorBrewer ramp, and viridis -- and all three replace the scene with a false
     colour picture of one scalar. The cloud stops looking like a room, which is the
     thing that makes a wrong surface recognisable as a wrong surface in the first
-    place.
+    place. So each point keeps the intensity the camera saw and confidence sets how
+    brightly it is drawn.
 
-    So keep the room. Each point stays the intensity the camera saw and confidence
-    sets how brightly it is drawn: a doubtful point recedes towards the background,
-    a trusted one is fully lit. It is one multiply, it composes with the eye's own
-    habit of ignoring what is dim, and nothing about the scene is invented.
+    THE TWO RANGES ARE THE WHOLE DESIGN, and the first version got them wrong by
+    multiplying raw intensity straight into the dimming. A dark plastic bin is dark in
+    infrared, so it was darkened twice and vanished while the matcher was certain
+    about it -- darkness reading as doubt.
 
-    The floor is 0.22 rather than 0: a point that vanishes entirely reads as a hole,
-    and a hole is geometry. Doubtful points should be faint, not absent.
-    A slight cool shift comes in with the dimming, so a distrusted point on a bright
-    surface is still distinguishable from a trusted point on a dark one.
+    So the two are compressed into different ranges. Intensity spans 0.55 to 1.0, a
+    factor of 1.8, which is enough to see the shape of the scene. Confidence spans
+    0.20 to 1.0, a factor of 5. Confidence therefore dominates the brightness ordering
+    and albedo only modulates it: a dark surface the matcher trusts stays clearly
+    visible, and a bright surface it doubts goes dim.
+
+    The floor is 0.20 rather than 0 because a point that vanishes reads as a hole, and
+    a hole reads as geometry. Doubtful points should be faint, not absent.
     """
     lo, hi = (0.55, 1.0) if dense else (0.0, 0.40)
     t = np.clip((np.asarray(m, np.float32) - lo) / (hi - lo), 0.0, 1.0)
     t = np.where(np.isfinite(t), t, 1.0)               # no confidence sent: draw it lit
-    k = (0.22 + 0.78 * t)[:, None]
-    base = np.repeat(gray8[:, None].astype(np.float32), 3, axis=1)
+    k_conf = 0.20 + 0.80 * t
+    k_int = 0.55 + 0.45 * (gray8.astype(np.float32) / 255.0)
+    # A slight cool shift rides along with the dimming, so a distrusted point is
+    # distinguishable from a merely dark one even in a still image.
     tint = np.stack([0.82 + 0.18 * t, 0.90 + 0.10 * t, np.ones_like(t)], axis=1)
-    return np.clip(base * k * tint, 0, 255).astype(np.uint8)
+    v = (255.0 * k_int * k_conf)[:, None] * tint
+    return np.clip(v, 0, 255).astype(np.uint8)
 
 
 def splat(dst, ui, vi, values, half):
