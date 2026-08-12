@@ -156,23 +156,37 @@ def densify(H, W, ui, vi, z, stride=8):
     return small[np.ix_(yi, xi)].astype(np.float32)
 
 
+# ColorBrewer RdYlBu, which is a diverging ramp that stays legible in greyscale and
+# for the common colour-blindness types. Red is low confidence and blue is high, so
+# the few points worth distrusting are the ones that shout.
+_RAMP = np.array([(165, 0, 38), (215, 48, 39), (244, 109, 67), (253, 174, 97),
+                  (254, 224, 144), (224, 243, 248), (171, 217, 233),
+                  (116, 173, 209), (69, 117, 180), (49, 54, 149)], np.float32)
+
+
 def colours_for(m: np.ndarray, dense: bool) -> np.ndarray:
     """Per-point RGB by confidence, vectorised. (N, 3) uint8.
 
-    The two modes carry different quantities in the same field, so they get
-    different breaks. Dense is a fitted P(correct within 1 disparity), and the
-    thresholds are read off the reliability table in TODO 0.553: below 0.60 the
-    model itself says a point is wrong more often than one time in three. Sparse is
-    the raw score margin, whose 0.30 and 0.10 breaks predate this work and are not
-    a probability.
+    Interpolated rather than stepped: three flat colours over a 400,000-point cloud
+    posterise it into blobs, and the thing worth seeing is where confidence changes,
+    not which side of an arbitrary line a point fell.
+
+    The ramp is stretched over the range the values actually occupy instead of over
+    [0, 1]. Dense confidence is a fitted probability that rarely goes below 0.55 --
+    a region with no texture bottoms out at 0.667 and a real match saturates near 1 --
+    so a linear map over the whole unit interval would spend nine tenths of the ramp
+    on values that never occur. Sparse carries the raw score margin instead, which
+    lives on a different scale entirely, hence the two windows.
     """
-    c = np.empty((len(m), 3), np.uint8)
-    lo, mid = (0.60, 0.85) if dense else (0.10, 0.30)
-    c[:] = (60, 170, 75)
-    c[m < mid] = (203, 145, 20)
-    c[m < lo] = (220, 50, 47)
-    c[~np.isfinite(m)] = (110, 110, 110)   # an older matcher: no confidence sent
-    return c
+    lo, hi = (0.55, 1.0) if dense else (0.0, 0.40)
+    t = np.clip((np.asarray(m, np.float32) - lo) / (hi - lo), 0.0, 1.0)
+    pos = t * (len(_RAMP) - 1)
+    i = np.clip(pos.astype(np.int32), 0, len(_RAMP) - 2)
+    f = (pos - i)[:, None]
+    c = (_RAMP[i] * (1.0 - f) + _RAMP[i + 1] * f)
+    out = c.astype(np.uint8)
+    out[~np.isfinite(m)] = (110, 110, 110)   # an older matcher: no confidence sent
+    return out
 
 
 def splat(dst, ui, vi, values, half):

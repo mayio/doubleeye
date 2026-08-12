@@ -250,8 +250,10 @@ in rviz costs real bandwidth.
 - `--colour image|depth|confidence` (image) — `image` paints each point with the left
   camera's own intensity, so the cloud looks like the scene, which is what makes a
   wrong surface recognisable as a wrong surface. `depth` is a ramp over the 5–95
-  percentile. `confidence` is green above 0.85, amber down to 0.60, red below, and
-  grey where the matcher on the other end is old enough not to send one.
+  percentile. `confidence` is a continuous ramp — deep blue where the matcher is sure,
+  through pale blue and sand, to red where it is not, and grey where the matcher on
+  the other end is old enough not to send one. It is stretched over 0.55–1.0, which is
+  the range the values actually occupy.
 - `--min-confidence F` (0) — **drop points the matcher does not believe.** See the
   section below; it is also a live parameter, so the usual way to set it is not this
   flag.
