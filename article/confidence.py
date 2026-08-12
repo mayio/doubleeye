@@ -104,9 +104,9 @@ def run_scene(name, extra=(), lrc=False):
         sys.exit(f"de_dense failed on {name} (exit {p.returncode}):\n{p.stderr}")
     disp = np.fromfile(dp, np.float32).reshape(H, W)
     gt = np.fromfile(os.path.join(d, "disp.f32"), np.float32).reshape(H, W)
-    s1, s2, d1, d2, resid = np.fromfile(cp, np.float32).reshape(5, H, W)
+    s1, s2, d1, d2, resid, resid2 = np.fromfile(cp, np.float32).reshape(6, H, W)
     if not lrc:
-        resid = None
+        resid = resid2
     return disp, gt, s1, s2, d1, d2, resid
 
 

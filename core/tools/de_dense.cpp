@@ -726,13 +726,15 @@ struct LevelTimes {
 
 // `cand_out`, when given, receives the two candidates every confidence measure in
 // the literature is built from, plus the reverse match: five planes of W*H floats,
-// in the order s1, s2, d1, d2, lrc. The scores are the AGGREGATED ones the solver
-// ranks on, in the same units as `--min-margin`; the disparities are integers before
-// the sub-pixel fit. `lrc` is how far this pixel's own answer is from what the right
-// pixel it claimed would have chosen, in disparities, and is NaN unless `cfg.lrc`.
+// in the order s1, s2, d1, d2, lrc, lrc2. The scores are the AGGREGATED ones the
+// solver ranks on, in the same units as `--min-margin`; the disparities are integers
+// before the sub-pixel fit. `lrc` is how far this pixel's own answer is from what the
+// right pixel it claimed would have chosen over EVERY disparity, and is NaN unless
+// `cfg.lrc`; `lrc2` is the same question asked of the two candidates the solver kept,
+// which costs nothing and is always filled.
 // A pixel with fewer than two candidates carries -1e30 in the missing slots.
 // Null is the normal case and costs nothing.
-static const size_t NCAND = 5;
+static const size_t NCAND = 6;
 void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
                const std::vector<float>& prior, const std::string& volp,
                std::vector<float>* disp_out, std::vector<float>* margin_out,
@@ -1437,6 +1439,7 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
   // disparities, so the global winner for a right pixel is the best of what each
   // thread offers for it -- the same shape as the forward merge in the solve, and
   // the same reason it can be deferred to here.
+  std::vector<float> lrc2(cand_out ? size_t(W) * H : 0);
   std::vector<int16_t> rdisp;
   if (cfg.lrc && blockwise) {
     std::vector<int16_t> rbest(size_t(W) * H, -32768);
@@ -1540,7 +1543,8 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
                            &disp[size_t(y) * W], &margin[size_t(y) * W], 3,
                            bstart.data(), bitems.data(), cursor.data(),
                            best.data(), bestk.data(), order.data(), taken.data(),
-                           sub2 ? cnb.data() : nullptr);
+                           sub2 ? cnb.data() : nullptr,
+                           cand_p ? &lrc2[size_t(y) * W] : nullptr);
           if (cand_p) {
             // After the solver, because on the `vol` path the selection that
             // fills cs happens inside it. Row-local either way, so this reads
@@ -1589,6 +1593,8 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
       }
     }
   }
+  if (cand_p)
+    for (size_t i = 0; i < PLANE; ++i) cand_p[PLANE * 5 + i] = lrc2[i];
 
   disp_out->swap(disp);
   margin_out->swap(margin);

@@ -191,7 +191,7 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
                       float* out_disp, float* out_margin, int hw,
                       int* bstart, int* bitems, int* cursor,
                       float* best, int* bestj, int* order, char* taken,
-                      const float* cnb = nullptr) {
+                      const float* cnb = nullptr, float* out_lrc = nullptr) {
   if (W < 1 || K < 1) return;      // states the obvious to the compiler, which
   const size_t KS = size_t(K);      // otherwise cannot bound the fills below and
   const int dmin = cfg.dmin;        // warns that they may exceed any object size
@@ -257,6 +257,35 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
       const int xr = x - (dmin + cd[size_t(x) * KS + j]);
       if (xr >= 0 && xr < W) bitems[cursor[xr]++] = int(size_t(x) * KS + j);
     }
+
+  // --- the reverse match, from the buckets the counting sort has just built -------
+  //
+  // Left-right consistency asks what the right pixel this one claimed would itself
+  // have chosen. The exact answer needs every disparity and therefore the cost
+  // volume, which the blockwise path never stores; this asks the same question of
+  // the candidates that survived, which are already sorted into per-right-pixel
+  // buckets three lines above because the beta update needs exactly that.
+  //
+  // Measured against the exact version on the eight scenes, at matched removal it
+  // catches 23.7% of the wrong pixels in the off-sensor border against the exact
+  // 45.5% and the peak ratio's 11.9%. Half the benefit, no volume, no second pass,
+  // and it wins over the ratio on 8 scenes of 8. What it misses is a right pixel
+  // whose true best claimant did not keep it among ITS top two, which then has no
+  // one to be beaten by.
+  //
+  // `cursor` is reused rather than another W of scratch: the counting sort finished
+  // with it two loops ago and it is dead until the next row.
+  if (out_lrc) {
+    for (int xr = 0; xr < W; ++xr) {
+      int bd = -1;
+      float bv = -1e30f;
+      for (int p = bstart[xr]; p < bstart[xr + 1]; ++p) {
+        const int idx = bitems[p];
+        if (cs[idx] > bv) { bv = cs[idx]; bd = cd[idx]; }
+      }
+      cursor[xr] = bd;
+    }
+  }
 
   std::fill(beta, beta + size_t(W) * KS, 0.f);
   std::fill(rho, rho + size_t(W) * KS, 0.f);
@@ -377,6 +406,23 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
       }
     }
     out_disp[x] = float(d) + off;
+  }
+
+  // Now that every pixel has its answer: follow it to the right pixel it claimed and
+  // compare with what that pixel would have chosen. Rounded, because the reverse
+  // match is an integer candidate and the forward one carries a sub-pixel offset.
+  // NaN where this pixel has no answer, or where the right pixel it points at had no
+  // claimant at all -- neither is a disagreement, and calling them one would make the
+  // border of every frame look inconsistent.
+  if (out_lrc) {
+    for (int x = 0; x < W; ++x) {
+      out_lrc[x] = std::nanf("");
+      const float dl = out_disp[x];
+      if (!(dl == dl)) continue;
+      const int xr = x - int(std::lround(dl));
+      if (xr >= 0 && xr < W && cursor[xr] >= 0)
+        out_lrc[x] = std::fabs(dl - float(dmin + cursor[xr]));
+    }
   }
 }
 

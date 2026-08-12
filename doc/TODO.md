@@ -1527,6 +1527,31 @@ of 0.0003, the best of any single feature. **Ranking and calibration are differe
 properties and one measure can have either without the other**, which is the whole
 reason step 4 is a separate step from step 1.
 
+**A cheap reverse match that needs no GPU work, measured 2026-08-12.** The exact check
+needs every disparity and therefore the cost volume, which the blockwise and CUDA paths
+never store, and reading a diagonal out of a k-minor volume is uncoalesced by
+construction. So ask the same question of the two candidates that survived: the solver
+already sorts every (left pixel, candidate) pair into buckets by the right pixel it
+claims, because the beta update needs exactly that structure, and then throws the
+buckets away. `de_dense --out-conf` now writes it as a sixth plane at no measurable
+cost and with the disparity map unchanged.
+
+| | peak ratio | reverse match, top-2 | reverse match, exact |
+|---|---|---|---|
+| wrong border pixels caught, matched removal | 11.9% | **23.7%** | 45.5% |
+| pixels flagged | | 1.4% | 3.0% |
+| of those, wrong | | 52 - 74% | 49 - 79% |
+
+**Half the benefit for nothing**, and it beats the ratio on 8 scenes of 8. What it
+misses is a right pixel whose true best claimant did not keep it among ITS top two,
+which then has no one to be beaten by -- so the flagged set is smaller than the exact
+one but just as wrong, which is precision without completeness.
+
+The other half needs the exact version on the GPU, and that is not a small change:
+26 million atomic maximums a frame at 848x480, or a transposed second pass, against a
+device already at 26.0 ms of kernels in a 28.9 ms budget. Worth doing on evidence, not
+worth doing on principle.
+
 **Shipped to the live path 2026-08-12, as one feature rather than six.** `de_dense_cuda
 --stream` sends a byte a pixel beside the disparity map, and `de_live_ros2.py` colours
 by it and gates on a ROS parameter that can be turned while the cloud is on screen --
