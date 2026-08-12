@@ -156,12 +156,18 @@ def densify(H, W, ui, vi, z, stride=8):
     return small[np.ix_(yi, xi)].astype(np.float32)
 
 
-# ColorBrewer RdYlBu, which is a diverging ramp that stays legible in greyscale and
-# for the common colour-blindness types. Red is low confidence and blue is high, so
-# the few points worth distrusting are the ones that shout.
-_RAMP = np.array([(165, 0, 38), (215, 48, 39), (244, 109, 67), (253, 174, 97),
-                  (254, 224, 144), (224, 243, 248), (171, 217, 233),
-                  (116, 173, 209), (69, 117, 180), (49, 54, 149)], np.float32)
+# Viridis. Perceptually uniform, colour-blind safe, and sequential -- which is what
+# this is. A diverging ramp was tried first and looks wrong for the same reason it
+# reads wrong: it puts its lightest, least saturated colour in the MIDDLE, so the bulk
+# of a cloud comes out beige.
+#
+# Low confidence sinks towards dark blue-violet and recedes against rviz's dark
+# background; high comes up bright green and yellow. That is the useful direction for
+# a cloud that is mostly good: the doubtful points get out of the way rather than
+# shouting, and what is left looks like the scene.
+_RAMP = np.array([(68, 1, 84), (72, 33, 115), (67, 62, 133), (56, 88, 140),
+                  (45, 112, 142), (37, 133, 142), (30, 155, 138), (53, 183, 121),
+                  (109, 205, 89), (253, 231, 37)], np.float32)
 
 
 def colours_for(m: np.ndarray, dense: bool) -> np.ndarray:
@@ -185,7 +191,7 @@ def colours_for(m: np.ndarray, dense: bool) -> np.ndarray:
     f = (pos - i)[:, None]
     c = (_RAMP[i] * (1.0 - f) + _RAMP[i + 1] * f)
     out = c.astype(np.uint8)
-    out[~np.isfinite(m)] = (110, 110, 110)   # an older matcher: no confidence sent
+    out[~np.isfinite(m)] = (140, 140, 140)   # an older matcher: no confidence sent
     return out
 
 
