@@ -1546,6 +1546,38 @@ cues with the margin entering negatively, and is rejected for the same reason th
 ablation exists. `core/tests/test_confidence.cpp` now holds the flat-region case, and
 would have caught it.
 
+**Measured on this camera 2026-08-12, which is what step 4 was waiting for.** Two
+flat-wall captures at 0.445 m, lamp on and off, `de_dense --lrc`, with distance off
+the fitted plane as the truth: 6.2% of points more than 20 mm off, falling to 1.3%
+keeping the best 60% by confidence, and an area under the sparsification curve of
+0.0176 against 0.0620 for no confidence and 0.0023 for an oracle. **The ranking
+transfers.** It closes 74% of the gap here against 76% on Middlebury.
+
+The absolute number does not. It promises 0.86 on the wall and delivers 0.94 --
+pessimistic, where Middlebury's hardest scene was optimistic.
+
+**And the six kitchen captures say why a fixed threshold cannot work.** Three light
+levels, projector on and off, with the reverse-match failure rate standing in for
+truth:
+
+| | night, no projector | night, projector | evening, projector | daylight, projector |
+|---|---|---|---|---|
+| mean intensity | 16.0 DN | 21.0 DN | 56.1 DN | 95.1 DN |
+| fails the reverse match | 69.3% | 2.3% | 2.7% | 7.0% |
+| mean confidence | 0.732 | 0.774 | 0.771 | 0.753 |
+| share of the gap the ranking closes | 21% | 70% | 67% | 67% |
+
+**The ranking holds at every usable light level and the level of the number does not
+move at all.** Scene quality ranges over a factor of thirty; the confidence over 0.04.
+So `min_confidence 0.85` keeps 6-18% of points in every condition -- most of a good
+cloud discarded, a sixth of a hopeless one kept -- and the live path gained a
+`keep_best` quantile, which keeps what it was asked for in all four.
+
+The exception is the first column: with no projector in a dark room the frame is 0.12
+DN of local contrast and 38.6% answered, the ranking closes only 21%, and there is
+nothing to rank. That is a scene to refuse, not to filter, and the frame-level features
+this section already flags are what would let it be refused automatically.
+
 **What can be said to a consumer today.** Per point, `P(within 1 disparity)`, calibrated
 to 0.005 over a mix of scenes and to 0.05-0.08 on a scene at the hard end of that mix,
 biased optimistic there. Not `P(within a quarter disparity)`: 0.551 measured that these

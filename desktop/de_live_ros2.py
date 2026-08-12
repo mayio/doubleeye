@@ -204,6 +204,12 @@ def main() -> int:
     # matcher's own benchmarks all run at 0.01, and 0.10 there rejects ~96% of
     # the map -- which looks exactly like a matcher that found nothing.
     ap.add_argument("--min-margin", type=float, default=None)
+    ap.add_argument("--keep-best", type=float, default=0.0,
+                    help="keep this fraction of each frame's points, the most "
+                         "confident first. 0.4 keeps the best 40%%. Prefer this to "
+                         "--min-confidence: it behaves the same in a dark room and "
+                         "a bright one, and an absolute threshold does not. 0 is off,"
+                         " and it is a live ROS parameter")
     ap.add_argument("--min-confidence", type=float, default=0.0,
                     help="drop points below this confidence. Dense: a fitted "
                          "P(within 1 disparity), so 0.85 is a probability. Sparse: "
@@ -351,11 +357,13 @@ def main() -> int:
     # point regardless -- so the threshold has to be applied here, and finding the
     # right one is a thing you do by turning it while looking at the cloud:
     #
-    #   ros2 param set /doubleeye_live min_confidence 0.85
+    #   ros2 param set /doubleeye_live keep_best 0.4          # the best 40% of a frame
+    #   ros2 param set /doubleeye_live min_confidence 0.85    # an absolute floor
     #
     # Read fresh every frame. The cost is one parameter lookup against a cloud
     # that is already megabytes.
     node.declare_parameter("min_confidence", float(a.min_confidence))
+    node.declare_parameter("keep_best", float(a.keep_best))
     # RELIABLE by default, which is the only choice that works with rviz2 out of
     # the box. DDS compatibility is one-directional: a publisher must be at least
     # as strong as the subscriber, so
@@ -477,7 +485,31 @@ def main() -> int:
             z_all = np.divide(FB, disp, out=np.zeros_like(disp),
                               where=disp > 0.0)
             ok = (disp > 0.0) & (z_all >= a.min_range) & (z_all <= a.max_range)
+            # Two ways to spend the confidence, and only one of them survives a
+            # change of scene.
+            #
+            # `keep_best` is a fraction of THIS frame, and it is the one to use. The
+            # confidence orders points well inside a frame and says almost nothing
+            # about how good the frame is: measured on six captures of one kitchen at
+            # three light levels, the share of points failing the reverse-match check
+            # ranges from 2.3% to 69.3% while the mean confidence moves only from
+            # 0.77 to 0.73. A fixed threshold of 0.85 therefore keeps 6-18% of points
+            # in EVERY condition -- most of a good cloud thrown away, and a sixth of
+            # a hopeless one kept. A quantile keeps what was asked for either way.
+            #
+            # `min_confidence` is the absolute threshold, kept because a consumer
+            # that wants "only points I would act on" wants a number and not a
+            # fraction. It is the one that needs the calibration 0.55 has not done
+            # on this camera yet.
+            keep_best = float(node.get_parameter("keep_best").value)
             min_conf = float(node.get_parameter("min_confidence").value)
+            if 0.0 < keep_best < 1.0 and np.isfinite(margin).any():
+                # Among the points that survived the depth gate, not all of them:
+                # the quantile is over what is about to be published.
+                have = ok & np.isfinite(margin)
+                if have.any():
+                    thr = np.quantile(margin[have], 1.0 - keep_best)
+                    ok &= np.isfinite(margin) & (margin >= thr)
             if min_conf > 0.0:
                 # NaN means the matcher sent no confidence, and NaN fails every
                 # comparison, so an old matcher plus a threshold drops everything

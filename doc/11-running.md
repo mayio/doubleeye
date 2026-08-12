@@ -272,17 +272,40 @@ Intensity boxes only stretch the colour ramp. A point outside them is still draw
 the end colour. There is no threshold, no "hide below", and none of the other display
 types does it either.
 
-So the threshold is applied before publishing, and it is a ROS parameter so it can be
+So the filtering is applied before publishing, and it is a ROS parameter so it can be
 turned while you watch:
 
 ```sh
-ros2 param get /doubleeye_live min_confidence
-ros2 param set /doubleeye_live min_confidence 0.85     # takes effect next frame
-ros2 param set /doubleeye_live min_confidence 0.0      # everything again
+ros2 param set /doubleeye_live keep_best 0.4           # the best 40% of each frame
+ros2 param set /doubleeye_live keep_best 0.0           # everything again
 ```
 
-Set the display to colour by `confidence` first, then raise the threshold until the
-red goes and watch what leaves with it. Two things to expect. **A region with no
+**Use `keep_best`, not `min_confidence`.** The confidence orders points well inside a
+frame and says almost nothing about how good the frame is. Six captures of one kitchen
+at three light levels, projector on and off, `de_dense --lrc`:
+
+| | night, no projector | night, projector | evening, projector | daylight, projector |
+|---|---|---|---|---|
+| mean intensity | 16.0 DN | 21.0 DN | 56.1 DN | 95.1 DN |
+| points failing the reverse-match check | 69.3% | 2.3% | 2.7% | 7.0% |
+| mean confidence | 0.732 | 0.774 | 0.771 | 0.753 |
+| kept by `min_confidence 0.85` | 6% | 17% | 18% | 14% |
+| kept by `keep_best 0.4` | 40% | 40% | 40% | 40% |
+
+The scene quality moves by a factor of thirty and the confidence moves by 0.04. A fixed
+threshold therefore throws away most of a good cloud and keeps a sixth of a hopeless
+one; a quantile keeps what was asked for either way. The absolute threshold is still
+there, because a consumer that wants "only points I would act on" wants a number rather
+than a fraction — but it is the one waiting on the calibration
+[0.55](TODO.md#055-per-point-confidence-and-then-an-existence-probability--next-2026-08-12)
+has not done on this camera:
+
+```sh
+ros2 param set /doubleeye_live min_confidence 0.85
+```
+
+Set the display to colour by `confidence` first, then lower `keep_best` until the red
+goes and watch what leaves with it. Two things to expect. **A region with no
 texture scores 0.667** — every disparity matches a constant descriptor equally well,
 the matcher genuinely has no idea, and the number says so. **And a wrong match with no
 competitor still scores high**, which is obstacle 24a's ghost: where the true partner
