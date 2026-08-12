@@ -306,8 +306,11 @@ def gather(blog):
         p = os.path.join(BLOG, "_posts")
         if not os.path.isdir(p):
             sys.exit(f"--blog: {BLOG} is not there")
+        # Every 2026 post, not a hard-coded window. The first version globbed
+        # "2026-08-0" and silently skipped a post published on the 13th, which is
+        # exactly the failure this whole file exists to prevent.
         out += [os.path.join(p, f) for f in sorted(os.listdir(p))
-                if f.endswith(".md") and f.startswith("2026-08-0")]
+                if f.endswith(".md") and f.startswith("2026-")]
         out.append(os.path.join(BLOG, "masda-glossary.md"))
     return [p for p in out if os.path.exists(p)]
 
