@@ -107,24 +107,43 @@ def fig_middlebury(names, path, run=True):
 
 # ------------------------------------------------------------------- the real pair
 def fig_real(path):
-    fig, axes = plt.subplots(2, 3, figsize=(9.4, 4.4))
-    for i, (bag, label) in enumerate((("full_on", "projector ON"),
-                                      ("full_off", "projector OFF"))):
-        lp = os.path.join(ROOT, "bags", bag, "frames", "ir1_00000060.raw")
-        rp = os.path.join(ROOT, "bags", bag, "frames", "ir2_00000060.raw")
+    """The vehicle's own camera, in one room, under the four conditions that matter.
+
+    Exposure is per condition rather than fixed: 1500 us lit, 4000 us dark, each the
+    value that holds 3-5 DN of local contrast there. Fixing one exposure across both
+    would measure the exposure rather than the projector.
+    """
+    cases = [("kitchen_on", "lights on\nprojector ON", 1500),
+             ("kitchen_off", "lights on\nprojector off", 1500),
+             ("dark_4000", "lights off\nprojector ON", 4000),
+             ("dark_noemit", "lights off\nprojector off", 4000)]
+    fig, axes = plt.subplots(2, 4, figsize=(11.4, 4.3))
+    for i, (bag, label, us) in enumerate(cases):
+        fr = os.path.join(ROOT, "bags", bag, "frames")
+        lp = sorted(__import__("glob").glob(os.path.join(fr, "ir1_*.raw")))[0]
+        rp = sorted(__import__("glob").glob(os.path.join(fr, "ir2_*.raw")))[0]
         L = np.fromfile(lp, np.uint8).reshape(480, 848)
-        R = np.fromfile(rp, np.uint8).reshape(480, 848)
-        d = run_dense(lp, rp, 848, 480, 60)
-        axes[i, 0].imshow(L, cmap="gray"); axes[i, 0].set_ylabel(label, fontsize=9)
-        axes[i, 1].imshow(R, cmap="gray")
-        show_disp(axes[i, 2], d, 60)
-        for j in range(3):
-            axes[i, j].set_xticks([]); axes[i, j].set_yticks([])
-        cov = 100.0 * np.isfinite(d[d > 0]).sum() / d.size
-        axes[i, 2].set_xlabel(f"{cov:.0f}% of pixels answered", fontsize=8)
-    for j, t in enumerate(["left IR (848x480)", "right IR", "disparity"]):
-        axes[0, j].set_title(t)
-    fig.suptitle("D435 infrared pair, on the vehicle's own camera", y=0.98, fontsize=10)
+        d = run_dense(lp, rp, 848, 480, 64)
+        # Each infrared panel is stretched p1-p99 for display, or the two dark ones
+        # are a black rectangle and the reader cannot see the dots that are the whole
+        # point. The true level is printed under each panel instead.
+        lo, hi = np.percentile(L, (1, 99))
+        axes[0, i].imshow(np.clip((L - lo) / max(hi - lo, 1), 0, 1), cmap="gray",
+                          vmin=0, vmax=1)
+        axes[0, i].set_title(f"{label}\n{us} us", fontsize=8.5)
+        axes[0, i].set_xlabel(f"mean {L.mean():.0f} DN", fontsize=8)
+        show_disp(axes[1, i], d, 64)
+        for r in (0, 1):
+            axes[r, i].set_xticks([]); axes[r, i].set_yticks([])
+        cov = 100.0 * ((d > 0) & np.isfinite(d)).mean()
+        axes[1, i].set_xlabel(f"{cov:.1f}% answered", fontsize=8.5,
+                              color=WARN if cov < 60 else INK)
+    axes[0, 0].set_ylabel("left infrared", fontsize=8.5)
+    axes[1, 0].set_ylabel("disparity", fontsize=8.5)
+    fig.suptitle("One room, one matcher: what the projector is for", y=1.0, fontsize=10)
+    fig.text(0.5, -0.02, "infrared panels are contrast-stretched for display; "
+                         "the mean level under each is the real one",
+             ha="center", fontsize=7.6, color=MUTE)
     fig.savefig(path)
     plt.close(fig)
     print("wrote", path)
@@ -508,11 +527,19 @@ def fig_thumbs():
     index actually renders.
     """
     from PIL import Image
-    jobs = [(os.path.join(P2, "maps_a.png"), os.path.join(P2, "thumb_p2.png")),
-            (os.path.join(P3, "real_pair.png"), os.path.join(P3, "thumb_p3.png")),
-            (os.path.join(P2, "subpixel.png"), os.path.join(P2, "thumb_p1.png"))]
-    for src, dst in jobs:
+    # A crop where the whole figure does not survive being 420 px wide. Part 3's is a
+    # 2x4 grid; downscaled entire it is unreadable, so the thumbnail takes the two
+    # dark-room columns, which are the pair that carries the point.
+    jobs = [(os.path.join(P2, "maps_a.png"), os.path.join(P2, "thumb_p2.png"), None),
+            (os.path.join(P3, "real_pair.png"), os.path.join(P3, "thumb_p3.png"),
+             (0.50, 0.05, 1.00, 0.90)),
+            (os.path.join(P2, "subpixel.png"), os.path.join(P2, "thumb_p1.png"), None)]
+    for src, dst, box in jobs:
         im = Image.open(src).convert("RGB")
+        if box:
+            W, H = im.size
+            im = im.crop((int(box[0] * W), int(box[1] * H),
+                          int(box[2] * W), int(box[3] * H)))
         w = 420
         im = im.resize((w, max(1, round(im.height * w / im.width))), Image.LANCZOS)
         im.convert("P", palette=Image.ADAPTIVE, colors=128).save(dst, optimize=True)
