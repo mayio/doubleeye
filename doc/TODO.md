@@ -77,7 +77,7 @@ remain the CPU baselines.
 proof that message passing was worth 41 points. It was not an ablation: with no
 messages the max-sum belief `beta + rho - cs` degenerates to *minus* the score, so the
 solver picked the WORST candidate. `--iters 0` now means winner-take-all on the score,
-which is the honest degenerate case.
+which is the true degenerate case.
 
 **Then the ablation.** All 15 v3 scenes, `--threads 1`. Uniqueness (the greedy claim)
 and the margin gate are present in EVERY row — only the message passing changes:
@@ -408,7 +408,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    sit in tiles the coarse pass barely saw, and they carry 51.4% of all misses.**
 
    **Acting on it works.** Sweeping in full any tile the predictor covers less than
-   25% of, and pricing that honestly:
+   25% of, and pricing that properly:
 
    | scheme | cost | recall |
    |---|---|---|
@@ -1836,7 +1836,7 @@ what matters:
 
 **Read at matched coverage, SGM is ahead by 6.8 points.** At 91.2% we are at 35.85
 against SGM's 29.08 at 90.2%. Read the other way we are *ahead on bad* — 26.94
-against 29.08 — but eleven points short on coverage. The honest summary is that SGM
+against 29.08 — but eleven points short on coverage. The summary is that SGM
 still dominates the curve, by less than the first (multi-threaded) measurement said,
 and that the gate moves along the curve rather than off it.
 
@@ -1877,7 +1877,7 @@ this is exactly the axis that has a known failure mode.
 
 The price of Q: **the official evaluation is always at full resolution and upsamples
 your result**, which is most of why SGBM2 (submitted at Q) sits at 44.2 dense. The
-penalty is real but it is the same one our honest peers on that board already pay.
+penalty is real but it is the same one comparable systems on that board already pay.
 Middlebury's own advice is to submit the largest resolution the algorithm supports.
 
 **Scoring Q against Q ground truth is not that evaluation and is worth 2.9x.** The
@@ -1940,7 +1940,7 @@ not transfer.
 MatchAttention's 1.17 on an RTX PRO 6000 and IDR's 0.82 on a TITAN Black (~5 TFLOPS
 against the TX2's ~0.75). Per FLOP the k-minor port is several times more efficient
 than IDR. Two entries beat it and both are informative: **r200high at 0.03** is
-fixed-function silicon and is the honest ceiling, and **MotionStereo at 0.25 on a
+fixed-function silicon and is the real ceiling, and **MotionStereo at 0.25 on a
 single Snapdragon core** is motion stereo with a narrow temporal search range -- our
 own temporal-prior result (0.3) arriving from the other direction.
 

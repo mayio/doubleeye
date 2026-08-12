@@ -13,7 +13,7 @@ duplicates it; this is the engineering record that sits underneath it.
 
 | Document | Contents |
 |---|---|
-| [../CLAUDE.md](../CLAUDE.md) | **How to work on this project** — six rules distilled from the 22 obstacles, plus layout and build commands |
+| [../CLAUDE.md](../CLAUDE.md) | **How to work on this project** — six rules distilled from the obstacles, plus layout and build commands |
 | [TODO.md](TODO.md) | **What to do next**, ordered by what unblocks the most |
 | [01-hardware.md](01-hardware.md) | Components in the system, what each is for, what is still missing |
 | [02-software-environment.md](02-software-environment.md) | Exact versions on both machines, what was installed vs. pre-existing, how to build and deploy |
@@ -25,6 +25,9 @@ duplicates it; this is the engineering record that sits underneath it.
 | [08-imu.md](08-imu.md) | Pixhawk/ArduPilot: links, isolated venv, parameters applied, and what is still open |
 | [09-matching.md](09-matching.md) | **MASDA** — messages, validation against brute force, the advantage over nearest-neighbour, ground-truth results on Middlebury, and the frame budget |
 - [10-architecture.md](10-architecture.md) — what runs on the GPU, what runs on the CPU, and the 2026-08-10 decision that put the matcher's image-plane half on the GPU.
+- [12-writing.md](12-writing.md) — **the writing rules**, twelve of them, each named
+  after the mistake that produced it. `tools/doccheck.py` enforces the mechanical
+  half and `--self-test` proves it can still fail.
 - [11-running.md](11-running.md) — **how to actually run it**: deploy, the matcher offline and on the GPU, which knobs matter and what each is worth, the ROS 2 point cloud, the other viewers, and what to check when it looks broken. Organised by task; 07-tools.md is the same ground organised by tool.
 
 ## Status at time of writing
@@ -102,7 +105,7 @@ across them is the same: **on this platform the expensive failures are silent.**
 | **Mean intensity cannot see the projector** — it moved 1.8 DN across the same A/B. Local contrast is the only valid metric | [03](03-obstacles.md) obstacle 12 |
 | Census descriptors are **3.3× degenerate** under the projector (338 distinct for 1115 keypoints) — exactly the ambiguity MASDA's uniqueness constraint is for | [06](06-preprocessing.md) |
 | MASDA finds **+46% matches over nearest-neighbour with the projector on, +13% with it off** — the advantage scales with ambiguity, as argued | [09](09-matching.md) |
-| MASDA costs **5.04 ms on the Jetson**, 15% of the budget. The 1.67 ms previously quoted was a **desktop** number compared against the Jetson's budget, because `core/` had never been built on the Jetson at all | [03](03-obstacles.md) obstacle 15 |
+| MASDA costs **5.04 ms on the Jetson**, 15% of the budget. The 1.67 ms it replaced was a **desktop** number compared against the Jetson's budget, because `core/` had never been built on the Jetson at all | [03](03-obstacles.md) obstacle 15 |
 | The whole pipeline **does not fit 30 Hz untuned**: preprocessing 26.54 ms + matching 5.14 ms = 95% of budget, and the recommended matcher config alone pushes it to 106% | [09](09-matching.md) |
 | **Raising `fast_threshold` 8 → 12 saves 30% of preprocessing for 10% of matches**, at flat precision and unchanged sub-pixel error. Nobody had tried it: 8 was chosen against the *dense* detector, a quality argument, never a budget one | [09](09-matching.md) |
 | Threshold beats resolution decisively: 8→20 costs 24% of matches for 57% of the time, where halving resolution costs **74%** of keypoints for 70%. Resolution also costs depth precision directly | [09](09-matching.md) |

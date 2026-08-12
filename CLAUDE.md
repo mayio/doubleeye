@@ -26,6 +26,7 @@ comments, commit messages, or documentation.
 cd core && make && make test      # 104 assertions, must stay at 0 failures. 16 of them are the NEON
                                   # kernel and report SKIPPED off the Jetson
 tools/deploy.sh                   # sync jetson/ and core/ to the TX2 and build both
+tools/doccheck.py --blog          # documentation: links, anchors, retired values, phrasing
 ```
 
 Two Pythons, not interchangeable: `.venv/bin/python` for anything needing
@@ -81,6 +82,24 @@ backwards — it predicts correctness *negatively*. The ordering-factor conclusi
 flipped sign twice before being measured over seeds. When writing a justification
 into a comment or a doc, either cite the measurement or say it is untested. Both are
 fine; asserting it is not.
+
+### Writing
+
+Full rules in [doc/12-writing.md](doc/12-writing.md), enforced where a script can by
+`tools/doccheck.py`. The four that bind hardest:
+
+- **Every number states its machine, input, configuration and unit in the sentence
+  that carries it.** A figure lifted into another document carries them with it.
+- **Documentation describes the present, never the change.** Changelog wording is out
+  — `doccheck.py` holds the list and will name any that appear. History lives in git
+  and in `03-obstacles.md`, the one file allowed to be chronological.
+- **Name a section, link the section**, and verify the anchor against what the
+  generator actually emits rather than what its documentation implies.
+- **Write for an engineer whose first language is not English**: one idea per sentence,
+  no idioms, subject first, abbreviations expanded on first use in every document.
+
+When a default changes, grep every document for the old value and add the retirement
+to `RETIRED` in `tools/doccheck.py`.
 
 ### Consequences worth keeping
 

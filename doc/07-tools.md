@@ -761,13 +761,12 @@ means more competition, lower score margin, lower precision -- but the two were
 nothing. An attempt at a controlled within-frame metric produced a degenerate result
 and was discarded rather than reported.
 
-**Update: in use, the denser setting is clearly better.** Mario ran it live and the
-result was substantially more readable than the default. So the speckle I saw was
-either the scene difference or something the still frame exaggerates, and the
-default of 32/3 is too sparse for looking at. It remains untested against ground
-truth -- `de_bench` could settle whether the extra matches are also *correct*, which
-is a different question from whether the picture reads better -- but for viewing,
-use the denser setting.
+**For viewing, use the denser setting.** Run live it is substantially more readable
+than the 32/3 default, which is too sparse to look at. The speckle visible in a single
+still frame is therefore either a scene difference or something the still exaggerates.
+It remains untested against ground truth: `de_bench` could settle whether the extra
+matches are also *correct*, which is a different question from whether the picture
+reads better.
 
 **On points jumping between frames.** Keypoints are detected independently in every
 frame, so they land on different pixels each time and the cloud flickers even when
