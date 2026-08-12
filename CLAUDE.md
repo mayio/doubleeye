@@ -97,6 +97,9 @@ Full rules in [doc/12-writing.md](doc/12-writing.md), enforced where a script ca
   generator actually emits rather than what its documentation implies.
 - **Write for an engineer whose first language is not English**: one idea per sentence,
   no idioms, subject first, abbreviations expanded on first use in every document.
+- **Show the mathematics, a worked example, or the code** whenever one of them explains
+  faster than prose — with the equation evaluated at the shipping values, and any
+  snippet checked against the shipping implementation.
 
 When a default changes, grep every document for the old value and add the retirement
 to `RETIRED` in `tools/doccheck.py`.

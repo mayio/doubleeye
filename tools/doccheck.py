@@ -66,6 +66,86 @@ def headings(text):
     return {anchor(h) for h in re.findall(r"^#{1,6}\s+(.+?)\s*$", text, re.M)}
 
 
+def sections(text):
+    """anchor -> (heading text, body text). The body is needed to check that a
+    citation points at the entry naming that author, not merely at an entry."""
+    out, marks = {}, list(re.finditer(r"^#{1,6}\s+(.+?)\s*$", text, re.M))
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        out[anchor(m.group(1))] = (m.group(1).strip(), text[m.end():end])
+    return out
+
+
+# --- does a link's TEXT describe what it points at? -----------------------------------
+#
+# Existence is not correctness: a reference can resolve and still send the reader to
+# the wrong place. Part 2 cited the intrinsic-curves result as "section 8" with a live
+# link to section 9 for weeks. Three rules, in decreasing exactness.
+STOP = set("the a an of and or to in on for is are it its this that with as by at be "
+           "what which how why not from over under into more most one two three its "
+           "here below above see run use using does do done we i you".split())
+PART_DATE = {"1": "2026-08-07", "2": "2026-08-08", "3": "2026-08-09"}
+
+# Link texts that legitimately share no word with their target. Each is a decision that
+# the shorthand is clearer than the heading, not an exemption from thinking about it.
+ALIASES = {
+    "int16": "q14", "q14": "int16",
+    "fit": "sub-pixel", "the fit": "sub-pixel",
+    "cudahostalloc": "pinned", "pinned": "cudahostalloc",
+    "strided": "segment", "clutter": "clutter",
+}
+
+
+def stem(w):
+    for suf in ("ations", "ation", "ations", "ions", "ing", "ies", "ed", "es", "s"):
+        if len(w) > len(suf) + 3 and w.endswith(suf):
+            return w[: -len(suf)]
+    return w
+
+
+def content(s):
+    return {stem(w) for w in re.findall(r"[a-z0-9]+", s.lower())
+            if w not in STOP and len(w) > 1}
+
+
+def stem_overlap(a, b):
+    for x in a:
+        for y in b:
+            if x == y or (len(x) >= 5 and (x.startswith(y) or y.startswith(x))):
+                return True
+    return False
+
+
+def acronym_of(heading):
+    ws = [w for w in re.split(r"[\s\-]+", heading.lower()) if w and w not in STOP]
+    return "".join(w[0] for w in ws)
+
+
+def text_fits_target(text, heading, body):
+    """True if the link text plausibly names the thing it points at."""
+    t = re.sub(r"[`*]", "", text).strip().lower()
+    if t in ALIASES and ALIASES[t] in (heading + " " + t).lower():
+        return True
+    for k, v in ALIASES.items():
+        if k in t and v in heading.lower():
+            return True
+    if stem_overlap(content(t), content(heading)):
+        return True
+    # a heading is a title, not a description. The opening of the entry is where the
+    # thing is actually named, so a link text that describes the content matches there.
+    if stem_overlap(content(t), content(body[:600])):
+        return True
+    # an acronym anywhere in the text: "SGM's", "LAP solver" -> Semi-global matching
+    for a in re.findall(r"\b([A-Z]{2,6})\b", text):
+        if a.lower() in acronym_of(heading):
+            return True
+    # a citation: the surname in the link text must appear in the target's body
+    for name in re.findall(r"\b([A-Z][a-z]{3,})\b", text):
+        if name.lower() in body.lower():
+            return True
+    return False
+
+
 def strip_code(text):
     """Blank code blocks out rather than delete them: the checks report line numbers,
     and deleting shifts every line after the first fence."""
@@ -85,7 +165,7 @@ class Report:
         self.notes.append(f"{where}: {msg}")
 
 
-def check_file(path, rep, universe, long_words):
+def check_file(path, rep, universe, site, long_words):
     """universe maps an absolute .md path -> its set of anchors, for cross-file links."""
     name = os.path.basename(path)
     raw = open(path, encoding="utf-8").read()
@@ -102,22 +182,76 @@ def check_file(path, rep, universe, long_words):
         if not re.search(r"\]\[" + re.escape(ref) + r"\]", body):
             rep.fail(rel, f"unused link definition [{ref}]")
 
-    # --- links ---------------------------------------------------------------------
-    for target in re.findall(r"(?<!!)\[[^\]]*\]\(([^)\s]+)\)", body):
-        if target.startswith(("http://", "https://", "mailto:")):
+    # --- links: does it resolve, and does it resolve to the right thing? ------------
+    defs = dict(re.findall(r"^\[([^\]]+)\]:\s*(\S+)", body, re.M))
+    links = [(t, u) for t, u in re.findall(r"(?<!!)\[([^\]]+)\]\(([^)\s]+)\)", body)]
+    links += [(t, defs.get(r, "")) for t, r in
+              re.findall(r"\[([^\]]+)\]\[([^\]]+)\]", body)]
+
+    for text, target in links:
+        if not target:
             continue
+        # --- the reference points at a numbered thing: the number must agree --------
+        m = re.search(r"(?:\bsections?\s+|§\s*)(\d+(?:\.\d+)*)", text, re.I)
+        if m:
+            want = m.group(1).replace(".", "")
+            got = target.partition("#")[2]
+            if got and not re.match(rf"{want}(?!\d)", got):
+                rep.fail(rel, f'"{text}" links to #{got}, which is not section '
+                              f'{m.group(1)}')
+        m = re.search(r"\bParts?\s+([123])\b", text)
+        if m and "mariolueder.com/2026-08-0" in target:
+            if PART_DATE[m.group(1)] not in target:
+                rep.fail(rel, f'"{text}" links to {target.split("/")[3][:10]}, '
+                              f'which is not Part {m.group(1)}')
+
+        if target.startswith("mailto:"):
+            continue
+        # --- resolve the target to a heading and a body, if we hold it ---------------
+        tgt = None
+        file_hint = os.path.basename(target.partition("#")[0])
         if target.startswith("#"):
             if target[1:] not in own:
                 rep.fail(rel, f"broken intra-file anchor {target}")
-            continue
-        if target.startswith("/") and not target.startswith("/assets/"):
-            continue                      # a Jekyll permalink, not a path on disk
-        file_part, _, frag = target.partition("#")
-        dest = os.path.normpath(os.path.join(os.path.dirname(path), file_part))
-        if not os.path.exists(dest):
-            rep.fail(rel, f"link target does not exist: {file_part}")
-        elif frag and dest in universe and frag not in universe[dest]:
-            rep.fail(rel, f"broken anchor {file_part}#{frag}")
+                continue
+            tgt = universe.get(path, {}).get(target[1:])
+        elif target.startswith(("http://", "https://")):
+            frag = target.partition("#")[2]
+            for key, sec in site.items():
+                if key in target and frag:
+                    if frag not in sec:
+                        rep.fail(rel, f"broken anchor on {key}: #{frag}")
+                    tgt = sec.get(frag)
+                    break
+        elif target.startswith("/") and not target.startswith("/assets/"):
+            frag = target.partition("#")[2]
+            for key, sec in site.items():
+                if key in target and frag:
+                    if frag not in sec:
+                        rep.fail(rel, f"broken anchor on {key}: #{frag}")
+                    tgt = sec.get(frag)
+                    break
+        else:
+            file_part, _, frag = target.partition("#")
+            dest = os.path.normpath(os.path.join(os.path.dirname(path), file_part))
+            if not os.path.exists(dest):
+                rep.fail(rel, f"link target does not exist: {file_part}")
+                continue
+            if frag and dest in universe:
+                if frag not in universe[dest]:
+                    rep.fail(rel, f"broken anchor {file_part}#{frag}")
+                    continue
+                tgt = universe[dest][frag]
+
+        # --- and does the link text describe what is there? -------------------------
+        # A number is checked as a number above; a link text that is the file name is
+        # pointing at the file, and the anchor is only where to land in it.
+        by_number = re.search(r"(?:\bsections?\s+|§\s*)\d", text, re.I)
+        if tgt and not by_number and text.strip() != file_hint:
+            heading, tbody = tgt
+            if not text_fits_target(text, heading, tbody):
+                rep.fail(rel, f'"{text[:44]}" points at "{heading[:44]}" and shares '
+                              f"nothing with it -- wrong target, or name it better")
 
     # --- images --------------------------------------------------------------------
     for img in re.findall(r"!\[[^\]]*\]\(([^)\s]+)\)", body):
@@ -161,7 +295,7 @@ def check_file(path, rep, universe, long_words):
 
 
 def collect(paths):
-    return {p: headings(open(p, encoding="utf-8").read()) for p in paths}
+    return {p: sections(open(p, encoding="utf-8").read()) for p in paths}
 
 
 def gather(blog):
@@ -187,6 +321,18 @@ To be honest, this word is banned.
 $$ x = 1
 ![missing](/assets/img/nope/nope.png)
 
+## 9. Fruit and vegetables
+
+Apples, pears, carrots.
+
+## 2. Something else entirely
+
+Turbines.
+
+A reference that resolves and is still wrong: [section 2](#9-fruit-and-vegetables).
+A link whose text describes nothing there: [turbochargers](#9-fruit-and-vegetables).
+A part that is not that part: [Part 2](https://www.mariolueder.com/2026-08-09-x/#a).
+
 [unused]: https://example.com
 """
 
@@ -196,12 +342,17 @@ def self_test():
     import tempfile
     want = ["broken intra-file anchor", "link target does not exist", "retired value",
             "rule 4", "honest", "odd number of $$", "image not found",
-            "unused link definition"]
+            "unused link definition",
+            "which is not section 2",          # a reference to the wrong section
+            "which is not part 2",             # a reference to the wrong post
+            "shares nothing with it"]          # a link text that names something else
     with tempfile.TemporaryDirectory() as td:
         p = os.path.join(td, "self-test.md")
         open(p, "w").write(SELF_TEST)
         rep = Report()
-        check_file(p, rep, {}, 34)
+        # a real universe: without it the content check has no target to resolve and
+        # silently never fires, which is the failure this whole function exists to catch
+        check_file(p, rep, collect([p]), {}, 34)
     blob = "\n".join(rep.fails).lower()
     missing = [w for w in want if w.lower() not in blob]
     for f in rep.fails:
@@ -226,9 +377,18 @@ def main():
 
     files = gather(a.blog)
     universe = collect(files)
+    # URL fragment -> that page's sections, so a link into the glossary or into
+    # another post can be checked for content and not merely for existence.
+    site = {}
+    for f in files:
+        base = os.path.basename(f)
+        if base == "masda-glossary.md":
+            site["masda-glossary"] = universe[f]
+        elif base.startswith("2026-08-0"):
+            site[base[:10]] = universe[f]
     rep = Report()
     for f in files:
-        check_file(f, rep, universe, a.long)
+        check_file(f, rep, universe, site, a.long)
 
     for n in rep.notes:
         print("  note   ", n)
