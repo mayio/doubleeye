@@ -156,12 +156,22 @@ def densify(H, W, ui, vi, z, stride=8):
     return small[np.ix_(yi, xi)].astype(np.float32)
 
 
-def colours_for(m: np.ndarray) -> np.ndarray:
-    """Per-point RGB by margin, vectorised. (N, 3) uint8."""
+def colours_for(m: np.ndarray, dense: bool) -> np.ndarray:
+    """Per-point RGB by confidence, vectorised. (N, 3) uint8.
+
+    The two modes carry different quantities in the same field, so they get
+    different breaks. Dense is a fitted P(correct within 1 disparity), and the
+    thresholds are read off the reliability table in TODO 0.553: below 0.60 the
+    model itself says a point is wrong more often than one time in three. Sparse is
+    the raw score margin, whose 0.30 and 0.10 breaks predate this work and are not
+    a probability.
+    """
     c = np.empty((len(m), 3), np.uint8)
+    lo, mid = (0.60, 0.85) if dense else (0.10, 0.30)
     c[:] = (60, 170, 75)
-    c[m < 0.30] = (203, 145, 20)
-    c[m < 0.10] = (220, 50, 47)
+    c[m < mid] = (203, 145, 20)
+    c[m < lo] = (220, 50, 47)
+    c[~np.isfinite(m)] = (110, 110, 110)   # an older matcher: no confidence sent
     return c
 
 
@@ -194,6 +204,12 @@ def main() -> int:
     # matcher's own benchmarks all run at 0.01, and 0.10 there rejects ~96% of
     # the map -- which looks exactly like a matcher that found nothing.
     ap.add_argument("--min-margin", type=float, default=None)
+    ap.add_argument("--min-confidence", type=float, default=0.0,
+                    help="drop points below this confidence. Dense: a fitted "
+                         "P(within 1 disparity), so 0.85 is a probability. Sparse: "
+                         "the raw score margin, which is not. 0 keeps everything, "
+                         "and it is a live ROS parameter -- "
+                         "`ros2 param set /doubleeye_live min_confidence 0.85`")
     ap.add_argument("--exposure-us", type=int, default=0,
                     help="fixed exposure. Setting it turns the contrast controller "
                          "off, since the two cannot both own the exposure")
@@ -234,11 +250,12 @@ def main() -> int:
                          "sparse keypoint one: ~80% of pixels answered rather than "
                          "~570 points, at 848x480 on the GPU")
     ap.add_argument("--colour", default="image",
-                    choices=["image", "depth", "margin"],
+                    choices=["image", "depth", "confidence"],
                     help="how to colour the cloud. image: the left camera's own "
                          "intensity, so the cloud looks like the scene. depth: a "
-                         "ramp over the 5-95 percentile. margin: the matcher's "
-                         "confidence, which the dense packet does not carry")
+                         "ramp over the 5-95 percentile. confidence: green above "
+                         "0.85, amber to 0.60, red below, grey where the matcher "
+                         "sent none")
     ap.add_argument("--dense-stride", type=int, default=2,
                     help="subsample the dense cloud by this factor in each axis. "
                          "1 is 407k points a frame and ~6 MB of PointCloud2; 2 is "
@@ -329,6 +346,16 @@ def main() -> int:
 
     rclpy.init()
     node = Node("doubleeye_live")
+    # A ROS parameter rather than only a flag, because rviz cannot filter a point
+    # cloud by a field -- its PointCloud2 display colours by one and draws every
+    # point regardless -- so the threshold has to be applied here, and finding the
+    # right one is a thing you do by turning it while looking at the cloud:
+    #
+    #   ros2 param set /doubleeye_live min_confidence 0.85
+    #
+    # Read fresh every frame. The cost is one parameter lookup against a cloud
+    # that is already megabytes.
+    node.declare_parameter("min_confidence", float(a.min_confidence))
     # RELIABLE by default, which is the only choice that works with rviz2 out of
     # the box. DDS compatibility is one-directional: a publisher must be at least
     # as strong as the subscriber, so
@@ -386,7 +413,8 @@ def main() -> int:
         PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
         PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
         PointField(name="rgb", offset=12, datatype=PointField.FLOAT32, count=1),
-        PointField(name="margin", offset=16, datatype=PointField.FLOAT32, count=1),
+        PointField(name="confidence", offset=16, datatype=PointField.FLOAT32,
+                   count=1),
     ]
 
     k = max(1, a.dilate) // 2
@@ -404,8 +432,16 @@ def main() -> int:
             W, H, num, nm = struct.unpack("<HHII", hdr[4:])
             img_bytes = read_exactly(stream, W * H)
             # The dense packet's second field is a full W*H map of Q4 int16 rather
-            # than nm records; nm is zero there and carries nothing.
+            # than nm records; nm is zero there and carries nothing. In the dense
+            # packet the fourth header word is flags, and bit 0 says a W*H plane of
+            # uint8 confidence follows the disparity. A matcher built before that
+            # bit existed sends a zero here and no plane, so both work.
             rec_bytes = read_exactly(stream, W * H * 2 if a.dense else nm * 16)
+            conf_bytes = None
+            if a.dense and (nm & 1):
+                conf_bytes = read_exactly(stream, W * H)
+                if conf_bytes is None:
+                    break
             if img_bytes is None or rec_bytes is None:
                 break
             n_seen += 1
@@ -425,7 +461,13 @@ def main() -> int:
                 xl = (vx * st).astype(np.float32)
                 yl = (vy * st).astype(np.float32)
                 disp = q[vy, vx].astype(np.float32) / 16.0
-                margin = np.ones_like(disp)      # the map does not carry it
+                if conf_bytes is not None:
+                    c = np.frombuffer(conf_bytes, dtype=np.uint8).reshape(H, W)
+                    margin = c[::st, ::st][vy, vx].astype(np.float32) / 255.0
+                else:
+                    # An older matcher on the board. Say so rather than letting a
+                    # flat 1.0 read as "every point is certain".
+                    margin = np.full(disp.shape, np.nan, np.float32)
             else:
                 rec = np.frombuffer(rec_bytes, dtype=np.float32).reshape(-1, 4)
                 xl, yl, disp, margin = rec[:, 0], rec[:, 1], rec[:, 2], rec[:, 3]
@@ -435,6 +477,13 @@ def main() -> int:
             z_all = np.divide(FB, disp, out=np.zeros_like(disp),
                               where=disp > 0.0)
             ok = (disp > 0.0) & (z_all >= a.min_range) & (z_all <= a.max_range)
+            min_conf = float(node.get_parameter("min_confidence").value)
+            if min_conf > 0.0:
+                # NaN means the matcher sent no confidence, and NaN fails every
+                # comparison, so an old matcher plus a threshold drops everything
+                # rather than passing everything. That is the safe direction, and
+                # the startup line says which matcher is on the other end.
+                ok &= margin >= min_conf
             n_drop = int((~ok).sum())
             xl, yl, disp, margin = xl[ok], yl[ok], disp[ok], margin[ok]
 
@@ -484,12 +533,11 @@ def main() -> int:
 
             x = (xl - CX) * z / FX
             y = (yl - CY) * z / FY
-            # Colour by margin only when the margin means something. The dense
-            # packet carries a disparity map and no per-pixel confidence, so every
-            # point would come back the same green and 88,000 of them read as one
-            # flat blob. Colouring by the left image's own intensity instead makes
-            # the cloud look like the scene, which is the point of looking at it.
-            if a.dense and a.colour != "margin":
+            # Colour by the left image unless confidence was asked for. Both are
+            # useful and neither replaces the other: intensity makes 88,000 points
+            # look like the room, which is what makes a wrong surface recognisable
+            # as a wrong surface, and confidence says which of them to believe.
+            if a.dense and a.colour != "confidence":
                 gi = gray[yl.astype(np.int32), xl.astype(np.int32)]
                 if a.colour == "image":
                     g8 = stretch(gray)[yl.astype(np.int32), xl.astype(np.int32)] \
@@ -499,7 +547,7 @@ def main() -> int:
                     lo, hi = np.percentile(z, 5), np.percentile(z, 95)
                     cols = colourise(z, float(lo), float(hi))
             else:
-                cols = colours_for(margin)
+                cols = colours_for(margin, a.dense)
             packed = ((cols[:, 0].astype(np.uint32) << 16)
                       | (cols[:, 1].astype(np.uint32) << 8)
                       | cols[:, 2].astype(np.uint32))
@@ -595,9 +643,10 @@ def main() -> int:
 
             n_pub += 1
             if n_pub % 15 == 0:
-                weak = float((margin < 0.2).mean()) if len(margin) else 0.0
+                weak = (float((margin < 0.6).mean())
+                        if len(margin) and np.isfinite(margin).any() else float("nan"))
                 print(f"\rframe {num}  {len(z)} points  "
-                      f"margin<0.2 {100*weak:.0f}%  Z {d_lo:.2f}-{d_hi:.2f} m "
+                      f"conf<0.6 {100*weak:.0f}%  Z {d_lo:.2f}-{d_hi:.2f} m "
                       f"(colour range)  dropped {n_drop}  "
                       f"published {n_pub}/{n_seen}",
                       end="", flush=True)

@@ -247,13 +247,47 @@ in rviz costs real bandwidth.
 
   Left unset the script picks per mode — 0 for dense, 0.10 for sparse — and prints
   which. **Raise it for anything that triangulates**; leave it alone for looking.
-- `--colour image|depth|margin` (image) — `image` paints each point with the left
-  camera's own intensity, so the cloud looks like the scene. `depth` is a ramp over
-  the 5–95 percentile. `margin` is the sparse path's confidence colouring and is
-  meaningless with `--dense`, where the packet carries no per-pixel margin — every
-  point comes out the same colour.
+- `--colour image|depth|confidence` (image) — `image` paints each point with the left
+  camera's own intensity, so the cloud looks like the scene, which is what makes a
+  wrong surface recognisable as a wrong surface. `depth` is a ramp over the 5–95
+  percentile. `confidence` is green above 0.85, amber down to 0.60, red below, and
+  grey where the matcher on the other end is old enough not to send one.
+- `--min-confidence F` (0) — **drop points the matcher does not believe.** See the
+  section below; it is also a live parameter, so the usual way to set it is not this
+  flag.
 - `--dense-stride N` (2) — subsample the cloud. 1 is 407k points and ~6 MB a frame.
 - `--local FILE` — replay a captured packet stream instead of running the camera.
+
+### Confidence, and how to filter by it
+
+Each dense point carries `P(this point is within 1 disparity of correct)`, computed
+from the two candidate scores the solver already ranked and sent as one byte a pixel.
+The model, its measurement and what it does not establish are in
+[TODO 0.553](TODO.md#0553-steps-3-and-4-measured-it-is-a-probability-and-it-is-over-confident-on-a-hard-scene);
+the arithmetic is six lines in `core/include/doubleeye/dense_solve.hpp`.
+
+**rviz2 cannot filter a point cloud by a field.** Its PointCloud2 display colours by
+one — Color Transformer `Intensity`, Channel Name `confidence` — and the Min and Max
+Intensity boxes only stretch the colour ramp. A point outside them is still drawn, in
+the end colour. There is no threshold, no "hide below", and none of the other display
+types does it either.
+
+So the threshold is applied before publishing, and it is a ROS parameter so it can be
+turned while you watch:
+
+```sh
+ros2 param get /doubleeye_live min_confidence
+ros2 param set /doubleeye_live min_confidence 0.85     # takes effect next frame
+ros2 param set /doubleeye_live min_confidence 0.0      # everything again
+```
+
+Set the display to colour by `confidence` first, then raise the threshold until the
+red goes and watch what leaves with it. Two things to expect. **A region with no
+texture scores 0.667** — every disparity matches a constant descriptor equally well,
+the matcher genuinely has no idea, and the number says so. **And a wrong match with no
+competitor still scores high**, which is obstacle 24a's ghost: where the true partner
+is off the sensor there is nothing for the winner to beat. Catching that needs the
+reverse match, which the CPU tool has as `--lrc` and the GPU does not yet.
 
 ### Exposure: let it adapt
 

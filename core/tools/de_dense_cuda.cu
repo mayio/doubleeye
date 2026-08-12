@@ -43,13 +43,21 @@ namespace {
 
 // Streaming I/O, same packet grammar as de_pipe so the ROS bridge needs no new
 // transport. In:  "DEIR" | w u16 | h u16 | stream u8 | flags u8 | frame u32 | Y8
-// Out: "DEDD" | w u16 | h u16 | frame u32 | 0 u32 | left Y8 | w*h int16 disparity,
-// Q4 (sixteenths of a pixel), -32768 where the matcher declined.
+// Out: "DEDD" | w u16 | h u16 | frame u32 | flags u32 | left Y8 | w*h int16
+// disparity, Q4 (sixteenths of a pixel), -32768 where the matcher declined
+//                                       | w*h u8 confidence, if flags & 1
 //
 // Q4 rather than float halves the wire: 848x480 is 814 kB a frame instead of 1.6 MB,
 // and a sixteenth of a pixel is finer than the sub-pixel fit's own residual, so
 // nothing measurable is lost. The left image rides along because the viewer colours
 // the cloud with it.
+//
+// The flags word was a zero the reader ignored, so bit 0 can mean "a confidence
+// plane follows" without breaking a reader built before it existed: an old viewer
+// reads zero and stops after the disparity, a new one against an old matcher sees
+// no bit and asks for nothing.
+enum : uint32_t { DEDD_CONF = 1u };
+
 bool read_all(void* p, size_t n) {
   return std::fread(p, 1, n, stdin) == n;
 }
@@ -417,6 +425,9 @@ int main(int argc, char** argv) {
   cfg.dmax = 64;
   std::string outp, kpp;
   bool stream_mode = false;
+  // On by default: a consumer that wants only geometry skips a plane, and one
+  // that wants to weight or threshold should not have to redeploy to get it.
+  bool want_conf = true;
   int frames = 1;
   for (int i = 5; i < argc; ++i) {
     const std::string a = argv[i];
@@ -439,6 +450,7 @@ int main(int argc, char** argv) {
     else if (a == "--out" && has) outp = argv[++i];
     else if (a == "--keypoints" && has) kpp = argv[++i];
     else if (a == "--stream") stream_mode = true;
+    else if (a == "--no-confidence") want_conf = false;
     else if (a == "--frames" && has) frames = std::max(1, std::atoi(argv[++i]));
     else if (a == "--subpixel") cfg.subpixel = true;   // now the default
     else if (a == "--no-subpixel") cfg.subpixel = false;
@@ -654,6 +666,7 @@ int main(int argc, char** argv) {
     struct Pending { std::vector<uint8_t> img; int stream; };
     std::map<uint32_t, Pending> pending;
     std::vector<int16_t> qdisp(WH);
+    std::vector<uint8_t> qconf(want_conf ? WH : 0);
     long pairs = 0, dropped = 0;
     for (;;) {
       unsigned char hdr[14];
@@ -716,16 +729,25 @@ int main(int argc, char** argv) {
         qdisp[i] = (d > 0.f && std::isfinite(d))
                        ? int16_t(std::lround(d * 16.0f)) : int16_t(-32768);
       }
+      // The confidence rides beside the disparity, not inside it: a consumer that
+      // wants only geometry skips a plane, and one that wants to weight or threshold
+      // reads a byte. 848x480 is 407 kB a frame, half of what the disparity costs.
+      if (want_conf)
+        for (size_t i = 0; i < WH; ++i)
+          qconf[i] = (qdisp[i] == int16_t(-32768))
+                         ? uint8_t(0)
+                         : confidence_u8(cs[0][i * 2], cs[0][i * 2 + 1], cfg.lambda);
       unsigned char out[16];
       std::memcpy(out, "DEDD", 4);
       std::memcpy(out + 4, &pw, 2);
       std::memcpy(out + 6, &ph, 2);
       std::memcpy(out + 8, &num, 4);
-      const uint32_t zero = 0;
-      std::memcpy(out + 12, &zero, 4);
+      const uint32_t flags = want_conf ? DEDD_CONF : 0u;
+      std::memcpy(out + 12, &flags, 4);
       if (!write_all(out, sizeof(out))) break;
       if (!write_all(lft.data(), WH)) break;
       if (!write_all(qdisp.data(), qdisp.size() * sizeof(int16_t))) break;
+      if (want_conf && !write_all(qconf.data(), qconf.size())) break;
       std::fflush(stdout);
       pending.erase(it);
       if (++pairs % 30 == 0) {
