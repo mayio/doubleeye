@@ -34,7 +34,7 @@ Two Pythons, not interchangeable: `.venv/bin/python` for anything needing
 
 ## How to work on this project
 
-Twenty-four obstacles are recorded in [doc/03-obstacles.md](doc/03-obstacles.md).
+Twenty-six obstacles are recorded in [doc/03-obstacles.md](doc/03-obstacles.md).
 They are not independent. Almost all of them are one of six things, and each rule
 below is followed by the obstacles that produced it. Treat these as defaults, not
 aspirations — every one was learned by getting it wrong here.
@@ -56,9 +56,10 @@ measure on the Jetson. *(15, 22)*
 while a third of frames were lost, because it compared a host-side counter against
 itself. A regression test compared two zeros and passed. A test harness piped data
 into `python3 -` — which reads its *program* from stdin — and reported zero packets
-for a healthy pipeline. Before trusting a passing check, ask what input would make
-it fail, and confirm the numbers in its output look like the quantity intended.
-*(7, 12, 19)*
+for a healthy pipeline. A `cmp` of two code paths returned identical on all eight
+scenes because a misspelled flag left both runs on the same path. Before trusting a
+passing check, ask what input would make it fail, and confirm the numbers in its
+output look like the quantity intended. *(7, 12, 19, 25)*
 
 **4. A default is a claim about the world.** The disparity gate defaulted to a
 0.10–21.5 m search range and was used indoors, which admitted a quarter of all

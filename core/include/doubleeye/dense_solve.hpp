@@ -68,6 +68,25 @@ struct Cfg {
   float ad = 0.15f;            // graded cost weight; 0.15 with trunc 10 measured best
   int ad_trunc = 10;           // truncation for the absolute difference, 8-bit
   float lambda = -0.1f, gamma = -0.1f, damping = 0.4f, min_margin = 0.f;
+  // An alternative gate on the SAME two scores, as a ratio of costs rather than a
+  // difference of similarities. Both are standard confidence measures -- the margin
+  // is Hu and Mordohai's maximum-margin-naive, this is their peak-ratio-naive.
+  //
+  // OFF because the two benchmarks disagree, and article/confidence.py says why.
+  // At bad-1.0 on the eight 450x375 scenes the ratio is better at every matched
+  // coverage, by 0.4 points at 76% coverage rising to 1.3 at 39%. On Middlebury v3,
+  // whose quarter-resolution threshold is 0.25 px, it is level or 0.2 worse. The
+  // ratio ranks GROSS mismatches better and says almost nothing more than the
+  // margin about sub-pixel accuracy, so the tolerance decides which benchmark
+  // sees a win. `--min-ratio 1.0` is inert; 1.10 keeps ~61% of pixels.
+  float min_ratio = 0.f;
+  // The reverse match, for left-right consistency. Every score already says how well
+  // left pixel x fits right pixel x - d; the forward path reduces those over d for
+  // each x, and this reduces the SAME scores over x for each x - d. So it is a second
+  // running maximum in the loop that already holds the score, not a second matching
+  // pass, and it needs one best rather than a top-2: the only question asked of a
+  // right pixel is which left pixel it would have chosen.
+  bool lrc = false;
   int threads = 0;
   bool simd = false;           // NEON score kernel, disparity in the lanes
   bool c2f = false;            // half-res coarse pass, prior as a mask (--band)
@@ -76,6 +95,55 @@ struct Cfg {
                                // that needs neighbouring disparities against the
                                // shipping top-2 algorithm rather than the dense one.
 };
+
+
+// P(this pixel is within 1 disparity of correct), from the two candidate scores the
+// solver has already ranked. Fitted by leave-one-scene-out logistic regression on the
+// eight Middlebury scenes with `article/confidence.py --fit`: an area under the
+// sparsification curve of 0.0301, against 0.1041 for no confidence at all and 0.0062
+// for an oracle that removes the wrong pixels first.
+//
+// ONE feature, the peak ratio, and the arithmetic is two floats:
+//
+//   alt   = max(s2, lambda)             the runner-up, floored where there is none
+//   x     = log((1 - alt) / (1 - s1))   the two costs as a ratio, as a ratio should be
+//   logit = 0.692684 + 7.936751 * x
+//   P     = 1 / (1 + exp(-logit))
+//
+// Worked at the eight-scene mean, s1 = 0.682 and alt = 0.537:
+//   1 - s1 = 0.318, x = log(0.463 / 0.318) = 0.3757
+//   logit = 0.692684 + 7.936751 * 0.3757 = 3.674,  P = 0.975
+//
+// WHY NOT MORE FEATURES. Adding the margin and the winning score reaches 0.0290, and
+// both richer models are WRONG in the case that matters most here. A region with no
+// texture has a constant Census descriptor, so every disparity matches perfectly:
+// s1 = s2, the margin is 0 and the ratio is 1, and both cues correctly say "no idea".
+// A model that also reads the winning score sees a perfect score and returns 0.94.
+// It cannot say "a high score only counts when the margin is not zero", because it is
+// linear, and it was never shown such a pixel -- Middlebury is textured almost
+// everywhere. Caught on a synthetic frame whose black padding scored HIGHER than the
+// real image. This model returns 0.667 there, below anything a real match reaches.
+//
+// The two-feature version is worse than it looks for a different reason: its weights
+// come out +15.73 and -16.31, a cancellation between two collinear cues, with the
+// margin entering NEGATIVELY. It fits and it is not a statement about the world.
+//
+// WHAT IS NOT ESTABLISHED. The ranking is measured. The absolute number is fitted on
+// visible-light Middlebury while this camera is projected-dot infrared, which 0.45
+// measured to differ by 2-3x in local contrast, and the same fit is already 0.08 out
+// on the hardest of the eight scenes it WAS trained on. Treat it as an ordering that
+// carries a probability's units until the wall check in TODO 0.55 validates it here.
+inline float confidence(float s1, float s2, float lambda) {
+  if (!(s1 > -1e29f)) return 0.f;
+  const float alt = (s2 > -1e29f) ? std::max(s2, lambda) : lambda;
+  const float x = std::log(std::max((1.f - alt) / std::max(1.f - s1, 1e-6f), 1e-6f));
+  const float logit = 0.692684f + 7.936751f * x;
+  return 1.f / (1.f + std::exp(-std::max(-30.f, std::min(30.f, logit))));
+}
+
+inline uint8_t confidence_u8(float s1, float s2, float lambda) {
+  return uint8_t(std::lround(confidence(s1, s2, lambda) * 255.f));
+}
 
 
 struct Top2 {
@@ -240,6 +308,16 @@ void solve_row_sparse(int W, int D, int K, const Cfg& cfg, const float* vol,
     out_disp[x] = std::nanf("");
     if (bestj[x] < 0) continue;
     if (cfg.min_margin > 0.f && out_margin[x] < cfg.min_margin) continue;
+    if (cfg.min_ratio > 0.f) {
+      // On the two candidates as RANKED BY SCORE, not on whichever one the belief
+      // chose: the peak ratio is a statement about the shape of the cost curve,
+      // and it is the same statement whether or not message passing ran.
+      const size_t b = size_t(x) * KS;
+      const float s2 = (cn[x] > 1) ? std::max(cs[b + 1], cfg.lambda) : cfg.lambda;
+      // Similarity to cost, so both sides are non-negative and the ratio is >= 1.
+      const float c1 = std::max(1.f - cs[b], 1e-6f);
+      if ((1.f - s2) / c1 < cfg.min_ratio) continue;
+    }
     const int d = dmin + cd[size_t(x) * KS + bestj[x]];
     const int xr = x - d;
     if (xr < 0 || taken[xr]) continue;

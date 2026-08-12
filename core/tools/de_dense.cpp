@@ -724,10 +724,19 @@ struct LevelTimes {
   double prologue = 0, tp_alloc = 0, tp_norm = 0, tp_coeff = 0, after = 0;
 };
 
+// `cand_out`, when given, receives the two candidates every confidence measure in
+// the literature is built from, plus the reverse match: five planes of W*H floats,
+// in the order s1, s2, d1, d2, lrc. The scores are the AGGREGATED ones the solver
+// ranks on, in the same units as `--min-margin`; the disparities are integers before
+// the sub-pixel fit. `lrc` is how far this pixel's own answer is from what the right
+// pixel it claimed would have chosen, in disparities, and is NaN unless `cfg.lrc`.
+// A pixel with fewer than two candidates carries -1e30 in the missing slots.
+// Null is the normal case and costs nothing.
+static const size_t NCAND = 5;
 void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
                const std::vector<float>& prior, const std::string& volp,
                std::vector<float>* disp_out, std::vector<float>* margin_out,
-               LevelTimes* T) {
+               LevelTimes* T, std::vector<float>* cand_out = nullptr) {
   const int W = L.width, H = L.height;
   const int D = cfg.dmax - cfg.dmin + 1;
   const double t0 = now_ms();
@@ -915,6 +924,10 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
   // of a separate merge pass writing 8 MB of merged candidates nothing else read.
   std::vector<std::vector<int16_t>> as0(nthreads), as1(nthreads);
   std::vector<std::vector<int16_t>> ad0(nthreads), ad1(nthreads);
+  // The reverse match's running best, indexed by RIGHT pixel. Two planes rather than
+  // a top-2's four, and 2.44 MB a thread at 848x480 against 104.2 MB for the volume
+  // that would otherwise have to be kept to read the same answer off a diagonal.
+  std::vector<std::vector<int16_t>> ar0(nthreads), arD(nthreads);
   // --- sub-pixel: the two costs either side of each thread's own best ------------
   //
   // The fit needs cost(k*-1), cost(k*), cost(k*+1), and k* is not known until every
@@ -1050,10 +1063,13 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
         am0[t].assign(WH, -32768); ap0[t].assign(WH, -32768);
       }
     }
+    if (blockwise && cfg.lrc) { ar0[t].assign(WH, -32768); arD[t].assign(WH, -1); }
     int16_t* ts0 = blockwise ? as0[t].data() : nullptr;
     int16_t* ts1 = blockwise ? as1[t].data() : nullptr;
     int16_t* td0 = blockwise ? ad0[t].data() : nullptr;
     int16_t* td1 = blockwise ? ad1[t].data() : nullptr;
+    int16_t* trs = (blockwise && cfg.lrc) ? ar0[t].data() : nullptr;
+    int16_t* trd = (blockwise && cfg.lrc) ? arD[t].data() : nullptr;
     int16_t* tm0 = sub ? am0[t].data() : nullptr;
     int16_t* tp0 = sub ? ap0[t].data() : nullptr;
     const size_t NS = cfg.rf ? 0 : ((F == 1) ? size_t(W) * H : size_t(Ws) * Hs);
@@ -1112,6 +1128,15 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
           for (int x = 3 + dg; x < W - 3; ++x) {
             const size_t i = rw + x;
             const int16_t v = pl[i];
+            // BEFORE the reject below, which is the whole subtlety: that test throws
+            // away almost every score because it cannot beat this LEFT pixel's
+            // runner-up. The same score may still be the best any RIGHT pixel has
+            // seen, and a reverse match built after the reject would be built from
+            // the few percent of scores that happened to survive it.
+            if (trs) {
+              const size_t j = i - size_t(dg);
+              if (v > trs[j]) { trs[j] = v; trd[j] = kk; }
+            }
             if (v <= ts1[i]) continue;
             if (v > ts0[i]) {
               ts1[i] = ts0[i]; td1[i] = td0[i];
@@ -1238,6 +1263,14 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
             // 11.6% pooled): the slack admits extra candidates, and everything
             // measured on this matcher says candidates decide the outcome.
             const int16_t v = cur_slice[i];
+            // Before the reject, and before the sub-pixel bookkeeping, for the reason
+            // given at the other insert site: the reject is about this left pixel's
+            // runner-up and says nothing about the right pixel this score also
+            // belongs to.
+            if (trs) {
+              const size_t j = i - size_t(d);
+              if (v > trs[j]) { trs[j] = v; trd[j] = kk; }
+            }
             if (sub) {
               // Both captures happen BEFORE the top-2 update, which is what makes
               // them refer to the best as it stood when plane k-1 and plane k+1
@@ -1400,8 +1433,28 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
     if (f) { std::fwrite(vol.data(), sizeof(float), vol.size(), f); std::fclose(f); }
   }
 
+  // Merge the reverse match across threads. Each worker saw a disjoint set of
+  // disparities, so the global winner for a right pixel is the best of what each
+  // thread offers for it -- the same shape as the forward merge in the solve, and
+  // the same reason it can be deferred to here.
+  std::vector<int16_t> rdisp;
+  if (cfg.lrc && blockwise) {
+    std::vector<int16_t> rbest(size_t(W) * H, -32768);
+    rdisp.assign(size_t(W) * H, -1);
+    for (int t = 0; t < nthreads; ++t) {
+      const int16_t* s = ar0[t].data();
+      const int16_t* k = arD[t].data();
+      for (size_t i = 0; i < size_t(W) * H; ++i)
+        if (s[i] > rbest[i]) { rbest[i] = s[i]; rdisp[i] = k[i]; }
+    }
+  }
+
   std::vector<float> disp(size_t(W) * H, std::nanf(""));
   std::vector<float> margin(size_t(W) * H, 0.f);
+  const size_t PLANE = size_t(W) * H;
+  std::vector<float> cand;
+  if (cand_out) cand.assign(PLANE * NCAND, -1e30f);
+  float* const cand_p = cand_out ? cand.data() : nullptr;
 
   const double t1 = now_ms();
   std::vector<std::thread> pool;
@@ -1488,6 +1541,23 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
                            bstart.data(), bitems.data(), cursor.data(),
                            best.data(), bestk.data(), order.data(), taken.data(),
                            sub2 ? cnb.data() : nullptr);
+          if (cand_p) {
+            // After the solver, because on the `vol` path the selection that
+            // fills cs happens inside it. Row-local either way, so this reads
+            // the same 28 KB the solver just left in cache.
+            const size_t row = size_t(y) * W;
+            for (int x = 0; x < W; ++x) {
+              const int n = cn[x];
+              if (n > 0) {
+                cand_p[row + x]             = cs[size_t(x) * K];
+                cand_p[PLANE * 2 + row + x] = float(cfg.dmin + cd[size_t(x) * K]);
+              }
+              if (n > 1) {
+                cand_p[PLANE + row + x]     = cs[size_t(x) * K + 1];
+                cand_p[PLANE * 3 + row + x] = float(cfg.dmin + cd[size_t(x) * K + 1]);
+              }
+            }
+          }
           continue;
         }
         solve_row(y, W, D, cfg, &vol[size_t(y) * W * D],
@@ -1500,8 +1570,29 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
   }
   for (auto& th : pool) th.join();
   T->solve = now_ms() - t1;
+  // The consistency residual, which needs the solve's answer and so cannot be filled
+  // in the loop above. Follow this pixel's own disparity to the right pixel it
+  // claimed, and ask that right pixel what it would have chosen. Rounded, because the
+  // reverse match is integer and the forward one carries a sub-pixel offset.
+  if (cand_p && !rdisp.empty()) {
+    for (int y = 0; y < H; ++y) {
+      const size_t row = size_t(y) * W;
+      for (int x = 0; x < W; ++x) {
+        float r = std::nanf("");
+        const float dl = disp[row + x];
+        if (std::isfinite(dl)) {
+          const int xr = x - int(std::lround(dl));
+          if (xr >= 0 && xr < W && rdisp[row + xr] >= 0)
+            r = std::fabs(dl - float(cfg.dmin + rdisp[row + xr]));
+        }
+        cand_p[PLANE * 4 + row + x] = r;
+      }
+    }
+  }
+
   disp_out->swap(disp);
   margin_out->swap(margin);
+  if (cand_out) cand_out->swap(cand);
   for (int t = 0; t < nthreads; ++t) {
     T->c_alloc += ts_alloc[t]; T->c_fill += ts_fill[t]; T->c_score += ts_score[t];
     T->c_filt += ts_filt[t];   T->c_ins += ts_ins[t];
@@ -1527,6 +1618,11 @@ int main(int argc, char** argv) {
         "                    F. THE knob: 0 answers ~89%% of pixels, 0.01 ~80%%,\n"
         "                    0.03 ~65%%, and the error rate falls with it. Tools\n"
         "                    pass 0.01; the binary defaults to 0 (default 0)\n"
+        "  --min-ratio F     the same two scores as a ratio of costs instead of a\n"
+        "                    difference: reject unless (1-s2)/(1-s1) >= F. Ranks\n"
+        "                    this matcher's errors better than the margin at every\n"
+        "                    density (article/confidence.py). Needs --topk 2 or\n"
+        "                    more; 1.0 is inert                      (default 0)\n"
         "  --lambda F        cost of leaving a left pixel unmatched   (default -0.1)\n"
         "  --gamma F         cost of leaving a right pixel unclaimed  (default -0.1)\n"
         "                    Both are INERT below zero -- they sit far under the\n"
@@ -1567,6 +1663,20 @@ int main(int argc, char** argv) {
         "                    bit-identical to the default: float scores instead of\n"
         "                    int16 flip near-ties. For A/B only\n"
         "  --dump-vol F      write the aggregated cost volume, W*H*D float32\n"
+        "  --out-conf F      write five W*H float32 planes: s1, s2, d1, d2, lrc.\n"
+        "                    Scores are the aggregated ones the solver ranks on,\n"
+        "                    same units as --min-margin; disparities are integers,\n"
+        "                    before the sub-pixel fit; lrc is the reverse-match\n"
+        "                    disagreement in disparities and is NaN without --lrc.\n"
+        "                    -1e30 where a pixel has no such candidate. This is the\n"
+        "                    input to article/confidence.py, and it requires\n"
+        "                    --topk 2 or more, which is the default\n"
+        "  --lrc             also reduce every score over the RIGHT pixel it belongs\n"
+        "                    to, giving each right pixel the left pixel it would\n"
+        "                    have chosen. That is left-right consistency for one\n"
+        "                    compare per score instead of a second matching pass.\n"
+        "                    Needs the default path (--rf, blockwise); costs two\n"
+        "                    int16 planes a thread\n"
         "  --c2f, --prior F  coarse-to-fine mask. Measured 1.24x on the desktop and\n"
         "                    flat on the TX2; does not compose with --subpixel\n"
         "\n"
@@ -1579,7 +1689,7 @@ int main(int argc, char** argv) {
   const int W = std::atoi(argv[3]), H = std::atoi(argv[4]);
   Cfg cfg;
   bool sub_explicit = false;
-  std::string outp, volp, priorp;
+  std::string outp, volp, priorp, confp;
   for (int i = 5; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has = i + 1 < argc;
@@ -1599,8 +1709,11 @@ int main(int argc, char** argv) {
     else if (a == "--fgf" && has) cfg.fgf = std::max(1, std::atoi(argv[++i]));
     else if (a == "--threads" && has) cfg.threads = std::atoi(argv[++i]);
     else if (a == "--min-margin" && has) cfg.min_margin = float(std::atof(argv[++i]));
+    else if (a == "--min-ratio" && has) cfg.min_ratio = float(std::atof(argv[++i]));
     else if (a == "--out" && has) outp = argv[++i];
     else if (a == "--dump-vol" && has) volp = argv[++i];
+    else if (a == "--out-conf" && has) confp = argv[++i];
+    else if (a == "--lrc") cfg.lrc = true;
     else if (a == "--topk" && has) cfg.topk = std::atoi(argv[++i]);
     else if (a == "--band" && has) cfg.band = std::atoi(argv[++i]);
     else if (a == "--csct") cfg.csct = true;
@@ -1617,6 +1730,16 @@ int main(int argc, char** argv) {
     else if (a == "--simd") cfg.simd = true;
     else if (a == "--no-blockwise") cfg.noblock = true;
     else if (a == "--c2f") cfg.c2f = true;
+    else {
+      // Silently ignoring an unknown flag makes a typo indistinguishable from an
+      // honoured option: `--noblock` for `--no-blockwise` ran the default path and
+      // exited 0, and a comparison against it read as "the two paths are
+      // bit-identical" when it was the default path compared with itself. A flag
+      // that needs a value and did not get one lands here too.
+      std::fprintf(stderr, "unknown option %s (or it is missing its value)\n",
+                   a.c_str());
+      return 2;
+    }
   }
   Image8 L, R;
   if (!load_raw_y8(lp, W, H, &L) || !load_raw_y8(rp, W, H, &R)) {
@@ -1836,8 +1959,26 @@ int main(int argc, char** argv) {
     t_prep += now_ms() - tt1;
   }
 
-  std::vector<float> disp, margin;
-  run_dense(L, R, cfg, nthreads, prior, volp, &disp, &margin, &TF);
+  // The reverse scan lives in the blockwise insert loops, which exist only on the
+  // recursive-filter path. Running it elsewhere would silently write NaN into a
+  // plane a consumer is about to treat as a measurement.
+  if (cfg.lrc && !(cfg.rf && cfg.topk == 2 && volp.empty() && !cfg.noblock)) {
+    std::fprintf(stderr, "--lrc needs the default path (--rf, --topk 2, no "
+                         "--dump-vol, no --no-blockwise)\n");
+    return 2;
+  }
+  // Both read the second candidate, and the dense path does not keep one. Silence
+  // here would look exactly like a gate that admitted everything.
+  if (cfg.topk < 2) for (const char* w : {confp.empty() ? "" : "--out-conf",
+                                          cfg.min_ratio > 0.f ? "--min-ratio" : ""})
+    if (*w) {
+      std::fprintf(stderr, "%s needs two candidates per pixel; --topk is %d\n",
+                   w, cfg.topk);
+      return 2;
+    }
+  std::vector<float> disp, margin, cand;
+  run_dense(L, R, cfg, nthreads, prior, volp, &disp, &margin, &TF,
+            confp.empty() ? nullptr : &cand);
 
   size_t filled = 0;
   for (float v : disp) if (std::isfinite(v)) ++filled;
@@ -1875,9 +2016,19 @@ int main(int argc, char** argv) {
                   TF.census + TF.cost + TF.solve,
               cfg.agg, cfg.iters,
               100.0 * double(filled) / double(disp.size()));
-  if (!outp.empty()) {
-    FILE* f = std::fopen(outp.c_str(), "wb");
-    if (f) { std::fwrite(disp.data(), sizeof(float), disp.size(), f); std::fclose(f); }
-  }
+  // A write that fails silently is indistinguishable downstream from a matcher
+  // that produced nothing, and the consumer scores whatever the previous run
+  // left in the file. Both of these say so and exit nonzero.
+  auto dump = [](const std::string& p, const std::vector<float>& v) {
+    FILE* f = std::fopen(p.c_str(), "wb");
+    const size_t n = f ? std::fwrite(v.data(), sizeof(float), v.size(), f) : 0;
+    if (f) std::fclose(f);
+    if (n == v.size()) return true;
+    std::fprintf(stderr, "could not write %s (%zu of %zu floats)\n",
+                 p.c_str(), n, v.size());
+    return false;
+  };
+  if (!outp.empty() && !dump(outp, disp)) return 1;
+  if (!confp.empty() && !dump(confp, cand)) return 1;
   return 0;
 }

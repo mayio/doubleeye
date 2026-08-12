@@ -738,3 +738,67 @@ entirely transient. A 3-of-5 agreement vote takes it from 250 points a frame to 
 bound on the cost. Under motion the reference has to be warped, and that is the part
 that needs the vehicle moving. The useful part is that the static half is measurable
 today, on a bench, with no odometry and no ground truth.
+
+## 25. A tool that accepted a misspelled flag, and the verification that agreed with it
+
+`de_dense` parsed its arguments with a chain of `else if` and no final `else`. An
+option it did not recognise fell off the end and the tool ran with its defaults,
+printed its usual timings, and exited 0.
+
+The flag is `--no-blockwise`. It was typed as `--noblock`, which is the name of the
+field in `Cfg` rather than the name of the option. The run that was supposed to keep
+the whole cost volume ran the default blockwise path instead.
+
+**Then the check confirmed it.** The point of the flag was to hold the cost volume in
+memory so left-right consistency could be read off it, which is only sound if the two
+paths produce the same disparities. That was tested with `cmp` on all eight scenes and
+came back *identical* on every one -- because both sides of the comparison were the
+default path. `cmp` was doing its job perfectly; it was comparing the right files, and
+they were the same file's content twice.
+
+The typo only surfaced because `--dump-vol` also forces the volume path, so a later
+run with both flags disagreed with a run with one -- two options that should have been
+independent, visibly interacting. Reading the argument parser then took ten seconds.
+
+The two paths are in fact **not** identical: keeping the volume gives the sub-pixel fit
+the neighbours of every candidate instead of only the winner's, worth 7.7% against 8.2%
+bad-1.0 on teddy, moving 99.7% of pixels by less than half a disparity. So the check
+was not merely uninformative, its answer was wrong.
+
+`de_dense` now rejects an unknown option and exits 2, which also catches an option
+whose value is missing. The general form is in [12-writing.md](12-writing.md) rule 13
+and it is the third time it has been paid for here (see 7 and 12): **a check that
+passes is evidence only if some input would make it fail.** Two paths that are
+supposed to differ, compared and found identical, is that input.
+
+## 26. The diagnostic path computed a different cost, and three sections were measured on it
+
+`de_dense --dump-vol` keeps the whole aggregated cost volume so an analysis can read it
+from outside the matcher. It was used to prototype left-right consistency, because the
+reverse match is a diagonal through that volume and the shipping path never stores one.
+
+The volume path does not compute the shipping cost. The graded blend of Census with a
+truncated absolute difference -- `--ad 0.15`, a default since it was measured -- exists
+only in the two blockwise insert loops. The path that fills the volume scores pure
+Census:
+
+```cpp
+slice[i] = (24.f - float(popcnt64(cl[i] ^ cr[i - d]))) * inv_half;   // no adt, no wq
+```
+
+So `--dump-vol` silently ignores `--ad`, and the two paths differ in the cost function
+rather than only in precision. Downstream this read as a 7.7% against 8.2% bad-1.0
+difference on teddy that was first attributed to the sub-pixel fit alone, and 4.2% of
+reverse-match winners disagreeing between the two.
+
+Nothing warned. The flag says "dump the volume" and it dumps a volume; the number in it
+is a cost, of the right magnitude, in the right units, and wrong.
+
+The fix was to stop reading the volume at all: `--lrc` fuses the reverse reduction into
+the loop that already holds each score, which is both faster and the shipping cost by
+construction. Every figure in TODO 0.552 and 0.553 was retaken on it.
+
+The general form is [12-writing.md](12-writing.md) rule 1 pointed inwards. A path that
+exists to be measured from must be the path that ships, or it must say which defaults
+it does not honour. A third option -- checking that the two agree -- is what obstacle 25
+shows is easy to get wrong.
