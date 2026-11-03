@@ -158,6 +158,72 @@ def strip_code(text):
                   lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S)
 
 
+# --- group G of the readability checklist ----------------------------------------
+#
+# Items 51 to 56, added after a full pass over the published series. Two of them are
+# precise enough to fail a build; the other four over-report by design and run under
+# --voice, where they are a reading list rather than a verdict.
+
+PADDING = re.compile(r"\b(which|that)\s+is\s+what\s+(?!makes\b)(?![^.]{0,90}\\bmeans?\\b)", re.I)
+
+def check_lazy_continuation(body, rel, rep):
+    """Item 56. A paragraph with no blank line before it is continued into the list
+    item above and renders inside that bullet. Found live on a published page."""
+    inlist = False
+    prev_blank = True
+    for n, ln in enumerate(body.split("\n"), 1):
+        is_item = bool(re.match(r"^\s*([-*+]\s|\d+[.)]\s)", ln)) and (prev_blank or inlist)
+        prev_blank = not ln.strip()
+        if is_item:
+            inlist = True
+            continue
+        if not ln.strip():
+            inlist = False
+            continue
+        if inlist and not ln.startswith((" ", "\t", "|", ">", "#")):
+            rep.fail(f"{rel}:{n}",
+                     "a paragraph with no blank line after a list renders inside the "
+                     "bullet above it (checklist 56)")
+            inlist = False
+
+
+def check_padding(body, rel, rep):
+    """Item 54. 'which is what X does' says no more than 'which X does'. Excludes
+    'which is what makes', where 'what makes' is the subject of the clause."""
+    for n, ln in enumerate(body.split("\n"), 1):
+        m = PADDING.search(ln)
+        if m:
+            rep.note(f"{rel}:{n}",
+                     f"[54 padding] '{m.group(0).strip()}' says no more than "
+                     f"'{m.group(1)}' alone")
+
+
+# --- the four that over-report, for --voice ---------------------------------------
+
+VOICE = [
+    ("52 filler vocabulary",
+     r"\b(highly|powerful|robust|seamlessly|nuanced|sophisticated|comprehensive|"
+     r"versatile|paramount|a wide range of|in essence|it is worth noting)\b"),
+    ("51 unstated direction",
+     r"\b(sits?|lies?|runs?|stays?)\s+(\w+\s+){0,2}(below|above)\b"),
+    ("53 tail after and",
+     r",\s+and\s+(it|that|this)\s+(is|was)\b"),
+    ("55 demonstrative with no antecedent",
+     r"\b(that|this)\s+(mapping|rest|surprise|trade|shape|lever)\b"),
+]
+
+
+def check_voice(body, rel, rep):
+    for label, pat in VOICE:
+        for n, ln in enumerate(body.split("\n"), 1):
+            m = re.search(pat, ln, re.I)
+            if m:
+                rep.note(f"{rel}:{n}", f"[{label}] {m.group(0).strip()}")
+
+
+VOICE_ON = False
+
+
 class Report:
     def __init__(self):
         self.fails = []
@@ -177,6 +243,12 @@ def check_file(path, rep, universe, site, long_words):
     body = strip_code(raw)
     own = headings(raw)
     rel = os.path.relpath(path, ROOT if path.startswith(ROOT) else BLOG)
+    # Item 56 is a rendering bug and fails. The rest of group G is judgement: it
+    # reports under --voice so a normal run stays a verdict rather than a reading list.
+    check_lazy_continuation(body, rel, rep)
+    if VOICE_ON:
+        check_padding(body, rel, rep)
+        check_voice(body, rel, rep)
 
     # --- math delimiters -----------------------------------------------------------
     if body.count("$$") % 2:
@@ -341,6 +413,11 @@ A reference that resolves and is still wrong: [section 2](#9-fruit-and-vegetable
 A link whose text describes nothing there: [turbochargers](#9-fruit-and-vegetables).
 A part that is not that part: [Part 2](https://www.mariolueder.com/2026-08-09-x/#a).
 
+A padding clause: the margin, which is what a consumer gates on.
+
+- a list item
+A paragraph with no blank line before it, swallowed by the bullet above.
+
 [unused]: https://example.com
 """
 
@@ -353,18 +430,30 @@ def self_test():
             "unused link definition",
             "which is not section 2",          # a reference to the wrong section
             "which is not part 2",             # a reference to the wrong post
-            "shares nothing with it"]          # a link text that names something else
+            "shares nothing with it",          # a link text that names something else
+            "renders inside the bullet"]       # checklist 56, a rendering bug
     with tempfile.TemporaryDirectory() as td:
         p = os.path.join(td, "self-test.md")
         open(p, "w").write(SELF_TEST)
+        global VOICE_ON
+        VOICE_ON = True          # the self-test must exercise every check
         rep = Report()
         # a real universe: without it the content check has no target to resolve and
         # silently never fires, which is the failure this whole function exists to catch
         check_file(p, rep, collect([p]), {}, 34)
+    # Group G's judgement items report as notes, so the self-test has to read both
+    # lists. A check that only ever lands in notes is still a check.
+    want_notes = ["54 padding"]
     blob = "\n".join(rep.fails).lower()
+    nblob = "\n".join(rep.notes).lower()
     missing = [w for w in want if w.lower() not in blob]
+    missing += [w for w in want_notes if w.lower() not in nblob]
+    want = want + want_notes
     for f in rep.fails:
         print("  caught:", f)
+    for n in rep.notes:
+        if "54 padding" in n:
+            print("  caught (note):", n)
     if missing:
         print(f"\nSELF-TEST FAILED -- these checks did not fire: {missing}")
         return 1
@@ -379,7 +468,12 @@ def main():
     ap.add_argument("--long", type=int, default=34, metavar="N",
                     help="report sentences of N+ words (default 34)")
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--voice", action="store_true",
+                    help="also report checklist items 51-55, which over-report by "
+                         "design and are a reading list rather than a verdict")
     a = ap.parse_args()
+    global VOICE_ON
+    VOICE_ON = a.voice
     if a.self_test:
         return self_test()
 
@@ -392,7 +486,10 @@ def main():
         base = os.path.basename(f)
         if base == "masda-glossary.md":
             site["masda-glossary"] = universe[f]
-        elif base.startswith("2026-08-0"):
+        elif base[:4] in ("2025", "2026"):
+            # Not "2026-08-0": that window silently excluded the 2025 post and the
+            # one published on the 13th, so links into them were never
+            # content-checked. Third time this glob has been wrong.
             site[base[:10]] = universe[f]
     rep = Report()
     for f in files:

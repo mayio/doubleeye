@@ -8,8 +8,14 @@ something to stand on.
 ```bash
 tools/doccheck.py                 # doc/, CLAUDE.md, article/
 tools/doccheck.py --blog          # also the posts and the glossary
+tools/doccheck.py --voice         # the judgement items: padding, filler, tacked-on
+                                  # clauses, comparisons with no stated direction
 tools/doccheck.py --self-test     # prove the checker can still fail
 ```
+
+A plain run is a verdict and should read zero. `--voice` is a reading list and is
+expected to be long: every item it reports has legitimate instances, so it proposes
+rather than decides.
 
 Applies to `doc/`, `CLAUDE.md`, source comments, commit messages, and the published
 posts. Where a rule is only about the posts it says so.
