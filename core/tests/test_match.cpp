@@ -423,7 +423,7 @@ void test_lambda_gamma_are_distinct() {
   std::printf("lambda vs gamma are not interchangeable\n");
 
   // Two left keypoints, one right keypoint. At most one pair can be matched, so
-  // exactly one left keypoint must go unmatched and pay lambda. No right
+  // exactly one left keypoint must go unmatched and cost lambda. No right
   // keypoint need go unmatched, so gamma is never charged.
   const std::vector<Keypoint> L = {kp(50.f, 20.f), kp(51.f, 20.f)};
   const std::vector<Keypoint> R = {kp(30.f, 20.f)};
@@ -440,7 +440,7 @@ void test_lambda_gamma_are_distinct() {
   const std::vector<uint64_t> chance_l = {desc_with(24), desc_with(24)};
   const std::vector<uint64_t> chance_r = {desc_with(24, 12)};
 
-  // lambda > 0 pays MORE for leaving a left keypoint unmatched than for a
+  // lambda > 0 costs MORE for leaving a left keypoint unmatched than for a
   // worthless match, so the matcher should still match one pair.
   cfg.lambda = -1.0f;
   cfg.gamma = 0.0f;

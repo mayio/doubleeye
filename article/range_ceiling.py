@@ -2,7 +2,7 @@
 """How few disparity planes could a tile compute, if it knew which ones it needed?
 
 TODO 0.3 item 3 ranks per-pixel disparity-range restriction as the biggest measured
-lever in the project, 5.2x. Before building any of the constructions that claim it
+speed-up in the project, 5.2x. Before building any of the constructions that claim it
 (ICSG's intrinsic curves, MTS's max-trees, ESPReSSo's tiles) this measures the
 ceiling, the way topk_recall.py did before the top-2 pruning was built: if the
 ceiling is small the whole family is dead, and if it is large it bounds what any

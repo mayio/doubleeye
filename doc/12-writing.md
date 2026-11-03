@@ -1,6 +1,6 @@
 # Writing rules
 
-Every one of these thirteen rules was written after getting it wrong somewhere in this
+Every one of these fifteen rules was written after getting it wrong somewhere in this
 repository or in the published posts. The mechanical half is enforced by `tools/doccheck.py`; the rest
 is judgement, and the failure that produced each rule is named so the judgement has
 something to stand on.
@@ -130,6 +130,7 @@ from the table beside it.
 - Put the subject first and keep the verb near it.
 - Expand an abbreviation the first time it appears, every document.
 - Prefer the plain word: *use* over *leverage*, *about* over *on the order of*.
+- Trade metaphors are the hardest case and have their own rule, [14](#14-say-what-a-change-does-to-the-measurement-not-what-it-buys).
 
 Precision is not the same as density. Nothing here asks for less detail — it asks for
 the same detail in shorter sentences.
@@ -176,3 +177,104 @@ not have fired for any input at all.
 *Produced by:* a frame-gap check that reported `0 missing` while a third of frames were
 lost, and a link checker of mine that reported one false break and would have reported
 none at all if its anchor rule had been wrong in the other direction.
+
+## 14. Say what a change does to the measurement, not what it "buys"
+
+A reader cannot look *buy* up. The dictionary gives them money, and this project never
+means money. The same is true of *pay*, and of *lever*, where the dictionary gives them
+a bar and a pivot. All three hide the one thing the sentence exists to say, which is
+**which quantity moved, in which direction, by how much**.
+
+Write the quantity. Every replacement below is shorter than the word it replaces is
+vague:
+
+| instead of | write | because |
+|---|---|---|
+| X buys 0.4 points of precision | X **gains** 0.4 points of precision | names the direction |
+| X buys nothing | X **changes nothing**, or **gains nothing** | says which, and nothing is hidden |
+| asking for fewer buys the same block | asking for fewer **computes** the same block | the GPU really does compute it |
+| the disparities were already bought | the disparities were already **computed** | literal, and it is the mechanism |
+| what the blend is buying | what the blend is **worth** | the quantity is the subject |
+| it buys coverage and pays for it in precision | it **gains coverage and costs precision** | two verbs, two quantities, two directions |
+| the largest accuracy lever | the stage with the **largest effect on accuracy** | an effect is measurable, a lever is not |
+| the biggest measured lever, 5.2x | the biggest measured **speed-up**, 5.2x | the 5.2x is time, so say time |
+| the remaining levers are traffic | the remaining **savings** are in traffic | a saving has a size |
+| the untried lever on that error | the untried **improvement** on that error | accuracy, not time |
+| resolution is the lever of last resort | resolution is the **cut** of last resort | it removes pixels |
+| the version that bought nothing | the version that **gave no speed-up** | names the quantity that did not move |
+| the constraint is what pays | the accuracy **comes from** the constraint | says which quantity and from where |
+| message passing does not pay | message passing is **not worth its 12 ms** | worth, with the number beside it |
+| it has paid for itself three times | it has **justified that cost** three times | no trade, and the count survives |
+| the halo is paid once per stripe | the halo is **computed** once per stripe | it is work, not money |
+| each rule paid for | each rule **produced by a failure** | matches how this file cites its own rules |
+
+Which replacement is right depends on which quantity moved, and the file decides that,
+not the word. In [09-matching.md](09-matching.md) the same word *lever* needed
+**speed-up**, **saving**, **cut**, **improvement** and **change that matters** in
+different paragraphs, because it was standing for five different measurements.
+
+Two words stay allowed and mean what they say. **Cost** is allowed when something real
+is spent: milliseconds, bytes, points of precision. **Worth** is allowed when the
+sentence then gives the number, as [section 7 of Part 2][p2-7] does. A real purchase is
+also allowed and needs no rewording: [11-running.md](11-running.md) says "if you buy
+one" about a second pattern projector, and means money.
+
+This is item 57 of *Readability checklist for technical documents*, which is where the
+generic form lives. `tools/doccheck.py` fails on *buy*, *bought*, *lever*, *leverage*,
+*pay*, *pays*, *paid* and *payoff* in `doc/`, `CLAUDE.md`, the posts and the glossary. Three phrases are exempt because they are
+real purchases, and they are listed as phrases in `TRADE_LITERAL` rather than as whole
+files, so a metaphor later in the same file still fails. A fourth real purchase goes in
+the same list, with the reason in the commit message.
+
+[p2-7]: https://www.mariolueder.com/2026-08-08-Dense-MASDA-Belief-Propagation-Stereo-on-a-Jetson/#7-what-the-parameters-are-worth
+
+*Produced by:* 164 instances found and 161 reworded — 100 of *buy* and *lever*, of
+which three were real purchases and stayed as they were, and 64 of *pay*.
+Two of them, "asking for fewer buys the same block" and "11 it had already bought",
+were describing an operation the GPU performs, so the metaphor was standing exactly
+where the literal verb *computes* was shorter and true. A section heading in Part 2
+was among them, and its anchor is linked by full URL from Part 3, so renaming it meant
+updating both posts. Two of them, "asking for fewer buys the same block" and
+"11 it had already bought", were describing an operation the GPU performs, so the
+metaphor was standing exactly where the literal verb *computes* was shorter and true.
+
+## 15. A word with two meanings in this project is not a word, it is a guess
+
+*Free* carried three meanings across the published series at once, and no reader could
+tell them apart:
+
+| it said | it meant | write |
+|---|---|---|
+| keypoint detection is free | it costs no measurable time | **costs nothing** |
+| ordering is free in DP | the algorithm needs no extra mechanism for it | **with no extra mechanism** |
+| an occupancy grid carves free space | unoccupied | **free** — the literal sense, which keeps the word |
+
+The first two are the ones that hurt, because a reader who picks the wrong one gets a
+claim about the schedule when the sentence was making a claim about the model. Pick the
+sense and write it. `free` survives only where nothing else fits: *free space*, *free
+endpoints*, *free to tune*, and the `-free` compounds — *ROS-free*, *dependency-free*,
+*branch-free*, *gap-free* — which all mean "without" and are never ambiguous.
+
+Two more words in the same shape:
+
+- **knob** is a *parameter*. There are no knobs on a Jetson. The word hides whether the
+  thing is a command-line flag, a compile-time constant or a tuned value, and
+  *parameter* costs one syllable more.
+- **cheap** and **expensive** are ambiguous between time and model complexity. Write
+  *slow*, *fast*, or *computationally cheap* when the cost is time; the glossary's
+  "a cheap pairwise term" meant complexity and now says so.
+
+The general test: read the word as a stranger would, with a dictionary. If two entries
+both fit the sentence, the sentence has not been written yet.
+
+This is item 58 of the same checklist.
+
+Both rules allow a word to be *named*. `tools/doccheck.py` skips a match wrapped in
+single emphasis or backticks — `*free*`, `` `knob` `` — because that names the word
+rather than uses it, which is how `CLAUDE.md` and this file teach the rules. `**free**`
+is emphasis, not naming, and still fails.
+
+*Produced by:* 65 instances of *free* in two incompatible senses, 23 of *knob*, and
+four sentences using *cheap* or *expensive* where only the surrounding paragraph said
+which cost was meant. One of them, "and free: the filter is", was a claim about time sitting in a
+paragraph otherwise about accuracy.

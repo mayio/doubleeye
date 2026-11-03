@@ -187,7 +187,7 @@ def diagnose(a, fn, T, pad):
 
 
 def halo_cost(a, fn, T):
-    """Cost when the filter's halo is paid for, which is the cost that exists.
+    """Cost when the filter's halo is counted, which is the cost that exists.
 
     A tile can only skip a plane if it also skips it for the pixels the filter would
     have read. rf's influence decays by ~0.89 per pixel at sigma_s 12, so de_dense
@@ -262,7 +262,7 @@ def main():
                     help="pct: narrowest interval covering --cover of a tile's votes")
     ap.add_argument("--cover", type=float, default=0.95)
     ap.add_argument("--mpad", type=int, default=0,
-                    help="filter halo in px each side; the cost model pays for it")
+                    help="filter halo in px each side; the cost model counts it")
     ap.add_argument("--fallback-cov", type=float, default=0.0,
                     help="tiles the predictor covers less than this sweep in full")
     ap.add_argument("--diagnose", type=int, default=-1, metavar="PAD",

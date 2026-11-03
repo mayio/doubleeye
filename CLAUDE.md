@@ -97,7 +97,14 @@ Full rules in [doc/12-writing.md](doc/12-writing.md), enforced where a script ca
 - **Name a section, link the section**, and verify the anchor against what the
   generator actually emits rather than what its documentation implies.
 - **Write for an engineer whose first language is not English**: one idea per sentence,
-  no idioms, subject first, abbreviations expanded on first use in every document.
+  no idioms, subject first, abbreviations expanded on first use in every document. A
+  trade metaphor is the hardest case — name the quantity that moved and its direction
+  (*gains*, *costs*, *computes*, *saves*, *is worth*) rather than what a change purchases,
+  what it repays, or what the next improvement pivots on. A word carrying two meanings
+  here is the second case: *free* meant both "costs no measurable time" and "needs no
+  extra mechanism", and a *knob* is a *parameter*. `doccheck.py` fails on all of these
+  everywhere; [12-writing.md](doc/12-writing.md) rules 14 and 15 have the replacement
+  tables.
 - **Show the mathematics, a worked example, or the code** whenever one of them explains
   faster than prose — with the equation evaluated at the shipping values, and any
   snippet checked against the shipping implementation.
@@ -110,7 +117,7 @@ to `RETIRED` in `tools/doccheck.py`.
 - **Report spread, not a single run**, when the effect could be smaller than the
   variance. The ordering factor is ±2 against a scene-to-scene spread of ±31; two
   single-scene runs gave opposite signs and both were noise.
-- **Prefer a negative result recorded to a knob left in.** Local contrast, the
+- **Prefer a negative result recorded to a parameter left in.** Local contrast, the
   coarse-to-fine pass, the cheap smoothness prior and cheaper misdetection are all
   documented as not working, with the mechanism. That is why they have not been
   retried.

@@ -1,6 +1,6 @@
 # Running it
 
-What you can run, what the knobs do, and how to get a point cloud on screen.
+What you can run, what the parameters do, and how to get a point cloud on screen.
 
 [07-tools.md](07-tools.md) is the reference: every tool, one entry each. This page is
 the other axis — organised by what you are trying to do. If you know which tool you
@@ -66,7 +66,7 @@ declined to answer**, which is a real answer and not a failure.
 `./build/de_dense` with no arguments prints every flag with its measured effect.
 The ones that decide the outcome:
 
-### The one knob that matters most
+### The one parameter that matters most
 
 `--min-margin` rejects a match whose best-minus-second score is below the threshold.
 It does not make the matcher better or worse; it moves it along a curve:
@@ -85,7 +85,7 @@ different things depending on what launched it.
 ### The rest, briefly
 
 - `--dmax N` — disparities searched. On the GPU this costs in **steps of 64**, so
-  `D=128` is free if you are already paying for 96.
+  `D=128` costs nothing if you are already computing 96.
 - `--sigma-s` (8) — aggregation reach. Swept; 12 was past the optimum on both axes.
 - `--ad` (0.15) — how much truncated absolute difference is blended into the Census
   score. Helps pick the right disparity, hurts the sub-pixel fit.
@@ -184,7 +184,7 @@ Then, in a second terminal with the same setup sourced, `rviz2`: Fixed Frame `ma
 and add a **PointCloud2** on `/doubleeye/points`.
 
 `--max-range` is in that line rather than left at its default because it is the
-difference between a cloud you can read and a blob — see the knobs below.
+difference between a cloud you can read and a blob — see the parameters below.
 
 ### Dense or sparse
 
@@ -217,7 +217,7 @@ display.
 Derived topics are only computed when something subscribes, so opening every display
 in rviz costs real bandwidth.
 
-### Knobs
+### Parameters
 
 - `--min-range` / `--max-range` (0.4–6.0 m) — the depth gate, stated in metres and
   converted to disparity. **Set the far limit to roughly the depth of what you are

@@ -47,7 +47,7 @@ struct Match {
   float score = 0.f;      // s(i,j)
   float belief = 0.f;     // max-sum belief at the accepted edge
   float disparity = 0.f;  // xL - xR, sub-pixel
-  float dy = 0.f;         // yL - yR, the free rectification health metric
+  float dy = 0.f;         // yL - yR, the rectification health metric that costs nothing
 
   // Best-minus-second-best s(i,j) over this left keypoint's candidates, against
   // lambda when there is no second candidate. This is the most useful confidence
@@ -76,7 +76,7 @@ struct Match {
 // a cell straddling a depth discontinuity automatically gets a wide, weak prior,
 // and a cell with too few coarse matches is marked invalid and imposes none at
 // all. That is the plan's "keep the full range where coarse confidence is low or
-// near a coarse disparity discontinuity", obtained for free.
+// near a coarse disparity discontinuity", obtained at no extra cost.
 struct DisparityPrior {
   int cell = 64;              // full-resolution pixels per cell
   int cols = 0;
@@ -238,7 +238,7 @@ std::vector<Match> match_mutual_nn(const std::vector<Keypoint>& left,
 // Two-level search: match at 1/scale resolution, build a soft disparity prior from
 // the result, then match at full resolution with that prior folded into s(i,j).
 //
-// The plan calls this the biggest single lever, for two compounding reasons: the
+// The plan calls this the biggest single speed-up, for two compounding reasons: the
 // candidate count per keypoint falls, and -- more importantly -- false candidates
 // from repetitive structure disappear before they can create the near-ties that
 // drive BP oscillation on this graph.

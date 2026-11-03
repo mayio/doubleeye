@@ -4,8 +4,8 @@
 Runtime is linear in D at every stage, so halving resolution and halving the
 search is 8x less work for the coarse pass, and a narrow refinement band at full
 resolution costs W*H*(2B+1) instead of W*H*D. At D=60 and B=2 that is about 4.8x
-less work in total -- the largest remaining lever, and the only one left that is
-not a pure speed change.
+less work in total -- the largest remaining reduction in work, and the only one left
+that is not a pure speed change.
 
 It has a hard ceiling, and this measures it before anything is built: if the true
 disparity is not inside the refinement band around the upsampled coarse estimate,
@@ -133,7 +133,7 @@ def main():
     print("        " + "".join(f"{D/(D/8 + 2*b+1):>7.1f}x" for b in BANDS))
     print("\nCompare against what the shipping pipeline delivers today: 67.9% of")
     print("known pixels correct (75.6% coverage at 10.3% bad-1.0). A ceiling below")
-    print("that number means coarse-to-fine cannot pay for itself at any speed.")
+    print("that number means coarse-to-fine cannot be worth its accuracy cost.")
 
 
 if __name__ == "__main__":

@@ -90,13 +90,13 @@ and the margin gate are present in EVERY row — only the message passing change
 | iters 2 (default) | 26.04 | 80.1% | 25.58 | 80.6% |
 | iters 4 | 26.19 | 80.2% | 25.78 | 81.0% |
 
-**Message passing buys coverage and pays for it in precision** — 79.8% -> 81.0% for
+**Message passing gains coverage and costs precision** — 79.8% -> 81.0% for
 24.41 -> 25.78 at K=8 — which is the same trade the margin gate and lambda/gamma
 already offer, at the same sort of exchange rate. It moves along the
-precision-coverage curve rather than off it, exactly like every other knob measured
+precision-coverage curve rather than off it, exactly like every other parameter measured
 this week.
 
-**And it is not free.** TX2, 450x375, six threads, best of three: the solve is
+**And it costs time.** TX2, 450x375, six threads, best of three: the solve is
 **13.0 ms at iters 0 against 25.5 ms at iters 2.** At 848x480 that is ~12 ms of the
 23 ms solve. Today that hides under the GPU kernels so it costs no wall clock — but it
 is 12 ms of CPU, and 0.4's wiring question is short of about that much to fit
@@ -158,11 +158,11 @@ budget really is most of the frame.
 
 **The thing that makes this MASDA is 15% of the runtime.** The other 85% is the cost
 volume and its aggregation, which is shared with every window-based matcher. So this is
-not a "make MASDA faster" problem, and effort spent on the solver cannot pay.
+not a "make MASDA faster" problem, and effort spent on the solver cannot close the gap.
 
 ### The 6x, and where each piece of it comes from
 
-Two measured levers multiply to more than enough. Neither is SIMD.
+Two measured speed-ups multiply to more than enough. Neither is SIMD.
 
 1. **Stop computing all D planes — 5.2x, and it is not a speed/accuracy trade.** Our own
    ceiling experiment: 81.5% correct-over-known is *available* against 67.9% delivered,
@@ -173,12 +173,12 @@ Two measured levers multiply to more than enough. Neither is SIMD.
    into a prior; and **ESPReSSo** PatchMatch hypotheses shared across tiles, so the plane
    is constant within a tile and a recursive edge-aware filter stays legal. See
    09-matching.md.
-2. **Occupancy — 1.56x for free.** 3.85 of 6 cores in the cost stage. No arithmetic
+2. **Occupancy — 1.56x at no arithmetic cost.** 3.85 of 6 cores in the cost stage. No arithmetic
    changes, no accuracy risk, and the failure mode is now mapped: the `--simd` work
    showed a coarser work quantum hands back more than a vectorised inner loop wins.
 
 5.2 x 1.56 = **8.1x**, against 6.0x needed for 30 Hz. That is the plan, with margin for
-the two levers underdelivering — which they will.
+the two speed-ups underdelivering — which they will.
 
 Held in reserve, in order: **the filter** (32% of stage CPU, vertical passes have no
 recurrence in x), **`--simd`** (exists, 11% stage ceiling, off by default), and
@@ -194,8 +194,8 @@ ReS2tAC's own CUDA path and libSGM both do VGA on Jetson hardware at rates the C
 cannot approach.
 
 **Resolved 2026-08-10: the answer is CUDA**, and the CPU's 8.1x plan is not being built.
-The two levers it rested on are not wasted — "stop computing all D planes" is still the
-biggest measured lever in the project and applies to the GPU path too — but the 1.56x
+The two speed-ups it rested on are not wasted — "stop computing all D planes" is still
+the biggest measured speed-up in the project and applies to the GPU path too — but the 1.56x
 occupancy half is now moot.
 
 ## Reference: where it stands against SGM at 450x375
@@ -237,7 +237,7 @@ guesses and the allocation timer that finally explained it, in 09-matching.md.
 **The ceiling is the real finding.** The score is 30% of cost-stage CPU, so 1.6x on it is
 an 11% stage ceiling, and the layout costs ~12 ms of clear and alloc against the 29 ms it
 saves. At agg 5 the **filter is now larger than the score** (93 against 77 ms). Off by
-default. Making it pay means decoupling the work quantum from the group size -- score into
+default. Making it faster means decoupling the work quantum from the group size -- score into
 shared group buffers, then hand out single planes for filter and insert from a second queue
 -- which is real engineering against an 11% ceiling. Reverting is also defensible.
 
@@ -256,10 +256,10 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    holds the precision at higher coverage. **Reframed 2026-08-10:** the v3 board says
    coverage-for-precision is *the* axis the whole field trades on, and everyone picks a
    single point on it and publishes that. Sweeping the gate and **publishing the
-   precision-coverage curve** is nearly free here -- `Match::margin` and the
+   precision-coverage curve** costs almost nothing here -- `Match::margin` and the
    precision-by-quartile numbers already exist -- and it is a contribution rather than
    a catch-up, because the board structurally cannot report one. See 4.2.
-3. **Stop computing all D planes -- the biggest measured lever in the project, 5.2x.**
+3. **Stop computing all D planes -- the biggest measured speed-up in the project, 5.2x.**
    Our own ceiling says 81.5% correct-over-known is available against 67.9% delivered.
    The offset-indexed version is a measured negative with a known mechanism: aggregation
    needs constant-disparity planes. **Re-ranked 2026-08-10 after reading the Middlebury
@@ -318,7 +318,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    | 8 | 32.8% | 93.7% |
    | 16 | 49.3% | 96.5% |
 
-   Against the oracle's **19.2% at 100%**, the coarse pass buys 19.7% at **88.5%**
+   Against the oracle's **19.2% at 100%**, the coarse pass delivers 19.7% at **88.5%**
    — the same arithmetic saving while throwing away one true disparity in nine. To
    reach a recall worth having it needs pad 16, and 49.3% of the sweep is 2.0x, not
    5.2x. Its bare interval contains the answer only **55.6%** of the time, and 5.6%
@@ -327,7 +327,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    **This explains the c2f result rather than contradicting it.** `--c2f` measured
    1.24x on the desktop and flat on the TX2, and the reading then was that its
    per-PLANE bounding boxes were too loose. Per-tile bands are much tighter and
-   still do not pay, so the loose scheme was not the binding problem: **the coarse
+   still give no speed-up, so the loose scheme was not the binding problem: **the coarse
    prior itself is not accurate enough.** Do not revisit c2f expecting the tiling
    to rescue it.
 
@@ -372,7 +372,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
 
    Still nowhere near 19.2%, and the mechanism is now sharper than "scattered":
    **the admitted sets of neighbouring pixels do not agree.** 13.9% per pixel, yet
-   the union over even a 4x4 tile is 43.6% — and shrinking the tile to buy
+   the union over even a 4x4 tile is 43.6% — and shrinking the tile to gain
    agreement costs recall (77.3%) and leaves 9.6% of pixels with no evidence at
    all. Any tiling scheme needs spatial agreement about which disparities matter,
    and this evidence has none.
@@ -422,7 +422,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    instead of everywhere. **3.8x at 93.5% recall** is the best this predictor
    family reaches.
 
-   **And then the halo, which none of the above had paid for.** A tile can only
+   **And then the halo, which none of the above had counted.** A tile can only
    skip a plane if it also skips it for the pixels the FILTER would have read. rf's
    influence decays ~0.89 per pixel at sigma_s 12, which is why `de_dense` already
    pads a masked rectangle by `MPAD` = 16 px before scoring it. So a 16x16 tile
@@ -444,7 +444,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    since a 16 px reach out of a 32-wide tile is charged a full neighbouring tile.)*
 
    **The halo more than halves the win, and bigger tiles are worse, not better** —
-   the halo is paid per tile that wants a plane, so more tiles is not the fix and
+   the halo is computed per tile that wants a plane, so more tiles is not the fix and
    fewer tiles means looser bands. Best realisable is **53.8%, which is 1.9x**, not
    5.2x and not 3.8x.
 
@@ -458,7 +458,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    |---|---|
    | oracle interval, tile 16 | 19.2% = **5.2x** |
    | best real predictor, no halo | 26.3% = **3.8x** |
-   | **the same with the filter halo paid** | **53.8% = 1.9x** |
+   | **the same with the filter halo counted** | **53.8% = 1.9x** |
    | and wall clock | worse again, unmeasured |
    | and accuracy at 93.5% recall | unknown, 0 to 6 points |
 
@@ -507,7 +507,7 @@ scores and blocks are handed out dynamically. Verify at `--threads 1`, and only 
    4. **ELAS** -- sparse support points chosen by the first-to-second-minimum ratio,
       i.e. `Match::margin`, triangulated into a prior. **Speed only, not quality**: its
       own v3 entry is 26.4% bad-1.0 sparse at ~76% coverage, worse than SNCC at the
-      same coverage. Do not expect the support-point prior to buy accuracy.
+      same coverage. Do not expect the support-point prior to gain accuracy.
 
    See 09-matching.md. Any of these is a bigger prize than anything in the inner loops.
 4. **Idle cores.** Desktop 3.27 of 4, TX2 2.9x of 6.
@@ -537,7 +537,7 @@ disparities as the `--prior` mask for frame t+1 is 1.15x on the TX2 CPU tool wit
 HIGHER coverage and 99.6% agreement, on a static scene. Under motion it needs the IMU
 rotation compensation of 3.1.
 
-**And `--csct` need not be paid for SIMD.** ReS2tAC cuts the descriptor to 24 bits so
+**And `--csct` is not required for SIMD.** ReS2tAC cuts the descriptor to 24 bits so
 sixteen *pixels* fit three registers -- a pixel-major constraint that does not bind once
 disparity is in the lanes. With the `vpaddq_u8` reduction a 24-bit descriptor would save
 about two instructions of twelve. Not worth 1.2 points of bad-1.0.
@@ -579,11 +579,11 @@ carrying **28.6% of all error at 57.1% against a 32.0% far-field rate.**
 **So the ceiling is about 4.6 points.** Bringing the near-edge population down to
 the far-field rate takes 36.6% -> 32.0% overall. That is optimistic — it assumes
 perfect edge handling — and it is the best-founded target left on this list, well
-above what the remaining knobs offer and well below what sub-pixel gave.
+above what the remaining parameters offer and well below what sub-pixel gave.
 
 **But the 4.6 points are probably NOT reachable by a better support region**
 (measured 2026-08-11, and this is the finding that matters here). Two independent
-knobs that should move near-edge error both leave it flat:
+parameters that should move near-edge error both leave it flat:
 
 | | near edge (<=8 px) | far field | all |
 |---|---|---|---|
@@ -620,16 +620,16 @@ unmatched pixels actually goes. Two candidates, and the split is lopsided:
 | greedy claim contention | 0.2 points |
 
 **Contention is not a sink.** Retrying the other scored candidate when a pixel's
-right partner is already claimed -- free, no new cost, no new candidates -- was
+right partner is already claimed -- no new cost, no new candidates -- was
 implemented and measured: coverage 80.1% -> 80.3%, bad-1.0 26.04 -> 26.27. It
-barely fires, and what it recovers it pays for. **Reverted rather than left in as a
-flag**, per this file's own preference for a recorded negative over a knob.
+barely fires, and the coverage it recovers costs the same in error. **Reverted rather than left in as a
+flag**, per this file's own preference for a recorded negative over a parameter.
 
 **So our coverage is not lost, it is spent.** 98% of it goes to the gate, which is a
 chosen position on the precision-coverage curve rather than a failure to fix. At the
 gate wide open we reach 91.2% coverage -- past SGM's 90.2% -- at 35.85 bad against
 its 29.08. Which is the same conclusion the sweep reached from the other direction:
-**SGM's whole curve is better, and no knob on our side moves off ours.**
+**SGM's whole curve is better, and no parameter on our side moves off ours.**
 
 That closes the coverage line. What is left is structural, and 0.4's semi-dense
 candidate work is the only remaining item that changes the curve rather than the
@@ -784,7 +784,7 @@ direction was priced on the axis that is already wired.
 | centre-symmetric, 24 bit | **24.68** | 75.9% |
 
 Halving the descriptor *lowers* the error rate by 0.5 and costs 3.7 points of
-coverage — which is the precision-coverage trade every other knob in this project
+coverage — which is the precision-coverage trade every other parameter in this project
 offers, at the same sort of exchange rate. It is not a better or worse descriptor, it
 is a differently-gated one.
 
@@ -796,7 +796,7 @@ census kernel plus a re-verification of bit-identity.
 of the same descriptor will not collect it. It is a problem with Census-plus-truncated-
 difference as a similarity measure on weakly textured and repetitive surfaces. Fixing
 that means a different similarity function — which is exactly where learned costs sit,
-and what the no-CNN decision (section 0) rules out. The remaining lever and the
+and what the no-CNN decision (section 0) rules out. The remaining improvement and the
 ruled-out technique are the same thing, and that is worth stating plainly rather than
 leaving as an open item that reads as actionable.
 
@@ -835,7 +835,7 @@ which is the 44-51% repeatability ceiling; the dense map has no such requirement
 its recall reads above 1. Precision, median error and correct-count are like for
 like.)*
 
-**BUILT AND MEASURED 2026-08-11: the keypoints are free.** `de_dense_cuda
+**BUILT AND MEASURED 2026-08-11: the keypoints cost nothing.** `de_dense_cuda
 --keypoints out.csv` detects on the left image and reads each keypoint's disparity
 out of the dense map. Detection runs as a third thread beside the solve inside the
 pipelined loop, so the number includes it:
@@ -866,7 +866,7 @@ it has to be decided rather than assumed:
 | dense CUDA path | 23 ms solve | 26 ms kernels, 31.9 ms wall |
 | **keypoints AND a dense map** | detection ~21 + solve 23 = **44 ms** | 26 ms |
 
-**The swap is not free even though the dense map is.** Sampling the map costs
+**The swap costs time even though the dense map does not.** Sampling the map costs
 nothing, but anything that still wants KEYPOINTS -- tracking, VO -- needs the
 detector as well, and detection plus the dense solve is ~44 ms of CPU against a
 33.3 ms frame. It fits only if the detector overlaps the solve across the A57s and
@@ -877,7 +877,7 @@ Three ways out, in the order they should be tried: run correspondence at 15 Hz,
 which the frame-budget section already argues is plausibly enough indoors; or drop
 the sparse detector entirely for consumers that only want depth, since the dense map
 serves them without keypoints; or raise `fast_threshold`, which the profiling says
-buys 30% of preprocessing for 10% of matches.
+saves 30% of preprocessing for 10% of matches.
 
 Whatever is chosen, pick the gate per consumer rather than globally — tracking wants
 coverage, triangulation wants precision, and the table above shows they are 0.829
@@ -994,7 +994,7 @@ else at the shipping defaults:
 | 2500 us | 86.1% | 1.3 mm | **2.0%** | 37.0 DN | 84.2% |
 
 **Shorter is better on every matcher axis**, and the optimum is a broad plateau from
-150 to 500 us. Against the shipping 1500 us, 350 us buys 2.5 points of coverage and
+150 to 500 us. Against the shipping 1500 us, 350 us gains 2.5 points of coverage and
 takes gross outliers from 0.8% to 0.1% -- eight times fewer points more than 2 cm off
 a flat wall.
 
@@ -1194,7 +1194,7 @@ No intensity transform creates information that the photons did not carry. The t
 things that do are optical: the projector, which is worth 1.6 -> 3.9 DN and 56.8% ->
 24.9% of pixels below 2 DN, and exposure -- 6.4% of the frame is bright-clipped at
 `exposure_us 1500`, and those pixels are unmatchable at any descriptor size. Whether
-lowering exposure pays is a trade against dot contrast everywhere else, and
+lowering exposure gains more than it loses is a trade against dot contrast everywhere else, and
 `wall_check.py --sweep` over a few exposures is now the way to settle it.
 
 ## 0.55 Per-point confidence, and then an existence probability — **NEXT, 2026-08-12**
@@ -1236,7 +1236,7 @@ no vehicle.
 2. ~~**Uniqueness / left-right consistency**~~ **Done 2026-08-12: it is a veto, not a
    ranking, and it is the cue that sees the ghost.** See 0.552.
 3. ~~**Combine** with a logistic regression fitted on Middlebury.~~ **Done
-   2026-08-12: it buys calibration, not ranking.** See 0.553.
+   2026-08-12: it gives calibration, not ranking.** See 0.553.
 4. ~~**Calibrate**~~ **Done offline 2026-08-12, and it is calibrated on a MIX of
    scenes and over-confident on a hard one.** See 0.553. What remains is the part
    that needs this camera: a calibration fitted on Middlebury is a claim about a
@@ -1280,10 +1280,10 @@ answer, `--min-margin 0`, K=2, bad-1.0. The population is 10.41% wrong.
 | random | 0.1042 | 0.0980 | 10.42% |
 
 **These cues rank well.** The peak ratio closes 76% of the distance between no skill
-and the oracle, and it is free: the same two numbers the margin already reads, one
+and the oracle, and it costs nothing: the same two numbers the margin already reads, one
 divide instead of one subtract.
 
-**Local aggregation buys nothing here, and the reason is that it has already
+**Local aggregation changes nothing here, and the reason is that it has already
 happened.** Poggi, Tosi and Mattoccia's central finding is that pooling a measure over
 a neighbourhood is what separates a good hand-crafted confidence from a poor one, and
 APKR is a top-four measure where per-pixel PKR is not. Reproduced -- but only when the
@@ -1293,7 +1293,7 @@ cost volume is not aggregated first:
 |---|---|---|---|---|
 | PKRN | 0.0513 | 0.0349 | **0.0294** | 0.0339 |
 | APKR, 5x5 | 0.0418 | 0.0316 | **0.0294** | 0.0340 |
-| what aggregation bought | 0.0095 | 0.0033 | **0.0000** | -0.0001 |
+| what aggregation added | 0.0095 | 0.0033 | **0.0000** | -0.0001 |
 
 The edge-aware recursive filter runs over the cost volume before the top-2, with a
 1/e reach of 5.7 px at `sigma_s 8`. The neighbourhood APKR would pool over is inside
@@ -1435,7 +1435,7 @@ window, a surface and a lighting condition, so a random split puts a pixel's own
 neighbours in the training set and measures memory. Every number below is predicted by
 a model that never saw that scene.
 
-**Step 3's answer: the fit buys nothing for ranking.**
+**Step 3's answer: the fit gains nothing for ranking.**
 
 | | pooled AUC |
 |---|---|
@@ -1650,7 +1650,7 @@ cues barely see sub-pixel accuracy at all.
   flat wall, scored against a fitted plane, and (b) an emitter-off scene where
   texture is scarce and the uniqueness constraint should matter most. Reasoning and
   the expected shape of the answer in [01-hardware.md](01-hardware.md).
-  **A free partial answer already exists**: the Middlebury v3 leaderboard carries
+  **A partial answer is already available**: the Middlebury v3 leaderboard carries
   `r200high` — "Custom ASIC", the RealSense stereo pipeline, the D4's ancestor — at
   48.7% bad-1.0 against ground truth (section 4). Not this camera and not our scenes,
   so it does not replace the experiment, but it says what the silicon scores when
@@ -1816,7 +1816,7 @@ selecting on the graded one — two costs where there is now one, which is cheap
 CPU and another filtered volume on the GPU. Not built; it is the first thing to try if
 sub-pixel accuracy is ever worth more than a plane of memory.
 
-### 2.2 Sub-pixel disparity refinement — **PROMOTED 2026-08-10, biggest measured lever**
+### 2.2 Sub-pixel disparity refinement — **PROMOTED 2026-08-10, biggest measured gain**
 
 The plan: "Depth accuracy hinges entirely on this." Keypoint positions are already
 sub-pixel refined, but the *disparity* is just the difference of two independently
@@ -1826,7 +1826,7 @@ refined positions rather than a fit to the correlation surface between them.
 against Middlebury v3, and it is worth up to **45 points** on the metric the field
 publishes: a perfect integer answer at Q scores 45.55% bad-1.0 where a perfect float
 answer scores 0.80%. Our dense output is 0% fractional; SGM's is 99.3%. That is a
-bigger lever than anything ranked in 0.3, and it needs no hardware.
+bigger gain than anything ranked in 0.3, and it needs no hardware.
 
 **Done, and ON BY DEFAULT since 2026-08-10.** `de_dense` fits a parabola through the
 aggregated cost at the winner's two neighbouring disparities. `--no-subpixel`
@@ -1867,7 +1867,7 @@ Two things this leaves open, both recorded rather than assumed:
    suspected: `2*c0 - cm - cp` is a second difference, and second differences lose
    far more to quantisation than the maximum they are taken around. `SCORE_Q` is 14.
 
-   Not worth acting on yet: 1.2 points against the 15.0 the fit buys, and widening
+   Not worth acting on yet: 1.2 points against the 15.0 the fit gains, and widening
    the fit's inputs means widening the running top-2 the whole blockwise design is
    built on.
 2. ~~Nothing here is timed on the TX2.~~ **Timed, then improved twice: 1.53x -> 1.30x
@@ -1926,7 +1926,7 @@ lane is `(k % 64) / 2` by arithmetic rather than by search.
 
 **1.12x on the GPU against 1.53x on the CPU**, coverage unchanged (filled 85.9%
 either way). **Real time survives, with almost nothing left**: 32.6 ms of a 33.3 ms
-budget is 98%, where the baseline used 88%. That is a real decision, not a free win.
+budget is 98%, where the baseline used 88%. That is a real decision, not a gain without a cost.
 
 *The 848x480 row is a synthetic pair* — two consecutive `ir1` frames as left and
 right, because no rectified 848x480 L/R dump exists in `bags/`. The kernels sweep a
@@ -2018,7 +2018,7 @@ than the current 3×3 fit.
 ### 3.3 uvcvideo kernel patch
 
 Not worth it for timing: arrival jitter is 0.04 px at p99 against a ±3–4 px budget,
-and it holds under full CPU load. Would still buy hardware-sync verification,
+and it holds under full CPU load. Would still provide hardware-sync verification,
 in-motion projector labelling, and per-frame exposure confirmation.
 
 ### 3.4 Hardware sync verification
@@ -2047,8 +2047,8 @@ consistent with real sync. Not proof.
   almost always the other term. The default is not a value, it is *off*.
 
   **Above zero they work, and they are a second margin gate.** +0.5 costs 33 points
-  of coverage to buy 13 of bad-1.0, which is the same shape of trade `--min-margin`
-  already offers at roughly the same exchange rate. So this is another knob that
+  of coverage to gain 13 of bad-1.0, which is the same shape of trade `--min-margin`
+  already offers at roughly the same ratio. So this is another parameter that
   moves along the precision–coverage curve rather than off it, and it is not tuned
   here for the same reason the gate is not.
 
@@ -2070,7 +2070,7 @@ consistent with real sync. Not proof.
   was about. Do not strike it when applying "no CNN" elsewhere.
 - **Second use of MASDA for frame-to-frame association** (visual odometry). Same
   machinery; the IMU rotation compensation makes it tractable, and it is the case
-  where 3.1's coarse prior should finally pay.
+  where 3.1's coarse prior should finally help.
 - **`INS_LOG_BAT_OPT` semantics** — batch data is windowed at ~1 s. Not blocking any
   more, since long-τ parameters come from the continuous stream instead, but worth
   understanding if raw continuous data is ever wanted.
@@ -2189,7 +2189,7 @@ because the code no longer runs. **Re-derive it before believing it** (rule 6).
 
 **Consequences for the list.** 2.2 said sub-pixel disparity "cannot be validated
 without 1.1". That is now false — it is measurable today, it is worth up to 45 points
-on the metric the field publishes, and it is a bigger lever than anything currently
+on the metric the field publishes, and it is a bigger gain than anything currently
 ranked in 0.3. Promoted.
 
 ~~Jadeplant and Vintage are skipped at `--dmax-cap 96`.~~ **They run fine** (checked
@@ -2222,7 +2222,7 @@ and that the gate moves along the curve rather than off it.
 
 **This corrects a comparison made earlier today.** "Level with SGM" was 29.20 against
 29.13 — true numbers, unequal coverage, and therefore not a comparison. The gate is
-exactly the knob that makes such a pairing meaningless, which is the argument for
+exactly the parameter that makes such a pairing meaningless, which is the argument for
 publishing the curve and is now also an argument against quoting any single point of
 it.
 
@@ -2237,7 +2237,7 @@ one the field publishes on.
 #### How it works, for the next person
 
 **The training set's ground truth is public**, so this is a local benchmark, not a
-submission. Submission buys a public rank and nothing else.
+submission. Submission gives a public rank and nothing else.
 
 **Quarter resolution is nearly our operating point**, which is what made this cheap. Full res is ~2900x1950 with ndisp 240-740; at Q that is **~740x490 with
 ndisp 60-185** against our 848x480 D=60. Measured from `calib.txt`:
@@ -2257,7 +2257,7 @@ this is exactly the axis that has a known failure mode.
 
 The price of Q: **the official evaluation is always at full resolution and upsamples
 your result**, which is most of why SGBM2 (submitted at Q) sits at 44.2 dense. The
-penalty is real but it is the same one comparable systems on that board already pay.
+penalty is real but it is the same one comparable systems on that board already have.
 Middlebury's own advice is to submit the largest resolution the algorithm supports.
 
 **Scoring Q against Q ground truth is not that evaluation and is worth 2.9x.** The
@@ -2328,9 +2328,9 @@ Four things to take from it:
 
 1. **The precision leaders win by covering less, not by matching better.** MTS2 is
    0.61% at ~36% coverage, r200high 2.76 at ~53%, against our ~76-86%. Same frontier,
-   same knob as the margin gate. Hence the reframing of item 2 above: publish the
+   same parameter as the margin gate. Hence the reframing of item 2 above: publish the
    curve, since the board can only publish points.
-2. **Per-pixel disparity-range restriction is the lever, and ICSG/max-trees are how.**
+2. **Per-pixel disparity-range restriction is the speed-up, and ICSG/max-trees are how.**
    Promoted into item 3 above, ahead of ELAS and ESPReSSo.
 3. **ELAS is a speed construction, not a quality one** -- 26.4% sparse at ~76%
    coverage, worse than SNCC at the same coverage. Demoted in item 3.

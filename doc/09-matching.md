@@ -85,7 +85,7 @@ where descriptors are degenerate, and only modestly worth it where they are not.
 
 **Median |dy| = 0.359 px** is independent corroboration that the matches are real:
 a wrong match has no reason to land on the same image row, and this is the plan's
-free rectification-health metric. Note MASDA's |dy| is *slightly worse* than
+rectification-health metric at no extra cost. Note MASDA's |dy| is *slightly worse* than
 nearest-neighbour's — expected, since it accepts ~46% more and the additional ones
 are the harder cases.
 
@@ -115,7 +115,7 @@ this is the same work on slower cores rather than a different problem.
 
 Every `Match` now carries `margin`: best-minus-second-best s(i,j) over that left
 keypoint's candidates, measured against lambda where there is no runner-up. It is
-close to free -- one pass over the edge list -- and it is the most useful
+costs almost nothing -- one pass over the edge list -- and it is the most useful
 confidence available. Over eight Middlebury scenes with ground truth, precision by
 margin quartile runs 0.169 / 0.286 / 0.391 / 0.659.
 
@@ -168,11 +168,11 @@ messages that do not change the decision. Worth re-checking the moment smoothnes
 factors are added, which is when the plan expects the guarantee to break properly
 and damping to need raising past 0.5.
 
-**20 iterations is the operating point.** More costs time and buys 0.1%.
+**20 iterations is the operating point.** More costs time and gains 0.1%.
 
 ## Coarse-to-fine: built, measured, and **not** worth it here
 
-The plan calls this the biggest single lever, for two compounding reasons: cutting
+The plan calls this the biggest single speed-up, for two compounding reasons: cutting
 candidates per keypoint from ~100–200 down to 8–16, and removing the false
 candidates from repetitive structure that create near-ties. It is implemented as
 the plan specifies — a **soft** prior, never hard pruning, since hard pruning at
@@ -231,7 +231,7 @@ Kept in the code, off by default, because the premise could return:
 - **Much higher keypoint density**, where per-row candidates multiply.
 - **Temporal matching** between consecutive frames, which the plan wants for
   ego-motion. There the search is 2-D and unconstrained by rectification, so k
-  really is large and a prior — from IMU-derived rotation compensation — should pay.
+  really is large and a prior — from IMU-derived rotation compensation — should improve it.
 
 This is the plan's own instruction followed: measure before deriving. The measurement
 says don't.
@@ -342,7 +342,7 @@ Over-proposing on the right lifts it, with diminishing returns past 2x:
 time. Precision falls though, 0.616 to 0.573, because the extra right keypoints
 are also extra distractors.
 
-That is where the exported margin pays for itself. Gating the 2x run on margin
+That is where the exported margin becomes useful. Gating the 2x run on margin
 recovers the precision and keeps most of the gain:
 
 | | correct | precision |
@@ -452,7 +452,7 @@ use of lambda and gamma being separable at all. But a surplus right keypoint is
 usually nobody's best candidate, so it goes unmatched whatever gamma says: gamma
 only bites when a right keypoint is genuinely contested, and the extra ones mostly
 are not. The lambda/gamma fix was still worth making, since the naming was wrong
-and the fields are not interchangeable, but this particular payoff is not there.
+and the fields are not interchangeable, but this particular gain is not there.
 
 ## Sub-pixel disparity
 
@@ -532,7 +532,7 @@ What should not happen is quietly shipping the recommended configuration and
 discovering the frame drops on the vehicle. It is off by default and the flags are
 opt-in.
 
-## Where the 21 ms goes, and what the two levers actually buy
+## Where the 21 ms goes, and what the two changes actually save
 
 `de_profile` times the three detector stages and sweeps resolution. Jetson, MAXN,
 `full_on`, 40 frames, medians, per image for the detector stages:
@@ -546,12 +546,12 @@ opt-in.
 Stage 1 is 55% of detection, not the overwhelming majority I assumed from "it
 touches every pixel while the rest is sparse". NMS and refinement are 45% between
 them, because FAST nominates 22200 candidates per image to produce 1075 keypoints:
-95% of them are discarded only after both sparse stages have paid for them.
+95% of them are discarded only after both sparse stages have spent time on them.
 
 Throughput is 26-31 Mpx/s across the three resolutions, so preprocessing is
 essentially pixel-bound and resolution scales as expected.
 
-### The FAST threshold is the better lever
+### The FAST threshold is the better place to cut
 
 Nobody had tried it. The threshold of 8 was chosen against the DENSE detector, on
 the grounds that it keeps 96% of its keypoints at 1.45x the speed. That is a
@@ -579,12 +579,12 @@ costs correct matches roughly in proportion while leaving quality alone:
 | 30 | 932 | 0.721 | 0.167 px | 95.5% |
 
 Precision is flat to within 0.008 and sub-pixel accuracy does not move at all.
-The threshold buys time by discarding keypoints, not by discarding *good* ones,
+The threshold saves time by discarding keypoints, not by discarding *good* ones,
 and there is no cliff anywhere in the range.
 
 ### Threshold beats resolution, clearly
 
-Normalising both levers against what they cost:
+Normalising both changes against what they cost:
 
 | change | time saved | cost |
 |---|---|---|
@@ -597,7 +597,7 @@ advantage the table does not show: median inlier disparity error stays at 0.167 
 across the whole threshold sweep, whereas halving resolution halves the pixels a
 disparity is measured in and so costs depth precision directly.
 
-So resolution is the lever of last resort, not the second option. Recommendation:
+So resolution is the cut of last resort, not the second option. Recommendation:
 `fast_threshold = 12`, which puts preprocessing at 56.5% of budget and should
 leave the recommended matcher configuration fitting inside 30 Hz.
 
@@ -906,7 +906,7 @@ runs a competition among candidates that are all wrong, and one of them wins it
 convincingly — so the margin comes out *high* on a wrong match. Coarse-to-fine does
 not merely propagate coarse errors, it launders them into confident ones.
 
-That makes it strictly a speed/quality trade rather than a free win, and it damages
+That makes it strictly a speed/quality trade rather than a gain without a cost, and it damages
 the one signal this matcher has that SGM does not. It also independently reproduces
 the earlier coarse-to-fine negative result from the article, by a different route
 and with the mechanism identified.
@@ -985,8 +985,8 @@ smoothness and post-filtering, SGM still reaches 12.7% against MASDA's 28.1%.
 So the bulk of the gap is the **matching cost**. OpenCV aggregates a
 Birchfield-Tomasi absolute difference over a 5x5 block, producing a graded,
 sub-pixel-capable score. MASDA compares one 48-bit Census descriptor and gets a
-Hamming distance quantised to 49 levels. Census buys invariance to gain and offset,
-which matters on a real stereo rig, and pays for it in discriminative power.
+Hamming distance quantised to 49 levels. Census provides invariance to gain and offset,
+which matters on a real stereo rig, and costs discriminative power.
 
 That reinstates what the article's section 10 ranked first and I had talked myself
 out of: **better scores are the highest-value change**, ahead of smoothness. It also
@@ -1010,7 +1010,7 @@ And more iterations make MASDA *worse*, which was not obvious:
 | 12 | 183 ms | 86.9% | 33.8% |
 | 20 | 283 ms | 87.8% | 34.8% |
 
-Iterations buy coverage and spend accuracy: the extra matches are the ones
+Iterations gain coverage and cost accuracy: the extra matches are the ones
 uniqueness forces onto ambiguous pixels that early rounds correctly left alone. At
 two iterations MASDA is **58 ms total against SGM's 16 ms** — 3.6x, not the 8x
 implied by running 12 iterations that were making it worse.
@@ -1072,7 +1072,7 @@ which is smooth.
 
 ### What is left, in order
 
-1. **A graded cost.** Census gives 49 levels and buys illumination invariance; SGM's
+1. **A graded cost.** Census gives 49 levels and is invariant to illumination; SGM's
    Birchfield-Tomasi absolute difference is continuous. Combining the two -- Census
    for invariance, AD for gradation -- is the standard move and is untried here.
 2. **Runtime.** 280 ms against SGM's 16 ms, and the cost-volume build now dominates
@@ -1159,7 +1159,7 @@ non-iterative, so it is cheap.
    candidate sets mattering more than inference.
 3. **Edge-aware support instead of a box.** The box was worth 16 points; a better
    support region should be worth more, and it is cheap.
-4. **Continuous disparity.** Comes free with a plane-based formulation, and would
+4. **Continuous disparity.** Comes with a plane-based formulation at no extra cost, and would
    sidestep the sub-pixel parabola that measurably did not work here.
 
 ## Making it fast, and keeping it parallel
@@ -1169,7 +1169,7 @@ Profiling first, per rule. At 273 ms the split was **census 20 ms, cost volume
 It was the one serial stage, and it was 78% of the runtime. The solver, already
 row-parallel, was scaling 4.7x.
 
-The fix was free: each disparity slice is an independent H×W plane — score, box
+The fix cost nothing: each disparity slice is an independent H×W plane — score, box
 filter, scatter — and slices write disjoint elements of the output volume. Threading
 over disparity needs no locks and no atomics.
 
@@ -1192,7 +1192,7 @@ cost volume is 40 MB written once and read once per solver iteration, and none o
 the arithmetic is expensive — a popcount, an add, a compare.
 
 That is worth knowing before optimising further. Vectorising the inner loops would
-buy little if the machine is already waiting on memory; the useful moves are the
+save little if the machine is already waiting on memory; the useful moves are the
 ones that reduce *traffic*: smaller types for the cost volume (uint8 or uint16
 instead of float32 would quarter it), fusing the aggregation into the scatter so the
 volume is written once instead of staged, or not materialising the whole volume at
@@ -1308,7 +1308,7 @@ caught this time because checking cost two minutes.
 - **Quality: level with SGM**, from 3.5x behind.
 - **Runtime: 226 ms against 16 ms.** Now the gap. The guided filter is four box
   passes per disparity slice on top of the scoring, and the work is
-  memory-bandwidth bound, so the levers are traffic rather than arithmetic: uint16
+  memory-bandwidth bound, so the savings are in traffic rather than arithmetic: uint16
   cost volume, fusing passes, or not materialising the volume at all.
 - **Untried and still promising:** slanted planes for the genuinely-slanted
   population, and a graded cost (Census plus absolute difference) for the ~50% of
@@ -1347,7 +1347,7 @@ next step on runtime.
 ### The fast guided filter does not work here
 
 Implemented and measured. The premise — the guided filter's coefficient planes are
-smooth, so computing them at reduced resolution is nearly free — does not hold for a
+smooth, so computing them at reduced resolution costs almost nothing — does not hold for a
 stereo cost volume.
 
 | subsample factor | cost stage | coverage | bad-1.0 |
@@ -1358,7 +1358,7 @@ stereo cost volume.
 | 8 | 102 ms | 81.4% | 14.6% |
 
 At factor 4 it saves 55 ms and costs **2.4 points of bad-1.0** — which undoes most of
-what the guided filter bought in the first place (10.6% -> 8.8%). At factor 2 there
+what the guided filter gained in the first place (10.6% -> 8.8%). At factor 2 there
 is no useful trade at all: 6 ms for half a point.
 
 The reason is that the fast variant subsamples the **input** as well as the guidance,
@@ -1372,7 +1372,7 @@ Left in behind `--fgf N`, defaulting to 1. Routing F=1 through the subsample and
 upsample machinery would cost a redundant copy and two bilinear passes for nothing —
 207 ms against 159 ms in the cost stage — so F=1 takes a separate direct path.
 
-**So the runtime item is still open**, and the obvious remaining levers are the ones
+**So the runtime item is still open**, and the obvious remaining savings are the ones
 that do not touch the cost values: a uint16 volume instead of float32 to halve the
 traffic, and PatchMatch-style propagation to avoid materialising a volume at all.
 
@@ -1388,7 +1388,7 @@ which is **2.5 GB/s: 13% of what the machine will give.**
 
 So the earlier conclusion in this document, that the work is memory-bandwidth bound
 because eight threads are slower than four, is **wrong**. Eight threads being slower
-has a different cause, and shrinking the cost volume would buy very little.
+has a different cause, and shrinking the cost volume would save very little.
 
 The likely real cause is the box filter's **serial dependency chain**:
 
@@ -1409,7 +1409,7 @@ is the other standard option, trading the running sum for four loads per query.
 
 Recording the correction rather than quietly fixing it: this is the fifth mechanism I
 attributed confidently and wrongly today. The measurement cost two minutes and saved
-implementing a uint16 volume that would have bought almost nothing.
+implementing a uint16 volume that would have saved almost nothing.
 
 ### Attributing the cost stage properly, having guessed wrong repeatedly
 
@@ -1433,12 +1433,12 @@ three changes optimising the filtering, which is 55% split across seven passes.
 The scoring itself cannot be much of it: 60 disparities over 168k pixels is 10M
 XOR-and-popcount pairs, a few milliseconds of arithmetic. So the 66.7 ms is dominated
 by *moving the volume* — writing 40 MB out through the blocked transpose — which is
-also why blocking it only bought 6%: the traffic is irreducible while the volume
+also why blocking it only saved 6%: the traffic is irreducible while the volume
 exists.
 
 ### The conclusion the attribution forces
 
-Every remaining lever inside this structure is worth single-digit percentages, because
+Every remaining saving inside this structure is worth single-digit percentages, because
 the structure itself is the cost: a 40 MB volume gets written once and read once per
 solver iteration, and no amount of filter tuning changes that.
 
@@ -1529,7 +1529,7 @@ loss, and comfortably so.
 
 So the plan's ordering is load-bearing rather than stylistic: **`[d][x]` is a
 prerequisite for the pixel-parallel reduction, not a companion optimisation.** With
-that layout the same loop reads contiguously and the lanes are free; without it the
+that layout the same loop reads contiguously and the lanes cost nothing; without it the
 lanes cost more than they save.
 
 Reverted. Recorded because the failure is informative: it is evidence that the
@@ -1633,8 +1633,8 @@ the previous implementation rather than assumed to be.
 The box pass improved 1.86x at one thread and only 1.57x at four, and the whole cost
 stage moved 147.7 -> 138.6 ms. **Both halves of the stage scale at ~1.4-1.5x on four
 real cores**, which is the signature of a shared bottleneck, not of arithmetic. Fixing
-the arithmetic on a stage that is waiting for memory buys the fraction of it that was
-not waiting.
+the arithmetic on a stage that is waiting for memory saves only the fraction of it that
+was not waiting.
 
 So the microbenchmark did not lie, it answered a different question: single-threaded
 on one hot plane, the chain is the limit; four-threaded on cold planes, it is not.
@@ -1671,7 +1671,7 @@ Downgraded from "step 1, where the 12x lives" to "worth trying, with a known
 tension", on two measurements.
 
 Against it: the cache-capacity argument is worth 35% at four threads, not 3x. And the
-halo is not free — the guided filter chains two box passes, so a band of B rows needs
+halo costs something — the guided filter chains two box passes, so a band of B rows needs
 slice rows `[y0-2r, y1+2r)`, and at r=5 that is 20 extra rows per band. A band small
 enough to be L2-resident (B=8, 864 KB) does 3.5x redundant filter work; a band big
 enough to amortise the halo (B=64) is 6.9 MB and back to thrashing L3. The redundancy
@@ -1686,7 +1686,7 @@ at.
 
 The way to resolve the tension is to give each thread a contiguous stripe of rows and
 stream bands down it carrying the box filters' vertical accumulators across band
-boundaries, so the halo is paid once per stripe (4 stripes x 20 rows = 21% of H)
+boundaries, so the halo is computed once per stripe (4 stripes x 20 rows = 21% of H)
 rather than once per band. That is a two-level streaming pipeline through ring
 buffers and is genuinely intricate — the reason to do it is the 162 MB, and the thing
 to measure first is how much of the 1.4x scaling that traffic actually explains.
@@ -1696,7 +1696,7 @@ to measure first is how much of the 1.4x scaling that traffic actually explains.
 Two cheap tests, both diagnostic, neither needing a profiler (`perf` is locked down
 here at `perf_event_paranoid=4`).
 
-**A 15x larger window is free.** The box filter is O(N) regardless of radius, so if
+**A 15x larger window costs nothing.** The box filter is O(N) regardless of radius, so if
 time were going into the aggregation *work* it would still be flat, but if it were
 going into arithmetic per element it would not be:
 
@@ -1724,9 +1724,9 @@ the staging-and-transpose. About 1.45 GB in 125 ms — 11.6 GB/s against the 18.
 this machine sustains, and the plateau says the effective ceiling is lower than that
 under four threads.
 
-**The consequence is a change of target.** The aggregation's *radius* is free and its
-*pass count* is everything, so the lever is a filter with fewer passes, not a cheaper
-inner loop. A box is 4 touches and costs 12.9 ms; the guided filter is 29 and costs
+**The consequence is a change of target.** The aggregation's *radius* costs nothing and its
+*pass count* is everything, so the change that matters is a filter with fewer passes, not a
+cheaper inner loop. A box is 4 touches and costs 12.9 ms; the guided filter is 29 and costs
 73.6 ms — the relationship is linear in passes, which is the prediction this makes.
 
 **And it supersedes the int16 deferral.** That was parked because the cost stage
@@ -1781,7 +1781,7 @@ and the algebra says why: the exponent is `-sqrt(2)*(1/sigma_s + g/sigma_r)`, so
 any large `sigma_s` the first term vanishes and the coefficient is set by the gradient
 term alone.
 
-**This is a trade, not a free win**, and the 0.1 point is smaller than the
+**This is a trade, not a gain without a cost**, and the 0.1 point is smaller than the
 scene-to-scene spread, so it should not be quoted as "no loss" -- it is "no loss that
 this benchmark can resolve". Runtime on this laptop drifts ±12% with thermals across
 runs of identical work, which is why the comparison above is back to back and why
@@ -1963,7 +1963,7 @@ accuracy together rather than traded. The gap to SGM is 5.2x, down from 15x, and
 is ahead on accuracy at 2.4 points less coverage.
 
 The stage split is now census ~8-13 ms, cost ~54 ms, solve ~4 ms. **Census has become
-12-16% of the total** without anyone looking at it, and it is a fixed cost paid twice
+12-16% of the total** without anyone looking at it, and it is a fixed cost incurred twice
 per pair independent of D -- the first time it has been large enough to matter.
 
 ## Attributing the cost stage after blockwise, and three negatives
@@ -1985,7 +1985,7 @@ in a microbenchmark, single-threaded over 60 slices:
 | score only | 35.0 |
 | score + top-2 insert | 59.3 |
 
-So the insert is **24.3 ms**, 41% of that pair, and not the nearly-free compare the
+So the insert is **24.3 ms**, 41% of that pair, and not the nearly-costless compare the
 design argued it would be.
 
 ### Negative: blocking the score loop to reuse census rows
@@ -2000,7 +2000,7 @@ block of B disparities inner so a row's census words serve B disparities.
 | census read | 162 MB | 81 | 40 | 20 | 10 |
 
 **Uniformly worse**, by 16-28%, while reading a sixteenth of the census. Cutting 150 MB
-of reads bought nothing, so the re-read was never the cost -- one reused slice plane
+of reads saved nothing, so the re-read was never the cost -- one reused slice plane
 stays in cache for its writes, and B live planes do not. Another traffic argument that
 did not survive contact.
 
@@ -2033,9 +2033,9 @@ that none of these three was.
 
 The score loop is 10.1M pixel-disparities each needing two loads and a popcount, and
 GCC will not vectorise `popcnt64` without AVX-512. That is close to a floor for this
-structure. **The remaining structural lever is D itself**, which every stage is linear
+structure. **The remaining structural saving is D itself**, which every stage is linear
 in: a half-resolution coarse pass at D/2 over a quarter of the pixels, then refinement
-in a narrow band, is 4-5x less total work. It is the one large lever untouched, and it
+in a narrow band, is 4-5x less total work. It is the one large saving untouched, and it
 is a quality risk rather than a pure speed change, so it needs the bad-1.0 sweep rather
 than a bit-identity check.
 
@@ -2075,11 +2075,11 @@ Ungated, holes filled from valid neighbours:
 | no coarse | | **0.2%** | | | | |
 
 **81.5% against 67.9% delivered: 13.6 points of headroom at 5.2x less work.** Cleared,
-and it is now the largest available lever by a wide margin.
+and it is now the largest available speed-up by a wide margin.
 
 **The lesson is the sharper half of this.** A cheap experiment produced a clean,
 decisive, plausible negative that was an artefact of one flag, and stopping there would
-have closed off the biggest remaining lever with a number that looked authoritative.
+have closed off the biggest remaining speed-up with a number that looked authoritative.
 The top-k sweep had the mirror problem -- it measured the wrong quantity but erred
 conservatively, so the conclusion survived. This one erred the other way. **The check
 that caught it was asking why the dominant term was what it was**, rather than reading
@@ -2089,7 +2089,7 @@ noticing that took one question.
 ### What it should cost, and what becomes the bottleneck
 
 The work ratio applies to the cost stage, which is what is linear in D. Census is not:
-it is paid once per image pair regardless, plus a quarter as much again for the
+it is incurred once per image pair regardless, plus a quarter as much again for the
 half-resolution pair. Projecting from the current teddy split (census ~8-13 ms, cost
 ~43-54, solve ~4):
 
@@ -2118,8 +2118,8 @@ Isolated, both images, single-threaded:
 | **offset outer, six uint8 accumulators** | **1.83** | **5.91x** | identical |
 
 **Reordering the loops on its own is 3.7x worse.** A uint64 accumulator fits four lanes
-in a 256-bit register, and 48 passes over a row is a lot of loop overhead to buy four
-lanes. It only pays once the accumulator is a byte: six 8-bit planes give 32 lanes for
+in a 256-bit register, and 48 passes over a row is a lot of loop overhead to gain four
+lanes. It is only faster once the accumulator is a byte: six 8-bit planes give 32 lanes for
 the compare-and-or, packed into the uint64 once per row. Bit b lands at
 `(b>>3)*8 + (b&7) = b`, so the descriptors are unchanged.
 
@@ -2371,7 +2371,7 @@ presumably scalar FP throughput in the horizontal chains.
 **This revives int16 with a target and an argument it never had.** It was deferred on a
 bandwidth premise that turned out false, then aimed at what an ablation wrongly called
 12% of the stage. In fact it targets the *largest* item on the platform that matters, and
-on NEON it buys 8 lanes against 4 -- a factor the desktop numbers understate.
+on NEON it gains 8 lanes against 4 -- a factor the desktop numbers understate.
 
 ### Two things that were not the problem
 
@@ -2411,11 +2411,11 @@ The split is the interesting part. The insert improves on both machines -- it is
 compare against a plane, and halving the plane halves the work. The **filter gets worse
 on the desktop and much better on the TX2**: AVX2 vectorises the float form as a single
 FMA, and the int16 form needs a widening multiply, a shift and a narrowing store, so at
-256 bits the float wins. At NEON's 128 bits the extra lanes more than pay for the extra
+256 bits the float wins. At NEON's 128 bits the extra lanes more than outweigh the extra
 instructions.
 
 **This is the first prediction today that came out right**, and it was right for the
-stated reason: halving the element width buys 8 lanes against 4 exactly where the
+stated reason: halving the element width gains 8 lanes against 4 exactly where the
 platform is weakest. It also means the desktop is now actively misleading as a proxy --
 a change that is neutral there is worth a fifth of the runtime on the target.
 
@@ -2452,13 +2452,13 @@ lower-resolution or higher-frame-rate mode it is 10% for accuracy that is still
 competitive.
 
 The graded-cost idea points the other way: Census plus an absolute difference *adds*
-levels. That remains the untried lever on the half of the error that sits in
+levels. That remains the untried improvement on the half of the error that sits in
 near-fronto-parallel regions, and CS-CT is evidence for the mechanism behind it -- moving
 the level count down measurably hurts, so moving it up is worth testing.
 
 ## Graded cost: 9.7% bad-1.0, and now ahead of SGM by more than a point
 
-Census plus a truncated absolute difference, the lever this file has listed as untried
+Census plus a truncated absolute difference, the change this file has listed as untried
 since the SGM comparison. Census gives 49 quantisation levels and is invariant to
 monotonic intensity change; its weakness is that a flat region produces near-identical
 descriptors and the score has nothing to separate candidates with. An absolute
@@ -2545,7 +2545,7 @@ wide. The transform is 32x parallel and the score is 1x parallel, on similar wor
 
 Also worth noting against `--csct`: it halved the descriptor and cut the score stage 1.55x
 on the TX2 precisely because it halved this scalar work. Vectorising popcount attacks the
-same cost without paying the 1.2 points of accuracy.
+same cost without costing the 1.2 points of accuracy.
 
 ### Vectorising popcount alone does not work, and the reason sharpens the diagnosis
 
@@ -2574,7 +2574,7 @@ closed form -- `tbl[h] = ((half - h) * SCORE_ONE) / half` needs a division by a 
 which vectorises as a multiply-high -- but bit-identity then depends on reproducing
 integer truncation exactly, so it must be scored rather than assumed.
 
-That is a real piece of work with a real payoff on the TX2, where the score loop is 80 ms
+That is a real piece of work with a real gain on the TX2, where the score loop is 80 ms
 of CPU. It is not the half-measure attempted here, and the half-measure is worth
 recording precisely because it looked like the whole thing.
 
@@ -2601,7 +2601,7 @@ called unsolvable-without-arithmetic is solvable; it just needs the other loop o
 **They use 8-bit costs and a 24-bit descriptor.** The descriptor is cut to 3 bytes by
 dropping to a 5x5 neighbourhood on the CPU, specifically so 16 pixels' descriptors fit in
 three vector registers. That is the same trade `--csct` measured here -- 24 bits -- and it
-cost 1.2 points of bad-1.0. They pay it for the SIMD fit; whether we should is a decision
+cost 1.2 points of bad-1.0. They accept it for the SIMD fit; whether we should is a decision
 with a measured price rather than a guess.
 
 **The caveat: they did not test on a TX2.** Their embedded target is a Jetson
@@ -2678,7 +2678,7 @@ starts after the scratch exists, so allocation was invisible in the breakdown an
 up only as lost occupancy. `alloc` was **35.5 ms against the scalar path's 16.7** --
 `std::vector` zero-filling 2.7 MB a thread that the per-group `std::fill` then zeroes
 again. The fourth time vector's zero-fill has been the thing on the critical path here,
-and the first time anything was measuring it. Worth noting the scalar path pays 17 ms of
+and the first time anything was measuring it. Worth noting the scalar path costs 17 ms of
 allocation too, which nobody knew.
 
 Replacing it with a non-zeroing buffer moved the cost rather than removing it: `alloc`
@@ -2709,11 +2709,11 @@ identified as the largest single item and is not large enough for this to matter
 level that was hoped. At agg 5 the **filter is larger than the score** (93 against 77).
 
 **Kept behind `--simd`, off by default, because it is 1.6x on a real loop with bit-identity
-and the blocker is a schedule rather than the kernel.** What would make it pay is
+and the blocker is a schedule rather than the kernel.** What would make it worth building is
 decoupling the work quantum from the group size -- score into shared group buffers, then
 hand out single planes for filter and insert from a second queue -- which is a real piece
 of engineering against an 11% ceiling. Reverting instead is a one-line decision and the
-rule about knobs argues for it.
+rule about parameters argues for it.
 
 ### `cmp` between two multi-threaded runs is not an identity check
 
@@ -2725,8 +2725,8 @@ dynamically, so tie order varies run to run. Scalar 1t vs scalar 6t differs too.
 At one thread everything is deterministic and all eight scenes are byte-identical. So the
 protocol is: **`cmp` at `--threads 1`, and only there.** **And pass `--dmax` explicitly to
 both.** The two tools no longer share a default: `de_dense_cuda` defaults to 64 because
-the GPU quantises the search into blocks of 64 and anything below that is free coverage
-discarded, while `de_dense` stays at 60 because its cost is linear in `dmax`. A `cmp`
+the GPU quantises the search into blocks of 64 and anything below that is coverage discarded
+at no saving, while `de_dense` stays at 60 because its cost is linear in `dmax`. A `cmp`
 run on bare defaults compares a 64-disparity search against a 60-disparity one and
 fails, which looks exactly like the correctness regression it is not. Earlier changes verified
 "bit-identical" by cmp were not wrong -- int16 and the allocation fixes did not alter
@@ -2785,7 +2785,7 @@ The measured stage, TX2, teddy, agg 5, six threads, thread-summed CPU:
 | alloc | 17 | newly visible; nobody knew it was there |
 | **total CPU / wall** | **256 / 68** | **3.79 of 6 cores** |
 
-Three levers, and they are not the same size:
+Three savings, and they are not the same size:
 
 1. **Stop computing all D planes.** Our own ceiling measurement says 81.5% correct-over-
    known is available against 67.9% delivered, at **5.2x less arithmetic**. That is the
@@ -2847,7 +2847,7 @@ Coarse `iters=1` and MPAD 16 -> 8 are both accuracy-neutral (< 0.1) and kept.
 
 `--c2f` stays, off by default: accuracy parity, a real desktop win, and it is the vehicle
 for the temporal prior (TODO 3.1), which needs exactly this mask machinery and has no
-coarse-level cost at all -- the previous frame is free. But it is not the 5.2x, and the
+coarse-level cost at all -- the previous frame costs nothing. But it is not the 5.2x, and the
 5.2x as imagined does not exist in this construction on this board.
 
 The identified next structure, NOT built: **parallelise the masked fine pass over row
@@ -2879,7 +2879,7 @@ ascending-k top-2 is deterministic -- so the whole binary is checked with `cmp` 
 GPU stage breakdown at 848 (cudaEvents): census+coeffs 1.5, score 14, **filter 34**,
 top-2 3, transfers ~7. The filter is the remaining wall to 30 Hz at full resolution.
 
-Four findings with mechanisms, each paid for in a measured wrong version first:
+Four findings with mechanisms, each produced by a measured wrong version first:
 
 1. **A thread per filter row was 403 ms.** Warp-adjacent rows stride W*2 bytes; nothing
    coalesces and the reuse thrashes the 512 KB L2. Transposing is pure data movement --
@@ -2965,7 +2965,7 @@ at {1,2}). Interleaved best-of-8 at 848x480:
 
 **40% worse on the mean, ten times tighter on the spread.** Both effects have the same
 cause: the Denver cores are real throughput AND the source of the variance. The CPU
-tool wants all six cores and pays for them in measurement noise -- which is exactly why
+tool wants all six cores, and that adds measurement noise -- which is exactly why
 interleaved best-of-N exists. The GPU tool's solve pins WELL because it only needs
 four threads and the Denvers are busy being the CUDA driver and the fetcher thread.
 
@@ -2983,7 +2983,7 @@ deleted and the recurrence carried through a 1.7 KB row buffer): bit-identical, 
 wash -- filter+insert 337 ms thread-summed unfused against 329 fused, wall equal to
 slightly worse. On the GPU this same fusion deleted a 10.9 ms kernel and 50 MB of
 stores, because there the traffic was DRAM. **On the CPU the plane sits in L2 between
-passes** (814 KB against 2 MB), so the store the fusion deletes was nearly free and the
+passes** (814 KB against 2 MB), so the store the fusion deletes cost almost nothing and the
 re-read it deletes was nearly a cache hit. A first single-loop version was 18% WORSE
 outright: the branchy insert inside the recurrence loop killed GCC's autovectorisation,
 which is its own recorded trap -- fuse loops on a CPU only if the hot loop stays
@@ -3006,7 +3006,7 @@ memory system, not portable facts.
 Frame t's solved disparities, holes filled row-then-column, fed as `--prior` to frame
 t+1 (`bags/full_on`, frames one second apart, static scene). This is the configuration
 the mask construction was kept for: the c2f coarse level cost a fixed 43 ms on the TX2,
-and the previous frame is free.
+and the previous frame costs nothing.
 
 | | desktop | TX2, min of 6 interleaved |
 |---|---|---|
@@ -3028,7 +3028,7 @@ produce the prior.
 
 The GPU tool does not take a prior and does not need one at 34 Hz. The squeeze this
 sentence used to hedge against was a CNN sharing the device, and there will not be one
-(2026-08-10, 10-architecture.md); the lever still composes with whatever does squeeze
+(2026-08-10, 10-architecture.md); the saving still composes with whatever does squeeze
 the budget — higher resolution, a wider disparity range, or a second image-plane
 consumer.
 
@@ -3068,10 +3068,10 @@ scenes, every fourth row, paired against the factor off, kappa 0.3, damping 0.6)
   precision up on **8 of 8** scenes, mean +0.43 points, SE 0.094. Largest where the
   scene is worst -- Laundry +0.9 at precision 0.771, Reindeer +0.7 -- the same shape
   uniqueness itself shows.
-- **And it does not pay.** In the keypoint configuration a scanline band held a
+- **And it is not worth its cost.** In the keypoint configuration a scanline band held a
   handful of keypoints, so the O(E_r^2) crossing enumeration was a footnote. In the
   dense configuration the band IS the row: ~2400 crossing pairs per row against ~885
-  edges, nearly 3:1, and the solve runs 5-7x slower to buy 40 correct answers out of
+  edges, nearly 3:1, and the solve runs 5-7x slower to gain 40 correct answers out of
   243,000.
 - **kappa saturates immediately**: 0.1, 0.3 and 0.8 land within 0.003 of each other on
   precision and 1% on crossings retained. The factor is not being tuned into
@@ -3084,7 +3084,7 @@ offer, and it is the argument for MASDA over JV, given section 4.2 shows JV
 matches it on precision.
 
 Left as an open question rather than claimed: whether a neighbourhood smoothness
-factor pays where ordering did not. Ordering can only remove errors it can SEE, and
+factor gains where ordering did not. Ordering can only remove errors it can SEE, and
 repetitive-texture errors are order-preserving by construction.
 
 ### Two iterations against thirty: the study was measuring a configuration nobody runs
@@ -3099,7 +3099,7 @@ the message passing production actually does. Re-measured, eight scenes:
 | **2** (shipping) | 242,824 | **0.884** | 0.9918 | 6 / 369 |
 | 30 | 243,589 | 0.880 | 0.9992 | 175 / 369 |
 
-**Fifteen times the message passing buys 0.3% more correct answers, 0.4 points LESS
+**Fifteen times the message passing gives 0.3% more correct answers, 0.4 points LESS
 precision, and a 4x slower solve.** The extra iterations move marginal candidates from
 unanswered to answered, and those are wrong more often than the population average, so
 the objective improves while precision does not.

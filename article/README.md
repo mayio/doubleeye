@@ -130,13 +130,13 @@ is only *possible* for keypoint pairs closer together in x than that width — a
 rarer still as the range tightens.
 
 **So the disparity-range gate already does most of ordering's work.** Uniqueness
-plus a bounded disparity range yields largely ordered solutions for free, which is
-why an explicit ordering factor buys ~1% however favourable the scene.
+plus a bounded disparity range yields largely ordered solutions with no extra mechanism, which is
+why an explicit ordering factor gains ~1% however favourable the scene.
 
 The conclusion: ordering is *expressible* (cleanly, as a clamp, inside the
 existing closed form) and *nearly redundant* in a geometrically gated sparse
 matcher. It would matter where the gating is weak — a wide disparity range, an
-uncalibrated pair, or 2-D temporal association where no ordering comes for free.
+uncalibrated pair, or 2-D temporal association where nothing implies an ordering.
 
 Kept soft (finite kappa) deliberately: thin foreground objects genuinely violate
 ordering and a hard constraint would delete them. Damping defaults to 0.6, higher

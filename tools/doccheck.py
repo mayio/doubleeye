@@ -37,7 +37,7 @@ RETIRED = [
     (r"--dmax\s+53\b",
      "dmax 53 was the 0.4 m near limit; the search quantises in blocks of 64"),
     (r"--dmax\s+60\b",
-     "--dmax 60 buys a block of 64 and discards four disparities; use 64. "
+     "--dmax 60 computes a block of 64 and discards four disparities; use 64. "
      "A measurement TAKEN at D=60 should still say so -- that is rule 1, not rule 5"),
     (r"\b(98|49)\s*MB\b.{0,40}(cost )?volume|volume.{0,40}\b(98|49)\s*MB\b",
      "state the element type and D: 104 MB float / 52 MB int16 at D=64"),
@@ -210,6 +210,9 @@ VOICE = [
      r",\s+and\s+(it|that|this)\s+(is|was)\b"),
     ("55 demonstrative with no antecedent",
      r"\b(that|this)\s+(mapping|rest|surprise|trade|shape|lever)\b"),
+    # Rule 15's third word. Too many legitimate instances to fail, because "cheap"
+    # names two recorded negative results, so it proposes rather than decides.
+    ("58 cheap/expensive: time or complexity?", r"\b(cheap|cheaper|expensive)\b"),
 ]
 
 
@@ -219,6 +222,93 @@ def check_voice(body, rel, rep):
             m = re.search(pat, ln, re.I)
             if m:
                 rep.note(f"{rel}:{n}", f"[{label}] {m.group(0).strip()}")
+
+
+# --- rule 14 / readability checklist 57: trade metaphors ---------------------------
+#
+# "buy", "pay" and "lever" hide the one thing the sentence exists to say: which quantity
+# moved, in which direction, by how much. A reader whose first language is not English
+# looks "buy" up and gets money, which this project never means.
+#
+# It fails everywhere: doc/, CLAUDE.md, the posts and the glossary. 12-writing.md
+# quotes every banned form in rule 14's table, so that one file is exempt.
+TRADE = re.compile(r"\b(buy|buys|buying|bought|lever|levers|leverage[sd]?|leveraging"
+                   r"|pay|pays|paid|paying|payoff)\b", re.I)
+TRADE_OK = {"12-writing.md"}
+SAY_INSTEAD = "gains / costs / computes / saves / is worth -- then the number"
+
+
+def mentioned(line, m):
+    """Use versus mention. *free* and `knob` in single emphasis or backticks name the
+    word rather than using it, which is how CLAUDE.md and the posts teach these rules.
+    **bold** is emphasis, not mention, so it stays a use and still fails."""
+    i, j = m.start(), m.end()
+    before, after = line[:i], line[j:]
+    for q in ("*", "_", "`"):
+        if before.endswith(q) and after.startswith(q) and not (
+                before.endswith(q * 2) or after.startswith(q * 2)):
+            return True
+    return False
+
+# Three places mean money and are not metaphors at all. Narrow phrases rather than
+# whole-file exemptions, so a metaphor appearing later in the same file still fails.
+# Rule 14 says to add a row here and give the reason in the commit.
+TRADE_LITERAL = re.compile(
+    r"if you buy one"                     # 11-running.md, a second pattern projector
+    r"|bought rather than switched on"    # TODO.md, a lamp against the ceiling light
+    r"|if one is bought anyway", re.I)    # TODO.md, the safety note for that lamp
+
+
+def check_trade(body, rel, name, rep):
+    """Rule 14. Narrow by design: "level" and "levels" must not match, and they do
+    not, because the pattern ends at "lever" with a word boundary."""
+    if name in TRADE_OK:
+        return
+    for n, ln in enumerate(body.split("\n"), 1):
+        for m in TRADE.finditer(ln):
+            if TRADE_LITERAL.search(ln) or mentioned(ln, m):
+                continue
+            rep.fail(f"{rel}:{n}", f"{m.group(0)!r} -- name the quantity and the "
+                                   f"direction (rule 14): {SAY_INSTEAD}")
+
+
+# --- rule 15 / readability checklist 58: a word with two meanings ------------------
+#
+# "free" meant three different things across the published series: costs no measurable
+# time, needs no extra mechanism, and the literal sense. A reader who picks the wrong
+# one gets a claim about the schedule where the sentence made a claim about the model.
+# "knob" is a parameter and has no second meaning at all, so it has no exemptions.
+AMBIGUOUS = [
+    (re.compile(r"\bknobs?\b", re.I),
+     "a knob is a *parameter* (rule 15); there are no knobs on a Jetson"),
+    (re.compile(r"(?<![\w-])\bfree\b", re.I),
+     "which 'free' (rule 15): 'costs nothing', or 'with no extra mechanism'?"),
+]
+
+# The literal senses, as phrases rather than whole files. A "-free" compound -- ROS-free,
+# dependency-free, branch-free, gap-free -- means "without" and never reaches here,
+# because the pattern above refuses a hyphen before the word.
+FREE_LITERAL = re.compile(
+    r"free space"                      # confidence post, an occupancy grid
+    r"|free to (tune|say)"             # a parameter or a fit that is unconstrained
+    r"|(two|any) free|free (endpoints?|columns?)"   # graph terms, sometimes line-split
+    r"|free eMMC|GB free|free, it is silicon"       # disk space, and hardware cost
+    r"|free of a"                      # "free of a machine-learning dependency"
+    r"|\"ordering is free in DP\"", re.I)          # a quotation of the classical claim
+
+
+def check_ambiguous(body, rel, name, rep):
+    """Rule 15. Fails; the literal senses are exempted by phrase above."""
+    if name in TRADE_OK:
+        return
+    for n, ln in enumerate(body.split("\n"), 1):
+        for pat, why in AMBIGUOUS:
+            for m in pat.finditer(ln):
+                if mentioned(ln, m):
+                    continue
+                if "free" in m.group(0).lower() and FREE_LITERAL.search(ln):
+                    continue
+                rep.fail(f"{rel}:{n}", f"{m.group(0)!r} -- {why}")
 
 
 VOICE_ON = False
@@ -246,6 +336,8 @@ def check_file(path, rep, universe, site, long_words):
     # Item 56 is a rendering bug and fails. The rest of group G is judgement: it
     # reports under --voice so a normal run stays a verdict rather than a reading list.
     check_lazy_continuation(body, rel, rep)
+    check_trade(body, rel, name, rep)
+    check_ambiguous(body, rel, name, rep)
     if VOICE_ON:
         check_padding(body, rel, rep)
         check_voice(body, rel, rep)
@@ -398,6 +490,8 @@ See [nowhere](#no-such-anchor) and [gone](./does-not-exist.md).
 Run it with --min-range 0.4 which is retired.
 Update, 2026-01-01: this reads as a changelog.
 To be honest, this word is banned.
+Two iterations buy nothing, which makes it the largest remaining lever.
+It does not pay, the knob is free, and a cheaper filter is expensive.
 $$ x = 1
 ![missing](/assets/img/nope/nope.png)
 
@@ -431,7 +525,10 @@ def self_test():
             "which is not section 2",          # a reference to the wrong section
             "which is not part 2",             # a reference to the wrong post
             "shares nothing with it",          # a link text that names something else
-            "renders inside the bullet"]       # checklist 56, a rendering bug
+            "renders inside the bullet",       # checklist 56, a rendering bug
+            "name the quantity and the direction",  # rule 14, buy/lever/pay
+            "a knob is a *parameter*",              # rule 15, no exemptions
+            "which 'free'"]                         # rule 15, with exemptions
     with tempfile.TemporaryDirectory() as td:
         p = os.path.join(td, "self-test.md")
         open(p, "w").write(SELF_TEST)
@@ -443,7 +540,49 @@ def self_test():
         check_file(p, rep, collect([p]), {}, 34)
     # Group G's judgement items report as notes, so the self-test has to read both
     # lists. A check that only ever lands in notes is still a check.
-    want_notes = ["54 padding"]
+    want_notes = ["54 padding", "58 cheap/expensive"]
+
+    # Rule 14 fired above on the document. Its three exemptions are the half that
+    # cannot fire there, and an exemption that is never exercised is an exemption
+    # nobody has checked: it would silently swallow everything if the regex were wrong.
+    quiet = Report()
+    check_trade("49 levels, and a delivery", "doc/x.md", "x.md", quiet)
+    check_trade("if you buy one, 850 nm is invisible", "doc/x.md", "x.md", quiet)
+    check_trade("buys and levers", "doc/12-writing.md", "12-writing.md", quiet)
+    if quiet.fails:
+        print(f"\nSELF-TEST FAILED -- rule 14 matched something it must not: "
+              f"{quiet.fails}")
+        return 1
+    # ...and the exemptions must not be so wide that nothing fails at all.
+    loud = Report()
+    check_trade("it buys coverage; the largest lever", "doc/x.md", "x.md", loud)
+    if len(loud.fails) != 2:
+        print(f"\nSELF-TEST FAILED -- rule 14 reported {len(loud.fails)} on a line "
+              f"holding 'buys' and 'lever', wanted 2")
+        return 1
+
+    # Rule 15 (checklist 58) exemptions, same argument: a "-free" compound and each literal sense
+    # must stay silent, and the bare word must not.
+    q2 = Report()
+    for ln in ("the capture path stays ROS-free and dependency-free",
+               "an occupancy grid carves free space, and $$\\sigma_s$$ is free to tune",
+               "~13 GB free eMMC, and two free endpoints"):
+        check_ambiguous(ln, "doc/x.md", "x.md", q2)
+    if q2.fails:
+        print(f"\nSELF-TEST FAILED -- rule 15 matched a literal sense: {q2.fails}")
+        return 1
+    # Use versus mention: *free* names the word, **free** uses it with emphasis.
+    q3 = Report()
+    check_ambiguous("the word *free* and the word `knob`", "doc/x.md", "x.md", q3)
+    if q3.fails:
+        print(f"\nSELF-TEST FAILED -- a mentioned word was treated as used: {q3.fails}")
+        return 1
+    l2 = Report()
+    check_ambiguous("a wider support is free, and **free** again", "doc/x.md", "x.md", l2)
+    if len(l2.fails) != 2:
+        print(f"\nSELF-TEST FAILED -- rule 15 reported {len(l2.fails)} on a bare "
+              f"'free' plus a bold one, wanted 2")
+        return 1
     blob = "\n".join(rep.fails).lower()
     nblob = "\n".join(rep.notes).lower()
     missing = [w for w in want if w.lower() not in blob]
@@ -452,7 +591,7 @@ def self_test():
     for f in rep.fails:
         print("  caught:", f)
     for n in rep.notes:
-        if "54 padding" in n:
+        if "54 padding" in n or "58 cheap" in n:
             print("  caught (note):", n)
     if missing:
         print(f"\nSELF-TEST FAILED -- these checks did not fire: {missing}")
@@ -469,7 +608,7 @@ def main():
                     help="report sentences of N+ words (default 34)")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--voice", action="store_true",
-                    help="also report checklist items 51-55, which over-report by "
+                    help="also report checklist items 51-55 and 58, which over-report by "
                          "design and are a reading list rather than a verdict")
     a = ap.parse_args()
     global VOICE_ON

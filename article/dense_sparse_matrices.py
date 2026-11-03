@@ -100,7 +100,7 @@ def jv_row(ei, ej, se, W):
     from scipy.optimize import linear_sum_assignment
     S = np.full((W, W), -np.inf)
     S[ei, ej] = se
-    big = np.full((2 * W, 2 * W), 0.0)   # dummy-dummy pairings are free
+    big = np.full((2 * W, 2 * W), 0.0)   # dummy-dummy pairings cost nothing
     big[:W, :W] = np.where(np.isfinite(S), S, -1e6)
     big[:W, W:] = -1e6
     np.fill_diagonal(big[:W, W:], LAM)

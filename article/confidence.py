@@ -338,8 +338,8 @@ def logistic_fit(X, y, l2=1.0, iters=25):
     the matrix to invert is 7x7, so twenty-five steps cost less than reading the data.
 
     L2 does not regularise the intercept: shrinking it would pull the predicted rate
-    away from the base rate, which is the one thing the model should get right for
-    free.
+    away from the base rate, which is the one thing the model should get right
+    automatically.
     """
     n, k = X.shape
     A = np.concatenate([X, np.ones((n, 1))], axis=1)

@@ -106,7 +106,7 @@ Host jetson
 ```
 
 Connection multiplexing and compression are there because the TX2 is on WiFi at
-roughly 100 ms RTT; without `ControlPersist`, every command pays a fresh
+roughly 100 ms RTT; without `ControlPersist`, every command costs a fresh
 handshake.
 
 ## ROS — used as a tool, not as the architecture
@@ -116,7 +116,7 @@ handshake.
 `sensor_msgs` and `tf2` present and the binaries working. `mavros` is not
 installed. Melodic's Python is 2.7; `rospy` does not import under Python 3 here.
 
-That makes ROS nearly free to adopt where it earns its place, and the decision
+That makes ROS nearly effortless to adopt where it fits, and the decision
 splits cleanly.
 
 ### Where ROS is the right answer
@@ -141,7 +141,7 @@ splits cleanly.
   memory bandwidth — 58.4 GB/s shared between CPU and GPU — as the real
   constraint. ROS 1 transport adds serialisation and copies to precisely the
   resource that is already short. Putting the hot path on ROS would spend the
-  scarcest thing we have to buy convenience we do not need, since the capture
+  scarcest thing we have for convenience we do not need, since the capture
   tool is 250 lines and already verified.
 
 So: **record ROS-free, convert offline when a ROS tool needs it.** The capture

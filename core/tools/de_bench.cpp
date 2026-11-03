@@ -329,7 +329,7 @@ int main(int argc, char** argv) {
       sweep ? std::vector<float>{0.f, 0.05f, 0.10f, 0.20f, 0.30f}
             : std::vector<float>{min_margin};
 
-  // Raising the FAST threshold is the cheapest budget lever there is: 8 -> 12
+  // Raising the FAST threshold is the cheapest way to save frame budget: 8 -> 12
   // saves 30% of preprocessing time for 12% of the keypoints on the Jetson. That
   // trade is only acceptable if the keypoints it discards were not the ones
   // carrying correct matches, which needs ground truth to say.

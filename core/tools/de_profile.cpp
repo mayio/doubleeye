@@ -1,4 +1,4 @@
-// Where does the frame budget go, and what does dropping resolution buy?
+// Where does the frame budget go, and what does dropping resolution save?
 //
 // The pipeline does not close at 30 Hz: preprocessing is 26.54 ms per stereo pair
 // against a 33.3 ms budget, and detection is 20.98 of the 21.24 ms per frame. Two
@@ -9,7 +9,7 @@
 //      "should" is not a measurement, and if the cost is actually in the sparse
 //      stages then the fix is completely different.
 //
-//   2. What does dropping resolution buy? Preprocessing ought to be close to
+//   2. What does dropping resolution save? Preprocessing ought to be close to
 //      pixel-bound, so halving the pixels ought to halve it. Ought to.
 //
 // Resolution is varied by box-downsampling the captured 848x480 frames rather

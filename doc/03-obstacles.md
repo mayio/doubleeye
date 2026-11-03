@@ -274,7 +274,7 @@ motion direction while the static background's is not — that is matching code,
 which does not exist yet.
 
 The better place for it is the first matcher. The plan already wants median
-`|Δy|` over matched pairs as a free runtime health metric for extrinsic drift,
+`|Δy|` over matched pairs as a runtime health metric for extrinsic drift at no cost,
 and that same statistic catches a sync error: an inter-channel time offset in a
 moving scene inflates the y-residual in exactly the regions that are moving. So
 sync verification falls out of work that is already planned, rather than
@@ -664,12 +664,12 @@ dominated the view.
   the correction to it overshooting. Both are the same rule: a default is a claim
   about the world. 0.40 m claimed nothing is nearer, and a camera that can see its own
   floor makes that false about a sixth of the frame.
-- **Raising the limit is close to free and never negative.** `--dmax 64` gained
+- **Raising the limit costs almost nothing and is never negative.** `--dmax 64` gained
   coverage on all three scenes tried, added 12,556 real near-floor points on the
   hallway, and added 172 on a scene with nothing that close -- so it does not
   manufacture near points where there are none.
-- 80 buys nothing over 64, so the floor bottoms out around 0.34 m in this room.
-- **On the Jetson it is not merely cheap, it is free**, and the desktop's 1.12-1.14x
+- 80 gains nothing over 64, so the floor bottoms out around 0.34 m in this room.
+- **On the Jetson it is not merely cheap, it costs nothing**, and the desktop's 1.12-1.14x
   did not predict that (rule 2). Pipelined steady state at 848x480, `--threads 4`,
   clocks locked, 30-32 C, three reps, minima:
 
@@ -682,8 +682,8 @@ dominated the view.
   **The GPU quantises the disparity search into blocks of 64.** Everything from 1 to
   64 costs the same -- `--dmax 32` measures 25.4 ms in the cost stage against 64's
   25.6 -- and 65 through 128 costs the same as each other, 63% more. So the old
-  default of 53 was *paying for 64 disparities and using 53*, discarding 11 it had
-  already bought, and those 11 are exactly the ones the floor needed. A default that
+  default of 53 was *computing 64 disparities and using 53*, discarding 11 it had
+  already computed, and those 11 are exactly the ones the floor needed. A default that
   was set as a quality trade-off turned out to have no cost at all on the side it was
   trading against: obstacle 16's `fast_threshold` mistake, in reverse.
 
@@ -767,7 +767,7 @@ was not merely uninformative, its answer was wrong.
 
 `de_dense` now rejects an unknown option and exits 2, which also catches an option
 whose value is missing. The general form is in [12-writing.md](12-writing.md) rule 13
-and it is the third time it has been paid for here (see 7 and 12): **a check that
+and it is the third time it has cost us here (see 7 and 12): **a check that
 passes is evidence only if some input would make it fail.** Two paths that are
 supposed to differ, compared and found identical, is that input.
 

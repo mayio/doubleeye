@@ -35,7 +35,7 @@ pair, verified with `cmp`, including through the pipelined frames.
 **Why the deferral ended, in one line:** its premise was 10 ms of slack, and that
 number was measured against the sparse pipeline. Dense at 848x480 was 6.0x over the
 30 Hz budget on the CPU, the GPU was at load 0, and the CPU plan needed 8.1x from two
-levers that would have underdelivered. Rule 2 again — a number measured in one
+speed-ups that would have underdelivered. Rule 2 again — a number measured in one
 context is not a measurement in another, including when the context is *which
 pipeline*.
 
@@ -128,7 +128,7 @@ of the argument is worth re-reading before deferring the next thing.
 Three reasons, in order of weight.
 
 1. **There is no deadline pressure.** 23.07 ms of 33.3 ms. Moving the FAST scan to
-   the GPU might save 7 of the 8.30 ms, which buys headroom we already have.
+   the GPU might save 7 of the 8.30 ms, which gains headroom we already have.
 2. **The four idle CPU cores are the cheaper win and are not spent.** Tracking,
    ground detection and trajectory estimation are all sparse work on a few hundred
    points. Each can have a core. That is four more stages for zero CUDA.
@@ -169,7 +169,7 @@ Deliberately deferred until something needs it:
   detection" costs a consumer of an existing product rather than a new producer.
 - A scheduler. A fixed-rate pipeline with bounded queues is enough for four stages,
   and a bounded queue makes back-pressure visible instead of turning it into
-  dropped frames — which is the failure mode this project has already paid for once.
+  dropped frames — which is the failure mode this project has already suffered once.
 
 ## The measurement that would change this
 

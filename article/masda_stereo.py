@@ -2,7 +2,7 @@
 """MASDA for sparse stereo matching — the worked example for the article.
 
 Self-contained: numpy + scipy + matplotlib. No image files are read, so nothing
-here carries a licence. The scene is generated procedurally, which also buys the
+here carries a licence. The scene is generated procedurally, which also provides the
 thing real stereo footage cannot give without a rangefinder — **exact ground-truth
 disparity**, so match correctness is measurable rather than merely plausible.
 

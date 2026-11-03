@@ -291,7 +291,7 @@ they are filtered, or a raw stream captured on the Jetson.
 
 ### The accelerometer is out of calibration by 7.5%
 
-Free check, since the vehicle is stationary: gravity must read 9.80665 m/s². It
+A check that costs nothing, since the vehicle is stationary: gravity must read 9.80665 m/s². It
 reads **9.074 m/s², −7.47%**, consistent across two independent logs (9.02 and
 9.07).
 

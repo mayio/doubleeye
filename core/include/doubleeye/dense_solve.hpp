@@ -17,10 +17,10 @@
 namespace doubleeye {
 
 struct Cfg {
-  // iters = 0 since 2026-08-11: the message passing does not pay in the DENSE path.
+  // iters = 0 since 2026-08-11: the message passing is not worth its 12 ms in DENSE.
   // Measured on both benchmarks -- v3 25.18 against 26.04 bad-1.0, dense_bench 9.4%
-  // against 9.8% -- each at ~0.4 points less coverage, which the gate buys back for
-  // free, so ~0.5 points better at matched coverage. And it is 12 ms of the 23 ms
+  // against 9.8% -- each at ~0.4 points less coverage, which the gate recovers for
+  // at no cost, so ~0.5 points better at matched coverage. And it is 12 ms of the 23 ms
   // CPU solve at 848x480, which is most of what the keypoint wiring is short by.
   //
   // This does NOT turn MASDA off. The uniqueness constraint and the score margin --
@@ -42,7 +42,7 @@ struct Cfg {
   // 8 is inside the plateau and clear of the degradation below 6; 6 measured
   // marginally better and the difference is inside scene-to-scene noise. Worth
   // 0.9 points of bad-1.0 and 0.8 of coverage over the old 12, and the filter is
-  // an IIR whose cost does not depend on sigma, so it is free.
+  // an IIR whose cost does not depend on sigma, so a wider sigma costs nothing.
   // sigma_r 0.30 measured 0.15 better than 0.20 at sigma_s 8 -- inside noise, and
   // left alone rather than tuned on a difference that small.
   float sigma_s = 8.f, sigma_r = 0.20f;

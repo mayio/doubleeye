@@ -28,7 +28,7 @@ duplicates it; this is the engineering record that sits underneath it.
 - [12-writing.md](12-writing.md) — **the writing rules**, twelve of them, each named
   after the mistake that produced it. `tools/doccheck.py` enforces the mechanical
   half and `--self-test` proves it can still fail.
-- [11-running.md](11-running.md) — **how to actually run it**: deploy, the matcher offline and on the GPU, which knobs matter and what each is worth, the ROS 2 point cloud, the other viewers, and what to check when it looks broken. Organised by task; 07-tools.md is the same ground organised by tool.
+- [11-running.md](11-running.md) — **how to actually run it**: deploy, the matcher offline and on the GPU, which parameters matter and what each is worth, the ROS 2 point cloud, the other viewers, and what to check when it looks broken. Organised by task; 07-tools.md is the same ground organised by tool.
 
 ## Status at time of writing
 
@@ -84,7 +84,7 @@ even after sourcing the setup file, and the failure reads as a broken ROS instal
 
 Or offline from a recorded bag, via `desktop/bag_to_ros2.py`, and without ROS at all
 via `desktop/live_view.py`. **[11-running.md](11-running.md)** has all of it: the
-knobs and what each is measured to be worth, the topic list, and what to check when
+parameters and what each is measured to be worth, the topic list, and what to check when
 it looks broken.
 
 ## Findings at a glance
@@ -112,7 +112,7 @@ across them is the same: **on this platform the expensive failures are silent.**
 | Tuned, everything on, the pipeline is **23.07 ms — 69% of budget** with *more* keypoints than the untuned baseline | [09](09-matching.md) |
 | **Detector repeatability, not the matcher, is the ceiling on real data**: only 44–51% of left keypoints have any right keypoint within 1 px of their true correspondence, which accounts for 102 of Teddy's 132 errors | [09](09-matching.md) |
 | Over-proposing on the right + gating on score margin is better than baseline on **both** axes: +183 correct *and* +0.012 precision | [09](09-matching.md) |
-| The **score margin is the confidence worth exporting** — precision by quartile 0.169 / 0.286 / 0.391 / 0.659 — and it is nearly free, since the solver already computes a top-2 reduction | [09](09-matching.md) |
+| The **score margin is the confidence worth exporting** — precision by quartile 0.169 / 0.286 / 0.391 / 0.659 — and it costs almost nothing, since the solver already computes a top-2 reduction | [09](09-matching.md) |
 | **Local contrast is not useful and the intuition is backwards**: it predicts correctness *negatively* (bottom quartile 0.669, top 0.506), because high contrast means crowded candidates. Do not raise `min_local_std` | `article/contrast_study.py` |
 | `lambda` and `gamma` were **transposed** relative to the article. Harmless only because every run held them equal, which stereo has good reason not to | [09](09-matching.md) |
 | Seeded synthetic scenes were **not reproducible at all** — `hash()` is salted per process — and it cost a published conclusion that flipped sign between runs | [03](03-obstacles.md) obstacle 16 |

@@ -67,10 +67,10 @@ double now_ms() {
 // Swapping the loops so x is innermost makes the shift constant within a pass and
 // the compare a wide byte operation. **On its own that is 3.7x WORSE** (40.0 ms
 // against 10.8), because a uint64 accumulator fits only four lanes in a 256-bit
-// register and 48 passes over a row is a lot of loop overhead to pay for four
+// register and 48 passes over a row is a lot of loop overhead to gain four
 // lanes.
 //
-// It pays once the accumulator is a byte: six 8-bit planes give 32 lanes per
+// It is only faster once the accumulator is a byte: six 8-bit planes give 32 lanes per
 // register for the compare-and-or, and the packing costs one pass per row. Same
 // bit assignment -- bit b lands at (b>>3)*8 + (b&7) = b -- so the descriptors are
 // unchanged, which is verified rather than assumed.
@@ -79,7 +79,7 @@ double now_ms() {
 // independent tweaks and are not. Reordering without widening loses, and the
 // difference between the two reordered forms is 22x.
 //
-// The window must be a COMPILE-TIME constant for any of this to pay. Measured with
+// The window must be a COMPILE-TIME constant for any of this to be faster. Measured with
 // hw/hh as runtime arguments the reordered form is 17.6 ms against the original's
 // 8.1 -- twice as slow -- because the 48 passes cannot be unrolled, so the shift
 // mask and the group pointer are recomputed every pass and the compiler will not
@@ -356,7 +356,7 @@ void upsample(const float* in, float* out, int W, int H, int Ws, int Hs, int f) 
 //
 // Why replace the guided filter: measured, the cost stage is bound by how many
 // times it walks memory, not by the arithmetic in the walks -- a 15x larger
-// aggregation window is free, and threads saturate at two. The guided filter
+// aggregation window costs nothing, and threads saturate at two. The guided filter
 // touches 29 whole planes per disparity slice and needs eight temporaries. This
 // touches 12 and needs none, so the per-thread working set drops from ~6 MB to
 // one plane and the shared coefficients.
@@ -403,7 +403,7 @@ inline void rf_horiz(float* C, const uint16_t* ax, int W, int y, int n) {
 //
 // Why int16 here specifically: the filter is four passes of pure float work and is
 // 33% of the cost stage on the desktop and ~50% on the TX2. NEON is 128-bit against
-// AVX2's 256, so halving the element width buys 8 lanes against 4 exactly where the
+// AVX2's 256, so halving the element width gains 8 lanes against 4 exactly where the
 // platform that matters is weakest.
 static const int SCORE_Q = 14;
 static const int SCORE_ONE = 1 << SCORE_Q;
@@ -883,7 +883,7 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
   // Fast guided filter: the four box passes per disparity slice happen at 1/f^2
   // of the pixels, and only the two coefficient planes come back to full
   // resolution. The coefficients are smooth, which is what makes this nearly
-  // free in quality -- He and Sun's observation.
+  // costs no quality -- He and Sun's observation.
   const int F = cfg.fgf;
   const int Ws = (F == 1) ? W : std::max(1, W / F);
   const int Hs = (F == 1) ? H : std::max(1, H / F);
@@ -1019,7 +1019,7 @@ void run_dense(const Image8& L, const Image8& R, const Cfg& cfg, int nthreads,
     } span_guard{ta0, &ts_span[t]};
     // Only the chosen filter path's scratch is allocated. Every thread used to
     // take all eighteen planes -- 12 MB each, 46 MB across four threads -- and
-    // std::vector zero-fills them, so most of a memset of 46 MB was being paid on
+    // std::vector zero-fills them, so most of a memset of 46 MB was being spent on
     // the critical path for buffers the recursive filter never touches.
     const size_t FN = cfg.rf ? 0 : size_t(W) * H;
     const bool i16 = cfg.rf && blockwise;
@@ -1621,7 +1621,7 @@ int main(int argc, char** argv) {
         "\n"
         "WHAT TO TRUST (these move the precision/coverage trade)\n"
         "  --min-margin F    reject a match whose best-minus-second score is below\n"
-        "                    F. THE knob: 0 answers ~89%% of pixels, 0.01 ~80%%,\n"
+        "                    F. THE parameter: 0 answers ~89%% of pixels, 0.01 ~80%%,\n"
         "                    0.03 ~65%%, and the error rate falls with it. Tools\n"
         "                    pass 0.01; the binary defaults to 0 (default 0)\n"
         "  --min-ratio F     the same two scores as a ratio of costs instead of a\n"
@@ -1851,7 +1851,7 @@ int main(int argc, char** argv) {
   }
 
   // --simd refuses rather than falling back. A flag that silently does nothing is
-  // indistinguishable downstream from one that did something and bought nothing,
+  // indistinguishable downstream from one that did something and changed nothing,
   // which is the whole of rule 1 -- and this flag exists to be timed.
   if (cfg.simd) {
 #ifndef DE_HAVE_NEON

@@ -6,7 +6,7 @@
 // means anything.
 //
 // Reports, per method: match count, the objective being maximised, median |dy|
-// (the plan's free rectification-health metric), disparity distribution, and
+// (the plan's rectification-health metric, at no extra cost), disparity distribution, and
 // timing. Writes matches.csv for the desktop tools.
 
 #include "doubleeye/match.hpp"
@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
         "                      term drop the surplus gave +14.5%% correct matches\n"
         "                      on eight Middlebury scenes at 2x density.\n"
         "  --min-margin F      drop matches whose score margin is below F.\n"
-        "                      Over-proposing alone costs precision; this buys\n"
+        "                      Over-proposing alone costs precision; this gets\n"
         "                      it back. 2x density with --min-margin 0.10 beat\n"
         "                      the baseline on BOTH counts and precision.\n",
         argv[0]);

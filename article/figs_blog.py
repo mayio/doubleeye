@@ -315,7 +315,7 @@ def fig_aggregate(path):
     ax.set_xlabel("disparity $d$ (px)"); ax.set_ylabel("score (normalised)")
     ax.legend(fontsize=7.2, loc="upper left"); ax.grid(alpha=0.25, lw=0.6)
 
-    # (c) the coefficient in closed form: what the two knobs actually control
+    # (c) the coefficient in closed form: what the two parameters actually control
     ax = fig.add_subplot(gs[2])
     dI = np.linspace(0, 60, 400)
     for sig_r, ls, lab in ((0.1, ":", "$\\sigma_r=0.1$"),
@@ -327,7 +327,7 @@ def fig_aggregate(path):
     ax.axhline(flat, color=MUTE, lw=1.0)
     ax.text(1.5, flat - 0.07, f"flat region: $a={flat:.2f}$", ha="left", fontsize=7.4,
             color=MUTE)
-    ax.set_title("(c) what the two knobs do, $\\sigma_s=8$", fontsize=9.5)
+    ax.set_title("(c) what the two parameters do, $\\sigma_s=8$", fontsize=9.5)
     ax.set_xlabel("intensity step $|\\Delta I|$ between neighbours (DN)")
     ax.set_ylabel("coefficient $a$")
     ax.set_ylim(0, 1.0); ax.set_xlim(0, 60)

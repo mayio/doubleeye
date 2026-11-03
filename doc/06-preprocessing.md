@@ -134,7 +134,7 @@ coverage, at 1.45× the speed.
 
 Note the row at threshold 4: the sparse path is **slower than the dense scan it
 replaces** (22.9 ms against 18.6). Below about 5 DN the candidate count grows until
-per-candidate work exceeds a single dense pass. Sparsification is not free, and it
+per-candidate work exceeds a single dense pass. Sparsification costs something, and it
 has a crossover.
 
 ### Concurrent left/right — and the result on the target
@@ -154,7 +154,7 @@ stereo pair rather than the serial sum.
 **Under budget, 3.8× faster than where it started, keeping 96% of the keypoints
 and 98% of the coverage.**
 
-One detail worth reading: concurrency bought 1.54×, not 2× (40.45 → 26.28 rather
+One detail worth reading: concurrency gave 1.54×, not 2× (40.45 → 26.28 rather
 than → 20.2). Two threads on a 6-core board should scale almost perfectly on
 compute, so the shortfall is contention — which is exactly the plan's prediction
 that **memory bandwidth**, not arithmetic, is the real constraint on this hardware.
@@ -174,7 +174,7 @@ NEON remains available and is now optional rather than necessary.
 
 ### Remaining options, no longer urgent
 
-1. **NEON.** Now optional. Would buy headroom for the matcher rather than being
+1. **NEON.** Now optional. Would gain headroom for the matcher rather than being
    needed to fit the detector.
 2. **Detect on a reduced-resolution level.** Falls out of the coarse-to-fine
    pyramid the plan wants anyway.
@@ -211,7 +211,7 @@ relies on rather than restating the implementation. The important one:
 **Census invariance to monotonic intensity mapping.** A gain-and-offset remap
 (`p → p/2 + 20`) leaves **0 of 1024** descriptors changed. That invariance is the
 entire reason the plan picks Census, and it is what absorbs the measured 2.6 DN
-exposure mismatch between the two IR sensors for free.
+exposure mismatch between the two IR sensors at no extra cost.
 
 Also covered: descriptor bit widths (48 for 7×7, 62 for 9×7, both fitting a
 `uint64`), border validity, Hamming, local-std against an analytic value,

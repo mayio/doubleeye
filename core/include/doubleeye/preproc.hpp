@@ -12,7 +12,7 @@
 // identical, so discriminability lives in the *constellation* of dots inside the
 // window rather than in any single dot's appearance. Census reads exactly that,
 // and is invariant to any monotonic intensity mapping, which absorbs the
-// measured 2.6 DN exposure mismatch between the two sensors for free.
+// measured 2.6 DN exposure mismatch between the two sensors at no extra cost.
 
 #ifndef DOUBLEEYE_PREPROC_HPP
 #define DOUBLEEYE_PREPROC_HPP

@@ -107,7 +107,7 @@ std::vector<Edge> build_candidates(const std::vector<Keypoint>& left,
 //
 // This is the confidence worth exporting. Over eight Middlebury scenes with
 // ground truth, precision by margin quartile is 0.169 / 0.286 / 0.391 / 0.659.
-// It is nearly free here, and free outright inside the solver, whose message
+// It costs almost nothing here, and nothing at all inside the solver, whose message
 // update is already a top-2 reduction over exactly these rows.
 static std::vector<float> row_margins(const std::vector<Edge>& edges, int n_left,
                                       const MatchConfig& cfg) {
@@ -304,7 +304,7 @@ float pair_score(const Keypoint& l, const Keypoint& r, uint64_t dl, uint64_t dr,
   const float desc = (half - float(hamming(dl, dr))) / half;
 
   // y-residual. The plan asks for this as a unary term regardless, since median
-  // |dy| over matched pairs doubles as a free online monitor for extrinsic drift.
+  // |dy| over matched pairs doubles as an online monitor for extrinsic drift, at no cost.
   const float dy = (l.y - r.y) / (cfg.sigma_y > 0 ? cfg.sigma_y : 1.f);
   float score = desc - cfg.w_y * dy * dy;
 

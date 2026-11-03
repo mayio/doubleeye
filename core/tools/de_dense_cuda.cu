@@ -270,7 +270,7 @@ __global__ void k_vert_fwd(int16_t* vol, const uint16_t* ay, int W, int H,
 template <int G>
 // `cnb`, when non-null, receives the filtered cost one disparity either side of the
 // winning candidate, for the host's sub-pixel fit. On the GPU this is exact and
-// nearly free: the whole disparity range for this pixel is live in registers across
+// costs almost nothing: the whole disparity range for this pixel is live in registers
 // the warp at the moment the argmax is known, so both neighbours are one broadcast
 // and one shuffle away. The CPU tool works much harder for the same answer -- it
 // streams planes and keeps a 3-wide window around the running best.
@@ -418,10 +418,10 @@ int main(int argc, char** argv) {
   Cfg cfg;
   // The GPU quantises the disparity search into blocks of 64: measured on the TX2 at
   // 848x480, --dmax 32 and --dmax 64 both cost 25.5 ms in the cost stage, and 65
-  // through 128 both cost ~42. So Cfg's shared default of 60 buys a block of 64 and
+  // through 128 both cost ~42. So Cfg's shared default of 60 computes a block of 64 and
   // throws four disparities away, and 64 is 31.5 ms/frame against 60's 31.7 with
   // half a point more coverage. The CPU tool keeps 60 -- there the cost is linear in
-  // dmax and this would be a 7% tax rather than a free 4 px. See 03-obstacles.md 24.
+  // dmax and this would be a 7% cost rather than 4 px at no cost. See 03-obstacles.md 24.
   cfg.dmax = 64;
   std::string outp, kpp;
   bool stream_mode = false;
@@ -520,7 +520,7 @@ int main(int argc, char** argv) {
   // is CPU-uncached there, and the solver on uncached candidates was measured
   // twice at ~300 ms against ~40 on cached (once via zero-copy, once via "cached
   // pinned" that Tegra does not actually have). Pageable D2H costs a staged
-  // ~4 ms copy per frame, synchronous, paid at the pipeline's sync point where
+  // ~4 ms copy per frame, synchronous, incurred at the pipeline's sync point where
   // the GPU is between frames anyway. Two host buffers so the pipelined mode can
   // solve frame t while frame t+1 computes.
   std::vector<float> cs[2] = {std::vector<float>(WH * 2),
@@ -822,7 +822,7 @@ int main(int argc, char** argv) {
       std::thread fetcher([&, f]() { fetch(f % 2); });
       // Detection, when the sparse feature set is wanted, runs as a THIRD thread
       // beside the solve. It is the open budget question in 0.4: detection is ~29 ms
-      // of one core against 26 ms of kernels, so whether keypoints are free depends
+      // of one core against 26 ms of kernels, so whether keypoints cost anything depends
       // entirely on this overlap and not on anything that can be argued. Inside the
       // loop it is measured; bolted on after it, it was not.
       std::thread detector;
